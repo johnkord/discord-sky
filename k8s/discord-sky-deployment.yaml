@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sky-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sky
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: sky
+    spec:
+      containers:
+      - name: sky
+        image: johnkordich/sky:0.0.3
+        envFrom:
+        - secretRef:
+            name: sky-secrets
