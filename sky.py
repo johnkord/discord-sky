@@ -20,6 +20,16 @@ except KeyError:
     exit(1)
 
 try:
+    bot_lru_cache_size = os.environ['BOT_LRU_CACHE_SIZE']
+except KeyError:
+    bot_lru_cache_size = 128
+
+try:
+    bot_message_limit = os.environ['BOT_MESSAGE_LIMIT']
+except KeyError:
+    bot_message_limit = 2
+
+try:
     bot_prefix = os.environ['BOT_PREFIX']
 except KeyError:
     print('BOT_PREFIX is not set in envvar')
@@ -70,7 +80,50 @@ client = discord.Client(intents=intents)
 async def on_ready():
     print('Logged in as {0.user}'.format(client))
 
+seen_messages = {}
+seen_messages_LRU = []
+
+def hasUsedMessageTooMuch(message):
+    if message in seen_messages:
+        return seen_messages[message] > bot_message_limit
+    else:
+        return False
+
+# Call this when coming across a new message
+def registerMessageToLRU(m):
+    global seen_messages
+    global seen_messages_LRU
+    if m not in seen_messages:
+        seen_messages[m] = 0
+        seen_messages_LRU.append(m)
+        while len(seen_messages_LRU) > bot_lru_cache_size:
+            removed_message = seen_messages_LRU.pop(0)
+            del seen_messages[removed_message]
+
+
+# Call this when safely identifying a message in a bot message
+def incrementMessageCount(m):
+    global seen_messages
+    global seen_messages_LRU
+    if m not in seen_messages:
+        seen_messages[m] = 1
+        seen_messages_LRU.append(m)
+        while len(seen_messages_LRU) > bot_lru_cache_size:
+            removed_message = seen_messages_LRU.pop(0)
+            del seen_messages[removed_message]
+    else:
+        seen_messages[m] += 1
+        # Bump message to the end of the LRU list
+        seen_messages_LRU.remove(m)
+        seen_messages_LRU.append(m)
+
+
 async def handle_message(message, middle_section):
+    global seen_messages
+    global seen_messages_LRU
+    print("=====================================")
+    print(seen_messages)
+    print(seen_messages_LRU)
     prompt_string = chatgpt_prompt_prefix + middle_section + chatgpt_prompt_suffix
 
     # look at the last "BOT_CONTEXT" number of messages in this channel and combine them into one string that is no longer than 2000 characters
@@ -78,6 +131,9 @@ async def handle_message(message, middle_section):
     async for m in message.channel.history(limit=int(bot_context)):
         if m.author != client.user:
             if m.content.startswith(bot_prefix):
+                continue
+            registerMessageToLRU(m.content)
+            if hasUsedMessageTooMuch(m.content):
                 continue
             messages.append(m)
     # for each message, format it as "username: message"
@@ -125,8 +181,16 @@ async def handle_message(message, middle_section):
         print('Error: no completion found in response')
         return
 
+    # For each message in seen_messages, check if contained in completion. If so, increment the count
+    for m in seen_messages_LRU:
+        if m.lower() in completion.lower():
+            incrementMessageCount(m)
+            break
+
     if len(completion) >= 2000:
         completion = completion[:1996] + '...'
+
+    completion = completion.replace('\\n', '\n')
     # send the completion as a message in this channel
     await message.channel.send(completion)
     return
