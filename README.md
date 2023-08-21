@@ -1,6 +1,6 @@
 # Discord-Sky
 ## Summary
-This is a silly discord bot that listen for a bot command, take in context from the chat, generate a ChatGPT prompt based on a static PREFIX, a chat-specified middle section, and a static SUFFIX, then respond as a chat message in that with the completion from ChatGPT.
+This is a silly discord bot that will listen for a bot command, take in context from the chat, generate a ChatGPT prompt based on: (a static PREFIX, a chat-specified middle section, and a static SUFFIX) then respond as a chat message in that with the completion from ChatGPT.
 
 ## How to use
 Please refer to `env_template.sh` to create your own `env.sh` file by copying `env_template.sh` to `env.sh` and then modify it fill in defaults and suit your needs. You will need a ChatGPT API account (which costs money per token). You will also need to create a Discord token for a bot.
