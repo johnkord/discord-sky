@@ -136,12 +136,14 @@ async def handle_message(message, middle_section):
             if hasUsedMessageTooMuch(m.content):
                 continue
             messages.append(m)
+    # order of messages comes in newest to oldest
+
     # for each message, format it as "username: message"
     messages = [m.author.name + ': ' + m.content for m in messages]
     # join all messages into one string starting from the last message going back in history until there's ~2000 characters
     final_message_list = []
     message_length = len(prompt_string) + 1
-    for m in reversed(messages):
+    for m in messages:
         message_length += len(m)
         if message_length > 2000:
             break
