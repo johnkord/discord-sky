@@ -80,70 +80,53 @@ client = discord.Client(intents=intents)
 async def on_ready():
     print('Logged in as {0.user}'.format(client))
 
-seen_messages = {}
-seen_messages_LRU = []
-
-def hasUsedMessageTooMuch(message):
-    if message in seen_messages:
-        return seen_messages[message] > bot_message_limit
-    else:
-        return False
-
-# Call this when coming across a new message
-def registerMessageToLRU(m):
-    global seen_messages
-    global seen_messages_LRU
-    if m not in seen_messages:
-        print("Registering new message in LRU: " + m)
-        seen_messages[m] = 0
-        seen_messages_LRU.append(m)
-        while len(seen_messages_LRU) > bot_lru_cache_size:
-            removed_message = seen_messages_LRU.pop(0)
-            del seen_messages[removed_message]
-
-# Call this when safely identifying a message in a bot message
-def incrementMessageCount(m):
-    global seen_messages
-    global seen_messages_LRU
-    if m not in seen_messages:
-        seen_messages[m] = 1
-        seen_messages_LRU.append(m)
-        while len(seen_messages_LRU) > bot_lru_cache_size:
-            removed_message = seen_messages_LRU.pop(0)
-            del seen_messages[removed_message]
-    else:
-        seen_messages[m] += 1
-        # Bump message to the end of the LRU list
-        seen_messages_LRU.remove(m)
-        seen_messages_LRU.append(m)
-
-
 async def handle_message(message, middle_section):
-    global seen_messages
-    global seen_messages_LRU
-    print("=====================================")
-    print(seen_messages)
-    print(seen_messages_LRU)
     prompt_string = chatgpt_prompt_prefix + middle_section + chatgpt_prompt_suffix
 
     # look at the last "BOT_CONTEXT" number of messages in this channel and combine them into one string that is no longer than 2000 characters
     messages = []
+    messages_that_appear_in_bot_message_counter = {}
+    bot_messages_content = []
+    messages_to_not_consider = []
     async for m in message.channel.history(limit=int(bot_context)):
         if m.author != client.user:
             if m.content.startswith(bot_prefix):
                 continue
-            registerMessageToLRU(m.content)
-            if hasUsedMessageTooMuch(m.content):
-                continue
             messages.append(m)
-    # order of messages comes in newest to oldest
+            messages_that_appear_in_bot_message_counter[m.content] = 0
+        else:
+            bot_messages_content.append(m.content)
 
-    # for each message, format it as "username: message"
-    messages = [m.author.name + ': ' + m.content for m in messages]
+    print("bot_messages_content: " + str(bot_messages_content))
+    # check if bot has used any of the messages too much
+    for m in messages:
+        if len(m.content.lower()) < 5:
+                # skip small messages
+                continue
+        for bot_message in bot_messages_content:
+            if m.content.lower() + "\n" in bot_message.lower():
+                curval = messages_that_appear_in_bot_message_counter[m.content]
+                messages_that_appear_in_bot_message_counter[m.content] += 1
+                print("Found message that appears in bot message: " + m.content + " *** " + str(curval) + " -> " + str(messages_that_appear_in_bot_message_counter[m.content]))
+
+    # order of messages comes in newest to oldest
+    messages_to_not_consider = []
+    for m in messages:
+        # if m.content is in messages_counter and is greater than limit, delete m from messages
+        if m.content in messages_that_appear_in_bot_message_counter:
+            print("Found content in bot message: " + m.content)
+            if messages_that_appear_in_bot_message_counter[m.content] >= int(bot_message_limit):
+                messages_to_not_consider.append(m.content)
+                print("Found message to not consider: " + m.content)
+
+    print("messages_to_not_consider: " + str(messages_to_not_consider))
     # join all messages into one string starting from the last message going back in history until there's ~2000 characters
     final_message_list = []
     message_length = len(prompt_string) + 1
-    for m in messages:
+    for message in messages:
+        m = message.author.name + ': ' + message.content
+        if message.content in messages_to_not_consider:
+            continue
         message_length += len(m)
         if message_length > 2000:
             break
@@ -178,21 +161,6 @@ async def handle_message(message, middle_section):
     except KeyError:
         print('Error: no completion found in response')
         return
-
-    # For each message in seen_messages, check if contained in completion. If so, increment the count
-    found_message = None
-    for m in seen_messages_LRU:
-        if len(m.lower()) < 5:
-            # skip small messages
-            continue
-        if m.lower() + "\n" in completion.lower():
-            found_message = m
-            incrementMessageCount(m)
-            break
-    if found_message == None:
-        print('NOT FOUND: message in completion')
-    else:
-        print('FOUND: message in completion: ' + m)
 
     if len(completion) >= 2000:
         completion = completion[:1996] + '...'
