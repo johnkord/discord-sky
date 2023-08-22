@@ -94,12 +94,12 @@ def registerMessageToLRU(m):
     global seen_messages
     global seen_messages_LRU
     if m not in seen_messages:
+        print("Registering new message in LRU: " + m)
         seen_messages[m] = 0
         seen_messages_LRU.append(m)
         while len(seen_messages_LRU) > bot_lru_cache_size:
             removed_message = seen_messages_LRU.pop(0)
             del seen_messages[removed_message]
-
 
 # Call this when safely identifying a message in a bot message
 def incrementMessageCount(m):
@@ -154,10 +154,6 @@ async def handle_message(message, middle_section):
     full_prompt = full_prompt.replace('"', '\\"')
     full_prompt = full_prompt.replace("\n", "\\n")
 
-
-    # get unix time for right now
-    unix_time = int(time.time())
-
     # call chatgpt API with full_prompt
 
     url = 'https://api.openai.com/v1/chat/completions'
@@ -182,10 +178,19 @@ async def handle_message(message, middle_section):
         return
 
     # For each message in seen_messages, check if contained in completion. If so, increment the count
+    found_message = None
     for m in seen_messages_LRU:
-        if m.lower() in completion.lower():
+        if m.lower() < 5:
+            # skip small messages
+            continue
+        if m.lower() + "\n" in completion.lower():
+            found_message = m
             incrementMessageCount(m)
             break
+    if found_message == None:
+        print('NOT FOUND: message in completion')
+    else:
+        print('FOUND: message in completion: ' + m)
 
     if len(completion) >= 2000:
         completion = completion[:1996] + '...'
