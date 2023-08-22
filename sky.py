@@ -114,10 +114,14 @@ async def handle_message(message, middle_section):
     for m in messages:
         # if m.content is in messages_counter and is greater than limit, delete m from messages
         if m.content in messages_that_appear_in_bot_message_counter:
-            print("Found content in bot message: " + m.content)
+            print("Found content in bot message: " + m.content + ", count: " + str(messages_that_appear_in_bot_message_counter[m.content]))
             if messages_that_appear_in_bot_message_counter[m.content] >= int(bot_message_limit):
                 messages_to_not_consider.append(m.content)
                 print("Found message to not consider: " + m.content)
+
+    print("messages_that_appear_in_bot_message_counter: ")
+    for m in sorted(messages_that_appear_in_bot_message_counter, key=messages_that_appear_in_bot_message_counter.get):
+        print("\t" + m + " -> " + str(messages_that_appear_in_bot_message_counter[m]))
 
     print("messages_to_not_consider: " + str(messages_to_not_consider))
     # join all messages into one string starting from the last message going back in history until there's ~2000 characters
