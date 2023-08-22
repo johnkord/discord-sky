@@ -180,7 +180,7 @@ async def handle_message(message, middle_section):
     # For each message in seen_messages, check if contained in completion. If so, increment the count
     found_message = None
     for m in seen_messages_LRU:
-        if m.lower() < 5:
+        if len(m.lower()) < 5:
             # skip small messages
             continue
         if m.lower() + "\n" in completion.lower():
