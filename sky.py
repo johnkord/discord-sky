@@ -227,7 +227,11 @@ async def on_message(message):
     # if message is in a DM, reply to it
     if isinstance(message.channel, discord.DMChannel):
         print("Received DM from user: " + str(message.author) + ", content: " + message.content)
-        await reply_to_dm(message, dm_user_id)
+        if dm_user_id != None and dm_user_id != '':
+            # if message is not from the DM user, ignore it
+            if message.author.id != dm_user_id:
+                return
+            await reply_to_dm(message, dm_user_id)
         return
 
     if message.content.startswith(bot_prefix + '('):
