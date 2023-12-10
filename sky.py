@@ -3,6 +3,10 @@ import os
 import time
 import requests
 import json
+from discord.ext import tasks
+from datetime import datetime, time, timedelta
+import pytz
+import random
 
 # Uses these API docs: https://platform.openai.com/docs/api-reference/chat
 
@@ -71,6 +75,38 @@ except KeyError:
     print('CHATGPT_PROMPT_SUFFIX is not set in envvar')
     exit(1)
 
+try:
+    dm_prompt_prefix = os.environ['DM_PROMPT_PREFIX']
+except KeyError:
+    print('DM_PROMPT_PREFIX is not set in envvar')
+    exit(1)
+
+try:
+    dm_prompt_suffix = os.environ['DM_PROMPT_SUFFIX']
+except KeyError:
+    print('DM_PROMPT_SUFFIX is not set in envvar')
+    exit(1)
+
+
+try:
+    dm_moods_array = os.environ['DM_MOODS_ARRAY']
+except KeyError:
+    print('DM_MOODS_ARRAY is not set in envvar')
+    exit(1)
+
+try:
+    dm_user_id = os.environ['DM_USER_ID']
+    if dm_user_id != None and dm_user_id != '':
+        dm_user_id = int(dm_user_id)
+except KeyError:
+    print('DM_USER_ID is not set in envvar')
+
+try:
+    dm_hour_to_notify = int(os.environ['DM_HOUR_TO_NOTIFY'])
+except KeyError:
+    print('DM_HOUR_TO_NOTIFY is not set in envvar')
+    exit(1)
+
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -79,6 +115,35 @@ client = discord.Client(intents=intents)
 @client.event
 async def on_ready():
     print('Logged in as {0.user}'.format(client))
+    send_message_every_so_often.start()  # Start the background task
+
+def get_chatgpt_response(full_prompt):
+    url = 'https://api.openai.com/v1/chat/completions'
+    headers = {'Authorization': 'Bearer ' + chatgpt_api_key}
+    headers['Content-Type'] = 'application/json'
+    data = {"model": chatgpt_model,"messages": [{"role": "user","content": full_prompt}]}
+
+    print(data)
+    r = requests.post(url, headers=headers, data=json.dumps(data))
+    # check for errors
+    if r.status_code != 200:
+        print('Error: status code ' + str(r.status_code))
+        print(r.text)
+        return
+    response = r.json()
+    print(response)
+    # get the first completion
+    try:
+        completion = response['choices'][0]['message']['content']
+    except KeyError:
+        print('Error: no completion found in response')
+        return
+
+    if len(completion) >= 2000:
+        completion = completion[:1996] + '...'
+
+    completion = completion.replace('\\n', '\n')
+    return completion
 
 async def handle_message(message, middle_section):
     prompt_string = chatgpt_prompt_prefix + middle_section + chatgpt_prompt_suffix
@@ -144,32 +209,8 @@ async def handle_message(message, middle_section):
     full_prompt = full_prompt.replace("\n", "\\n")
 
     # call chatgpt API with full_prompt
+    completion = get_chatgpt_response(full_prompt)
 
-    url = 'https://api.openai.com/v1/chat/completions'
-    headers = {'Authorization': 'Bearer ' + chatgpt_api_key}
-    headers['Content-Type'] = 'application/json'
-    data = {"model": chatgpt_model,"messages": [{"role": "user","content": full_prompt}]}
-
-    print(data)
-    r = requests.post(url, headers=headers, data=json.dumps(data))
-    # check for errors
-    if r.status_code != 200:
-        print('Error: status code ' + str(r.status_code))
-        print(r.text)
-        return
-    response = r.json()
-    print(response)
-    # get the first completion
-    try:
-        completion = response['choices'][0]['message']['content']
-    except KeyError:
-        print('Error: no completion found in response')
-        return
-
-    if len(completion) >= 2000:
-        completion = completion[:1996] + '...'
-
-    completion = completion.replace('\\n', '\n')
     # send the completion as a message in this channel
     await message.channel.send(completion)
     return
@@ -182,6 +223,12 @@ async def on_message(message):
     if message.channel.name not in bot_channels:
         return
 
+    # if message is in a DM, reply to it
+    if isinstance(message.channel, discord.DMChannel):
+        print("Received DM from user: " + str(message.author) + ", content: " + message.content)
+        #await reply_to_dm(message, dm_user_id)
+        return
+
     if message.content.startswith(bot_prefix + '('):
         try:
             middle_section = message.content.split('(', 1)[1].split(')', 1)[0]
@@ -192,5 +239,39 @@ async def on_message(message):
     elif message.content.startswith(bot_prefix):
         await handle_message(message, chatgpt_user_specified_middle_section)
         return
+
+
+async def reply_to_dm(message, middle_section):
+    prompt_string = chatgpt_prompt_prefix + middle_section + chatgpt_prompt_suffix
+
+last_message_time = None
+
+@tasks.loop(minutes=1)
+async def send_message_every_so_often():
+    if dm_user_id is None:
+        return
+    pacific_time = pytz.timezone('US/Pacific')
+    now = datetime.now(pacific_time)
+    global last_message_time
+    if time(dm_hour_to_notify) <= now.time() < time(dm_hour_to_notify + 1) and (last_message_time is None or last_message_time.date() < now.date()):
+        user_id_to_message = dm_user_id
+        print("Sending message now at time: " + str(now) + ", to user: " + str(user_id_to_message))
+        user = await client.fetch_user(user_id_to_message)
+        if user:
+            moods_array = json.loads(dm_moods_array)
+
+            # choose a random mood from the list above
+            random_mood = random.choice(moods_array)
+
+            full_prompt = dm_prompt_prefix + random_mood + dm_prompt_suffix
+            completion = get_chatgpt_response(full_prompt)
+
+            message_to_send = completion
+            await user.send(message_to_send)
+            last_message_time = now
+        else:
+            print("Could not find user")
+
+
 
 client.run(bot_token)
