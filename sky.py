@@ -220,13 +220,14 @@ async def on_message(message):
     if message.author == client.user:
         return
 
-    if message.channel.name not in bot_channels:
+    # check if message.channel has a "name" member
+    if hasattr(message.channel, 'name') and message.channel.name != None and message.channel.name not in bot_channels:
         return
 
     # if message is in a DM, reply to it
     if isinstance(message.channel, discord.DMChannel):
         print("Received DM from user: " + str(message.author) + ", content: " + message.content)
-        #await reply_to_dm(message, dm_user_id)
+        await reply_to_dm(message, dm_user_id)
         return
 
     if message.content.startswith(bot_prefix + '('):
@@ -242,7 +243,36 @@ async def on_message(message):
 
 
 async def reply_to_dm(message, middle_section):
-    prompt_string = chatgpt_prompt_prefix + middle_section + chatgpt_prompt_suffix
+    prompt_string = "You are " + chatgpt_user_specified_middle_section + ". Complete the following chat log\n\n"
+    # build context of last 5 messages
+    messages = []
+    async for m in message.channel.history(limit=20):
+        messages.append(m)
+    final_message_list = []
+    for message in messages:
+        name = message.author.name
+        if message.author == client.user:
+            name = "You"
+        m = name + ': ' + message.content
+        final_message_list.append(m)
+    final_message_list.reverse()
+    final_message = " \n ".join(final_message_list)
+
+    full_prompt = prompt_string + final_message + "\n You: "
+
+    completion = get_chatgpt_response(full_prompt)
+
+    message_to_send = completion
+    user_id_to_message = dm_user_id
+    pacific_time = pytz.timezone('US/Pacific')
+    now = datetime.now(pacific_time)
+    print("Replying with message: " + message_to_send + ", at time: " + str(now) + ", to user: " + str(user_id_to_message))
+    user = await client.fetch_user(user_id_to_message)
+    if user:
+        await user.send(message_to_send)
+    else:
+        print("Could not find user")
+    return
 
 last_message_time = None
 
@@ -255,7 +285,7 @@ async def send_message_every_so_often():
     global last_message_time
     if time(dm_hour_to_notify) <= now.time() < time(dm_hour_to_notify + 1) and (last_message_time is None or last_message_time.date() < now.date()):
         user_id_to_message = dm_user_id
-        print("Sending message now at time: " + str(now) + ", to user: " + str(user_id_to_message))
+
         user = await client.fetch_user(user_id_to_message)
         if user:
             moods_array = json.loads(dm_moods_array)
@@ -267,6 +297,7 @@ async def send_message_every_so_often():
             completion = get_chatgpt_response(full_prompt)
 
             message_to_send = completion
+            print("Sending message: " + message_to_send + ", at time: " + str(now) + ", to user: " + str(user_id_to_message))
             await user.send(message_to_send)
             last_message_time = now
         else:
