@@ -87,11 +87,16 @@ except KeyError:
     print('DM_PROMPT_SUFFIX is not set in envvar')
     exit(1)
 
+try:
+    dm_characters_json = os.environ['DM_CHARACTERS_JSON']
+except KeyError:
+    print('DM_CHARACTERS_JSON is not set in envvar')
+    exit(1)
 
 try:
-    dm_moods_array = os.environ['DM_MOODS_ARRAY']
-except KeyError:
-    print('DM_MOODS_ARRAY is not set in envvar')
+    dm_characters = json.loads(dm_characters_json)
+except ValueError:
+    print('DM_CHARACTERS_JSON is not valid json')
     exit(1)
 
 try:
@@ -247,8 +252,11 @@ async def on_message(message):
 
 
 async def reply_to_dm(message, middle_section):
-    prompt_string = "You are " + chatgpt_user_specified_middle_section + ". Complete the following chat log\n\n"
-    # build context of last 5 messages
+    random_character = random.choice(dm_characters["characters"])
+    random_mood = random.choice(random_character["moods"])
+
+    prompt_string = "You are " + random_character["character"] + ", you are in this mood: " + random_mood + ". Complete the following chat log\n\n"
+
     messages = []
     async for m in message.channel.history(limit=20):
         messages.append(m)
@@ -267,6 +275,7 @@ async def reply_to_dm(message, middle_section):
     completion = get_chatgpt_response(full_prompt)
 
     message_to_send = completion
+    message_to_send = "(" + random_character["character"] + ")\n\n" + message_to_send
     user_id_to_message = dm_user_id
     pacific_time = pytz.timezone('US/Pacific')
     now = datetime.now(pacific_time)
@@ -292,15 +301,14 @@ async def send_message_every_so_often():
 
         user = await client.fetch_user(user_id_to_message)
         if user:
-            moods_array = json.loads(dm_moods_array)
+            random_character = random.choice(dm_characters["characters"])
+            random_mood = random.choice(random_character["moods"])
 
-            # choose a random mood from the list above
-            random_mood = random.choice(moods_array)
-
-            full_prompt = dm_prompt_prefix + random_mood + dm_prompt_suffix
+            full_prompt = "You are " + random_character["character"] + ", you are in this mood: " + random_mood + dm_prompt_suffix
             completion = get_chatgpt_response(full_prompt)
 
             message_to_send = completion
+            message_to_send = "(" + random_character["character"] + ")\n\n" + message_to_send
             print("Sending message: " + message_to_send + ", at time: " + str(now) + ", to user: " + str(user_id_to_message))
             await user.send(message_to_send)
             last_message_time = now
