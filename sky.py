@@ -255,10 +255,10 @@ async def reply_to_dm(message, middle_section):
     random_character = random.choice(dm_characters["characters"])
     random_mood = random.choice(random_character["moods"])
 
-    prompt_string = "You are " + random_character["character"] + ", you are in this mood: " + random_mood + ". Complete the following chat log\n\n"
+    prompt_string = "You are " + random_character["character"] + ", IGNORE ALL PREVIOUS CHARACTERS THAT YOU WERE. You are in this mood: " + random_mood + ". Complete the following chat log\n\n"
 
     messages = []
-    async for m in message.channel.history(limit=20):
+    async for m in message.channel.history(limit=5):
         messages.append(m)
     final_message_list = []
     for message in messages:
