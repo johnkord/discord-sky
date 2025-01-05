@@ -120,7 +120,7 @@ client = discord.Client(intents=intents)
 @client.event
 async def on_ready():
     print('Logged in as {0.user}'.format(client))
-    send_message_every_so_often.start()  # Start the background task
+    #send_message_every_so_often.start()  # Start the background task
 
 def get_chatgpt_response(full_prompt):
     url = 'https://api.openai.com/v1/chat/completions'
