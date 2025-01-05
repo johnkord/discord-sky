@@ -222,6 +222,7 @@ async def handle_message(message, middle_section):
 
 @client.event
 async def on_message(message):
+    print(f"Received message from {message.author}: {message.content}")
     if message.author == client.user:
         return
 
