@@ -1,3 +1,6 @@
 .gitignore
 env.sh
 k8s/
+characters.json
+characters.json.b64
+character_moods.json

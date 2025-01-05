@@ -1,2 +1,5 @@
 env.sh
 k8s/discord-sky-secret.yaml
+characters.json
+characters.json.b64
+character_moods.json

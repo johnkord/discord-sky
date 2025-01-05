@@ -87,17 +87,17 @@ except KeyError:
     print('DM_PROMPT_SUFFIX is not set in envvar')
     exit(1)
 
-try:
-    dm_characters_json = os.environ['DM_CHARACTERS_JSON']
-except KeyError:
-    print('DM_CHARACTERS_JSON is not set in envvar')
-    exit(1)
+#try:
+#    dm_characters_json = os.environ['DM_CHARACTERS_JSON']
+#except KeyError:
+#    print('DM_CHARACTERS_JSON is not set in envvar')
+#    exit(1)
 
-try:
-    dm_characters = json.loads(dm_characters_json)
-except ValueError:
-    print('DM_CHARACTERS_JSON is not valid json')
-    exit(1)
+#try:
+#    dm_characters = json.loads(dm_characters_json)
+#except ValueError:
+#    print('DM_CHARACTERS_JSON is not valid json')
+#    exit(1)
 
 try:
     dm_user_id = os.environ['DM_USER_ID']
@@ -202,7 +202,7 @@ async def handle_message(message, middle_section):
         if message.content in messages_to_not_consider:
             continue
         message_length += len(m)
-        if message_length > 2000:
+        if message_length > 10000:
             break
         final_message_list.append(m)
     final_message_list.reverse()
@@ -230,14 +230,14 @@ async def on_message(message):
         return
 
     # if message is in a DM, reply to it
-    if isinstance(message.channel, discord.DMChannel):
-        print("Received DM from user: " + str(message.author) + ", content: " + message.content)
-        if dm_user_id != None and dm_user_id != '':
-            # if message is not from the DM user, ignore it
-            if message.author.id != dm_user_id:
-                return
-            await reply_to_dm(message, dm_user_id)
-        return
+    # if isinstance(message.channel, discord.DMChannel):
+    #     print("Received DM from user: " + str(message.author) + ", content: " + message.content)
+    #     if dm_user_id != None and dm_user_id != '':
+    #         # if message is not from the DM user, ignore it
+    #         if message.author.id != dm_user_id:
+    #             return
+    #         await reply_to_dm(message, dm_user_id)
+    #     return
 
     if message.content.startswith(bot_prefix + '('):
         try:
@@ -251,41 +251,41 @@ async def on_message(message):
         return
 
 
-async def reply_to_dm(message, middle_section):
-    random_character = random.choice(dm_characters["characters"])
-    random_mood = random.choice(random_character["moods"])
+# async def reply_to_dm(message, middle_section):
+#     random_character = random.choice(dm_characters["characters"])
+#     random_mood = random.choice(random_character["moods"])
 
-    prompt_string = "You are " + random_character["character"] + ", IGNORE ALL PREVIOUS CHARACTERS THAT YOU WERE. You are in this mood: " + random_mood + ". Complete the following chat log\n\n"
+#     prompt_string = "You are " + random_character["character"] + ", IGNORE ALL PREVIOUS CHARACTERS THAT YOU WERE. You are in this mood: " + random_mood + ". Complete the following chat log\n\n"
 
-    messages = []
-    async for m in message.channel.history(limit=5):
-        messages.append(m)
-    final_message_list = []
-    for message in messages:
-        name = message.author.name
-        if message.author == client.user:
-            name = "You"
-        m = name + ': ' + message.content
-        final_message_list.append(m)
-    final_message_list.reverse()
-    final_message = " \n ".join(final_message_list)
+#     messages = []
+#     async for m in message.channel.history(limit=5):
+#         messages.append(m)
+#     final_message_list = []
+#     for message in messages:
+#         name = message.author.name
+#         if message.author == client.user:
+#             name = "You"
+#         m = name + ': ' + message.content
+#         final_message_list.append(m)
+#     final_message_list.reverse()
+#     final_message = " \n ".join(final_message_list)
 
-    full_prompt = prompt_string + final_message + "\n You: "
+#     full_prompt = prompt_string + final_message + "\n You: "
 
-    completion = get_chatgpt_response(full_prompt)
+#     completion = get_chatgpt_response(full_prompt)
 
-    message_to_send = completion
-    message_to_send = "(" + random_character["character"] + ")\n\n" + message_to_send
-    user_id_to_message = dm_user_id
-    pacific_time = pytz.timezone('US/Pacific')
-    now = datetime.now(pacific_time)
-    print("Replying with message: " + message_to_send + ", at time: " + str(now) + ", to user: " + str(user_id_to_message))
-    user = await client.fetch_user(user_id_to_message)
-    if user:
-        await user.send(message_to_send)
-    else:
-        print("Could not find user")
-    return
+#     message_to_send = completion
+#     message_to_send = "(" + random_character["character"] + ")\n\n" + message_to_send
+#     user_id_to_message = dm_user_id
+#     pacific_time = pytz.timezone('US/Pacific')
+#     now = datetime.now(pacific_time)
+#     print("Replying with message: " + message_to_send + ", at time: " + str(now) + ", to user: " + str(user_id_to_message))
+#     user = await client.fetch_user(user_id_to_message)
+#     if user:
+#         await user.send(message_to_send)
+#     else:
+#         print("Could not find user")
+#     return
 
 last_message_time = None
 
