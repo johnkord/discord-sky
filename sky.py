@@ -75,17 +75,17 @@ except KeyError:
     print('CHATGPT_PROMPT_SUFFIX is not set in envvar')
     exit(1)
 
-try:
-    dm_prompt_prefix = os.environ['DM_PROMPT_PREFIX']
-except KeyError:
-    print('DM_PROMPT_PREFIX is not set in envvar')
-    exit(1)
+# try:
+#     dm_prompt_prefix = os.environ['DM_PROMPT_PREFIX']
+# except KeyError:
+#     print('DM_PROMPT_PREFIX is not set in envvar')
+#     exit(1)
 
-try:
-    dm_prompt_suffix = os.environ['DM_PROMPT_SUFFIX']
-except KeyError:
-    print('DM_PROMPT_SUFFIX is not set in envvar')
-    exit(1)
+# try:
+#     dm_prompt_suffix = os.environ['DM_PROMPT_SUFFIX']
+# except KeyError:
+#     print('DM_PROMPT_SUFFIX is not set in envvar')
+#     exit(1)
 
 #try:
 #    dm_characters_json = os.environ['DM_CHARACTERS_JSON']
@@ -289,31 +289,31 @@ async def on_message(message):
 
 last_message_time = None
 
-@tasks.loop(minutes=1)
-async def send_message_every_so_often():
-    if dm_user_id is None:
-        return
-    pacific_time = pytz.timezone('US/Pacific')
-    now = datetime.now(pacific_time)
-    global last_message_time
-    if time(dm_hour_to_notify) <= now.time() < time(dm_hour_to_notify + 1) and (last_message_time is None or last_message_time.date() < now.date()):
-        user_id_to_message = dm_user_id
+# @tasks.loop(minutes=1)
+# async def send_message_every_so_often():
+#     if dm_user_id is None:
+#         return
+#     pacific_time = pytz.timezone('US/Pacific')
+#     now = datetime.now(pacific_time)
+#     global last_message_time
+#     if time(dm_hour_to_notify) <= now.time() < time(dm_hour_to_notify + 1) and (last_message_time is None or last_message_time.date() < now.date()):
+#         user_id_to_message = dm_user_id
 
-        user = await client.fetch_user(user_id_to_message)
-        if user:
-            random_character = random.choice(dm_characters["characters"])
-            random_mood = random.choice(random_character["moods"])
+#         user = await client.fetch_user(user_id_to_message)
+#         if user:
+#             random_character = random.choice(dm_characters["characters"])
+#             random_mood = random.choice(random_character["moods"])
 
-            full_prompt = "You are " + random_character["character"] + ", you are in this mood: " + random_mood + dm_prompt_suffix
-            completion = get_chatgpt_response(full_prompt)
+#             full_prompt = "You are " + random_character["character"] + ", you are in this mood: " + random_mood + dm_prompt_suffix
+#             completion = get_chatgpt_response(full_prompt)
 
-            message_to_send = completion
-            message_to_send = "(" + random_character["character"] + ")\n\n" + message_to_send
-            print("Sending message: " + message_to_send + ", at time: " + str(now) + ", to user: " + str(user_id_to_message))
-            await user.send(message_to_send)
-            last_message_time = now
-        else:
-            print("Could not find user")
+#             message_to_send = completion
+#             message_to_send = "(" + random_character["character"] + ")\n\n" + message_to_send
+#             print("Sending message: " + message_to_send + ", at time: " + str(now) + ", to user: " + str(user_id_to_message))
+#             await user.send(message_to_send)
+#             last_message_time = now
+#         else:
+#             print("Could not find user")
 
 
 
