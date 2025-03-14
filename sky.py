@@ -120,7 +120,7 @@ client = discord.Client(intents=intents)
 @client.event
 async def on_ready():
     print('Logged in as {0.user}'.format(client))
-    #send_message_every_so_often.start()  # Start the background task
+    send_message_every_so_often.start()
 
 def get_chatgpt_response(full_prompt):
     url = 'https://api.openai.com/v1/chat/completions'
@@ -315,6 +315,62 @@ last_message_time = None
 #             last_message_time = now
 #         else:
 #             print("Could not find user")
+
+
+TARGET_USER_ID = os.environ['DM_USER_ID']
+URL_TO_FETCH = os.environ['URL_TO_FETCH']
+MINUTES_BETWEEN_MESSAGES = os.environ['MINUTES_BETWEEN_MESSAGES']
+from bs4 import BeautifulSoup
+
+@tasks.loop(minutes=int(MINUTES_BETWEEN_MESSAGES))
+async def send_message_every_so_often():
+    response = requests.get(URL_TO_FETCH)
+    response.raise_for_status()
+    html_content = response.text
+
+    # 2. Parse the HTML with BeautifulSoup
+    soup = BeautifulSoup(html_content, "html.parser")
+
+    # 3. Extract the <div id="job-list-section"> content
+    job_list_section = soup.find("div", id="job-list-section")
+    if not job_list_section:
+        message_content = "No job-list-section found in the HTML."
+    else:
+        # 4. Find all immediate child <div> elements
+        job_divs = job_list_section.find_all("div", recursive=False)
+
+        # 5. For each <div>, extract the job title and shift type
+        job_lines = []
+        for job_div in job_divs:
+            # Job title (from <h3>)
+            h3_tag = job_div.find("h3")
+            job_title = h3_tag.get_text(strip=True) if h3_tag else "Unknown Title"
+
+            # Shift type (from <span class="shift"><dt>Shift:</dt><dd>Some Shift</dd></span>)
+            shift_span = job_div.find("span", class_="shift")
+            if shift_span:
+                shift_dd = shift_span.find("dd")
+                shift_type = shift_dd.get_text(strip=True) if shift_dd else "N/A"
+            else:
+                shift_type = "N/A"
+
+            # Create a single line per job
+            job_lines.append(f"{job_title} | Shift: {shift_type}")
+
+        # 6. Build the final message string
+        if job_lines:
+            message_content = "Job Titles & Shift Types:\n" + "\n".join(job_lines)
+        else:
+            message_content = "No jobs found in the job-list-section."
+
+    # 7. Send the message via DM
+    user = await client.fetch_user(TARGET_USER_ID)
+    if user:
+        await user.send(message_content)
+        print("Message sent successfully.")
+    else:
+        print("Could not find the user with the given ID.")
+
 
 
 

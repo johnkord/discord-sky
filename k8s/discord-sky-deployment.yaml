@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
       - name: sky
-        image: johnkordich/sky:0.3.6
+        image: johnkordich/sky:0.3.8
         envFrom:
         - secretRef:
             name: sky-secrets
