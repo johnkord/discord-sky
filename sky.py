@@ -112,6 +112,11 @@ except KeyError:
     print('DM_HOUR_TO_NOTIFY is not set in envvar')
     exit(1)
 
+try:
+    URL_TO_FETCH2 = os.environ['URL_TO_FETCH2']
+except KeyError:
+    print('URL_TO_FETCH2 is not set in envvar')
+    exit(1)
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -345,6 +350,8 @@ async def send_message_every_so_often():
             # Job title (from <h3>)
             h3_tag = job_div.find("h3")
             job_title = h3_tag.get_text(strip=True) if h3_tag else "Unknown Title"
+            if "Day" in job_title:
+                job_title = f"**{job_title}**"
 
             # Shift type (from <span class="shift"><dt>Shift:</dt><dd>Some Shift</dd></span>)
             shift_span = job_div.find("span", class_="shift")
@@ -353,6 +360,8 @@ async def send_message_every_so_often():
                 shift_type = shift_dd.get_text(strip=True) if shift_dd else "N/A"
             else:
                 shift_type = "N/A"
+            if "Day" in shift_type:
+                shift_type = f"**{shift_type}**"
 
             # Create a single line per job
             job_lines.append(f"{job_title} | Shift: {shift_type}")
@@ -371,7 +380,40 @@ async def send_message_every_so_often():
     else:
         print("Could not find the user with the given ID.")
 
+    # Additional fetch for Critical Care/ICU jobs
+    response2 = requests.get(URL_TO_FETCH2)
+    response2.raise_for_status()
+    html_content2 = response2.text
+    soup2 = BeautifulSoup(html_content2, "html.parser")
+    job_list_section2 = soup2.find("div", id="job-list-section")
+    if not job_list_section2:
+        cc_message_content = "No job-list-section found in the second HTML."
+    else:
+        job_divs2 = job_list_section2.find_all("div", recursive=False)
+        critical_care_lines = []
+        for job_div2 in job_divs2:
+            h3_tag2 = job_div2.find("h3")
+            job_title2 = h3_tag2.get_text(strip=True) if h3_tag2 else "Unknown Title"
+            if "icu" in job_title2.lower() or "critical care" in job_title2.lower():
+                if "Day" in job_title2:
+                    job_title2 = f"**{job_title2}**"
+                shift_span2 = job_div2.find("span", class_="shift")
+                if shift_span2:
+                    shift_dd2 = shift_span2.find("dd")
+                    shift_type2 = shift_dd2.get_text(strip=True) if shift_dd2 else "N/A"
+                else:
+                    shift_type2 = "N/A"
+                if "Day" in shift_type2:
+                    shift_type2 = f"**{shift_type2}**"
+                critical_care_lines.append(f"{job_title2} | Shift: {shift_type2}")
+        if critical_care_lines:
+            cc_message_content = "Critical Care/ICU Jobs:\n" + "\n".join(critical_care_lines)
+        else:
+            cc_message_content = "No Critical Care/ICU jobs found."
 
+    if user:
+        await user.send(cc_message_content)
+        print("Critical Care/ICU message sent successfully.")
 
 
 client.run(bot_token)
