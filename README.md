@@ -14,3 +14,44 @@ When a user specifies the bot prefix (which is the default `!react(USER SPECIFIE
     - You can run `./start_docker.sh` to pull and run the pre-built image.
     - You can run `./stop_docker.sh` to stop/remove the container from the step above
 - You can run this in Kubernetes, check the "k8s" directory. Please replace the secrets in `discord-sky-secret-template.yaml` similarly to `env_template.sh` above.
+
+## Development
+
+### Testing
+Discord-Sky uses pytest for unit testing. To run the tests:
+
+```
+pip install -r requirements-dev.txt
+pytest tests/ -v
+```
+
+To run tests with coverage:
+
+```
+pytest tests/ -v --cov=sky
+```
+
+### Linting
+We use flake8 for code linting:
+
+```
+pip install -r requirements-dev.txt
+flake8 sky.py
+```
+
+## CI/CD Pipeline
+
+Discord-Sky uses GitHub Actions for continuous integration and delivery. The following workflows are available:
+
+1. **CI** - Runs linting and tests on every push and pull request
+2. **Docker Build** - Builds a Docker image on push to main branch or release tags
+3. **Docker Publish** - Builds and publishes the Docker image to Docker Hub when a new tag is created
+
+To publish a new version:
+1. Create and push a new tag (e.g., `git tag v1.0.0 && git push origin v1.0.0`)
+2. The Docker Publish workflow will automatically build and push the image to Docker Hub
+
+### Required Secrets for CI/CD
+For the Docker Publish workflow to work, you need to set up the following secrets in your GitHub repository:
+- `DOCKERHUB_USERNAME`: Your Docker Hub username
+- `DOCKERHUB_TOKEN`: Your Docker Hub access token
