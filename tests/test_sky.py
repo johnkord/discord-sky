@@ -60,7 +60,7 @@ class TestChatGPTResponse(unittest.TestCase):
         mock_post.return_value = mock_response
         
         # Test the function
-        with patch.dict('os.environ', {
+        with patch.dict(os.environ, {
             'CHATGPT_API_KEY': 'test-key',
             'CHATGPT_MODEL': 'test-model'
         }):
