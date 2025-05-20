@@ -1,0 +1,32 @@
+name: Docker Build
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+        
+      - name: Build and export
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          tags: discord-sky:latest
+          outputs: type=docker,dest=/tmp/discord-sky.tar
+          
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: discord-sky-image
+          path: /tmp/discord-sky.tar
+          retention-days: 1
