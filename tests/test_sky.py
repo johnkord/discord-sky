@@ -132,13 +132,10 @@ class TestChatGPTResponse(unittest.TestCase):
         importlib.reload(sky)
         response = sky.get_chatgpt_response("Test prompt")
         
-        # Verify the response is None for an error
-        self.assertIsNone(response)
+        # Verify the response is an error message for API errors
+        self.assertTrue(response.startswith("Sorry, I encountered an error"))
+        self.assertIn("400", response)
         mock_post.assert_called_once()
-
-
-if __name__ == '__main__':
-    unittest.main()
 
 
 if __name__ == '__main__':

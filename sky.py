@@ -134,7 +134,7 @@ def get_chatgpt_response(full_prompt):
     if r.status_code != 200:
         print('Error: status code ' + str(r.status_code))
         print(r.text)
-        return
+        return f"Sorry, I encountered an error (status code {r.status_code}). Please try again later."
     response = r.json()
     print(response)
     # get the first completion
@@ -142,7 +142,7 @@ def get_chatgpt_response(full_prompt):
         completion = response['choices'][0]['message']['content']
     except KeyError:
         print('Error: no completion found in response')
-        return
+        return "Sorry, I encountered an error processing the response. Please try again later."
 
     if len(completion) >= 2000:
         completion = completion[:1996] + '...'
@@ -180,7 +180,6 @@ async def handle_message(message, middle_section):
                 print("Found message that appears in bot message: " + m.content + " *** " + str(curval) + " -> " + str(messages_that_appear_in_bot_message_counter[m.content]))
 
     # order of messages comes in newest to oldest
-    messages_to_not_consider = []
     for m in messages:
         # if m.content is in messages_counter and is greater than limit, delete m from messages
         if m.content in messages_that_appear_in_bot_message_counter:
