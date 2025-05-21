@@ -3,6 +3,7 @@ import os
 import time
 import requests
 import json
+import io
 from discord.ext import tasks
 from datetime import datetime, time, timedelta
 import pytz
@@ -112,6 +113,18 @@ except KeyError:
     print('DM_HOUR_TO_NOTIFY is not set in envvar')
     exit(1)
 
+try:
+    openai_image_model = os.environ['OPENAI_IMAGE_MODEL']
+except KeyError:
+    openai_image_model = 'dall-e-3'
+    print('OPENAI_IMAGE_MODEL is not set in envvar, using default: ' + openai_image_model)
+
+try:
+    openai_image_size = os.environ['OPENAI_IMAGE_SIZE']
+except KeyError:
+    openai_image_size = '1024x1024'
+    print('OPENAI_IMAGE_SIZE is not set in envvar, using default: ' + openai_image_size)
+
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -149,6 +162,58 @@ def get_chatgpt_response(full_prompt):
 
     completion = completion.replace('\\n', '\n')
     return completion
+
+async def download_image(url):
+    """Download an image from a URL and return the bytes"""
+    try:
+        response = requests.get(url)
+        if response.status_code != 200:
+            print(f"Error downloading image: status code {response.status_code}")
+            return None
+        return response.content
+    except Exception as e:
+        print(f"Error downloading image: {str(e)}")
+        return None
+
+def generate_image_from_image(image_url, prompt):
+    """Generate a new image based on an existing image and a text prompt"""
+    try:
+        url = 'https://api.openai.com/v1/images/generations'
+        headers = {'Authorization': 'Bearer ' + chatgpt_api_key}
+        
+        data = {
+            "model": openai_image_model,
+            "prompt": prompt,
+            "n": 1,
+            "size": openai_image_size,
+            "response_format": "url"
+        }
+        
+        # If image URL is provided, include it in the reference_image_id field
+        if image_url:
+            data["reference_image"] = image_url
+        
+        print("Image generation data:", data)
+        r = requests.post(url, headers=headers, json=data)
+        
+        if r.status_code != 200:
+            print(f'Error generating image: status code {r.status_code}')
+            print(r.text)
+            return None, f"Sorry, I encountered an error generating the image (status code {r.status_code})."
+        
+        response = r.json()
+        print("Image generation response:", response)
+        
+        try:
+            image_url = response['data'][0]['url']
+            return image_url, None
+        except KeyError:
+            print('Error: no image URL found in response')
+            return None, "Sorry, I encountered an error processing the image generation response."
+            
+    except Exception as e:
+        print(f"Exception during image generation: {str(e)}")
+        return None, f"Sorry, an unexpected error occurred: {str(e)}"
 
 async def handle_message(message, middle_section):
     prompt_string = chatgpt_prompt_prefix + middle_section + chatgpt_prompt_suffix
@@ -239,6 +304,15 @@ async def on_message(message):
     #         await reply_to_dm(message, dm_user_id)
     #     return
 
+    # Check if message has image attachments and contains text
+    if message.attachments and len(message.attachments) > 0 and message.content:
+        for attachment in message.attachments:
+            # Check if it's an image
+            if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+                await process_image_generation(message, attachment.url)
+                return
+
+    # Process regular text commands
     if message.content.startswith(bot_prefix + '('):
         try:
             middle_section = message.content.split('(', 1)[1].split(')', 1)[0]
@@ -249,6 +323,44 @@ async def on_message(message):
     elif message.content.startswith(bot_prefix):
         await handle_message(message, chatgpt_user_specified_middle_section)
         return
+
+async def process_image_generation(message, image_url):
+    """Process a message with an image and generate a new image based on the text prompt"""
+    # Get the text prompt from the message content
+    prompt = message.content.strip()
+    
+    # If prompt is too short, send an error message
+    if len(prompt) < 3:
+        await message.channel.send("Please provide a more detailed description for the image generation.")
+        return
+    
+    # Send a message to indicate we're processing
+    processing_msg = await message.channel.send("Generating image based on your prompt... This may take a moment.")
+    
+    try:
+        # Generate a new image based on the input image and prompt
+        generated_image_url, error_message = generate_image_from_image(image_url, prompt)
+        
+        if error_message:
+            await message.channel.send(error_message)
+            return
+        
+        # Download the generated image
+        image_data = await download_image(generated_image_url)
+        if not image_data:
+            await message.channel.send("Sorry, I couldn't download the generated image.")
+            return
+        
+        # Send the generated image back to Discord
+        file = discord.File(io.BytesIO(image_data), filename="generated_image.png")
+        await message.channel.send(f"Generated image based on: \"{prompt}\"", file=file)
+    
+    except Exception as e:
+        await message.channel.send(f"An error occurred during image generation: {str(e)}")
+    
+    finally:
+        # Delete the processing message
+        await processing_msg.delete()
 
 
 # async def reply_to_dm(message, middle_section):

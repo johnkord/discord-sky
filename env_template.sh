@@ -12,3 +12,5 @@ export DM_PROMPT_SUFFIX="'. Write a message and keep the message pithy."
 export DM_MOODS_ARRAY='["happy", "sad"]'
 export DM_USER_ID=""
 export DM_HOUR_TO_NOTIFY="7"
+export OPENAI_IMAGE_MODEL="dall-e-3"
+export OPENAI_IMAGE_SIZE="1024x1024"
