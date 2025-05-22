@@ -50,12 +50,21 @@ Discord-Sky uses GitHub Actions for continuous integration and delivery. The fol
 1. **CI** - Runs linting and tests on every push and pull request
 2. **Docker Build** - Builds a Docker image on push to main branch or release tags
 3. **Docker Publish** - Builds and publishes the Docker image to Docker Hub when a new tag is created
+4. **Deploy** - Builds and pushes a Docker image, then deploys to a Kubernetes cluster when code is merged to the main branch
 
 To publish a new version:
 1. Create and push a new tag (e.g., `git tag v1.0.0 && git push origin v1.0.0`)
 2. The Docker Publish workflow will automatically build and push the image to Docker Hub
 
+Continuous Deployment:
+- When code is merged to the main branch, it automatically triggers the deployment pipeline
+- The latest code is built as a Docker image and pushed to Docker Hub
+- The application is then deployed to the configured Kubernetes cluster
+
 ### Required Secrets for CI/CD
 For the Docker Publish workflow to work, you need to set up the following secrets in your GitHub repository:
 - `DOCKERHUB_USERNAME`: Your Docker Hub username
 - `DOCKERHUB_TOKEN`: Your Docker Hub access token
+
+For the Deploy workflow to work, you also need:
+- `KUBE_CONFIG`: Base64-encoded Kubernetes configuration file (kubeconfig)
