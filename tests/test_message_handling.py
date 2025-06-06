@@ -24,7 +24,10 @@ sys.modules['discord.ext.tasks'] = MagicMock()
     "CHATGPT_PROMPT_SUFFIX": ", respond to the following:",
     "CHATGPT_USER_SPECIFIED_MIDDLE_SECTION": "Test Bot",
     "DM_HOUR_TO_NOTIFY": "7",
-    "DM_USER_ID": "123456789"
+    "DM_USER_ID": "123456789",
+    "URL_TO_FETCH2": "https://example.com/test-url",
+    "URL_TO_FETCH": "https://example.com/test-url",
+    "MINUTES_BETWEEN_MESSAGES": "60"
 }, clear=False)
 class TestMessageHandling(unittest.TestCase):
     """Test the Discord message handling functions"""
