@@ -27,7 +27,10 @@ sys.modules['discord.ext.tasks'] = MagicMock()
     "DM_HOUR_TO_NOTIFY": "7",
     "DM_USER_ID": "123456789",
     "OPENAI_IMAGE_MODEL": "test-image-model",
-    "OPENAI_IMAGE_SIZE": "1024x1024"
+    "OPENAI_IMAGE_SIZE": "1024x1024",
+    "URL_TO_FETCH2": "https://example.com/test-url",
+    "URL_TO_FETCH": "https://example.com/test-url",
+    "MINUTES_BETWEEN_MESSAGES": "60"
 }, clear=False)
 class TestImageGeneration(unittest.TestCase):
     """Test the image generation functionality"""

@@ -25,12 +25,15 @@ sys.modules['discord.ext.tasks'] = MagicMock()
     "CHATGPT_PROMPT_SUFFIX": ", respond to the following:",
     "CHATGPT_USER_SPECIFIED_MIDDLE_SECTION": "Test Bot",
     "DM_HOUR_TO_NOTIFY": "7",
-    "DM_USER_ID": "123456789"
+    "DM_USER_ID": "123456789",
+    "URL_TO_FETCH2": "https://example.com/test-url",
+    "URL_TO_FETCH": "https://example.com/test-url",
+    "MINUTES_BETWEEN_MESSAGES": "60"
 }, clear=False)
 class TestSkyEnvironmentVariables(unittest.TestCase):
     """Test the environment variable handling in sky.py"""
 
-    @patch.dict(os.environ, {"BOT_CHANNELS": "test-channel"})
+    @patch.dict(os.environ, {"BOT_CHANNELS": "test-channel", "URL_TO_FETCH2": "https://example.com/test-url", "URL_TO_FETCH": "https://example.com/test-url", "MINUTES_BETWEEN_MESSAGES": "60"})
     def test_bot_channels_from_env(self):
         """Test that BOT_CHANNELS is correctly read from environment variables."""
         # We need to import inside the test to ensure patched environment variables are used
@@ -51,7 +54,10 @@ class TestSkyEnvironmentVariables(unittest.TestCase):
         "CHATGPT_PROMPT_SUFFIX": ", respond to the following:",
         "CHATGPT_USER_SPECIFIED_MIDDLE_SECTION": "Test Bot",
         "DM_HOUR_TO_NOTIFY": "7",
-        "DM_USER_ID": "123456789"
+        "DM_USER_ID": "123456789",
+        "URL_TO_FETCH2": "https://example.com/test-url",
+        "URL_TO_FETCH": "https://example.com/test-url",
+        "MINUTES_BETWEEN_MESSAGES": "60"
     })
     def test_bot_channels_default(self):
         """Test that BOT_CHANNELS has a default value when not in environment."""
@@ -60,7 +66,7 @@ class TestSkyEnvironmentVariables(unittest.TestCase):
         
         self.assertEqual(sky.bot_channels, ["bot-test", "chat"])
     
-    @patch.dict(os.environ, {"BOT_PREFIX": "!test"})
+    @patch.dict(os.environ, {"BOT_PREFIX": "!test", "URL_TO_FETCH2": "https://example.com/test-url", "URL_TO_FETCH": "https://example.com/test-url", "MINUTES_BETWEEN_MESSAGES": "60"})
     def test_bot_prefix_from_env(self):
         """Test that BOT_PREFIX is correctly read from environment variables."""
         import sky
@@ -84,7 +90,10 @@ class TestChatGPTResponse(unittest.TestCase):
         "CHATGPT_PROMPT_SUFFIX": ", respond to the following:",
         "CHATGPT_USER_SPECIFIED_MIDDLE_SECTION": "Test Bot",
         "DM_HOUR_TO_NOTIFY": "7",
-        "DM_USER_ID": "123456789"
+        "DM_USER_ID": "123456789",
+        "URL_TO_FETCH2": "https://example.com/test-url",
+        "URL_TO_FETCH": "https://example.com/test-url",
+        "MINUTES_BETWEEN_MESSAGES": "60"
     })
     def test_get_chatgpt_response_success(self, mock_post):
         """Test the get_chatgpt_response function with a successful API response."""
@@ -117,7 +126,10 @@ class TestChatGPTResponse(unittest.TestCase):
         "CHATGPT_PROMPT_SUFFIX": ", respond to the following:",
         "CHATGPT_USER_SPECIFIED_MIDDLE_SECTION": "Test Bot",
         "DM_HOUR_TO_NOTIFY": "7",
-        "DM_USER_ID": "123456789"
+        "DM_USER_ID": "123456789",
+        "URL_TO_FETCH2": "https://example.com/test-url",
+        "URL_TO_FETCH": "https://example.com/test-url",
+        "MINUTES_BETWEEN_MESSAGES": "60"
     })
     def test_get_chatgpt_response_error(self, mock_post):
         """Test the get_chatgpt_response function with an error from the API."""
