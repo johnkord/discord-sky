@@ -4,6 +4,27 @@ characters.json
 characters.json.b64
 character_moods.json
 
+# .NET / dotnet
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.csproj.user
+TestResults/
+*.nupkg
+*.snupkg
+*.psess
+*.vsp
+*.vspx
+*.pidb
+*.svclog
+*.dbmdl
+*.coveragexml
+appsettings.Development.json
+appsettings.*.local.json
+*.generated.cs
+
 # Python
 __pycache__/
 *.py[cod]
