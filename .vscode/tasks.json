@@ -1,0 +1,52 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "dotnet: restore",
+      "type": "process",
+      "command": "dotnet",
+      "args": [
+        "restore"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "dotnet: build",
+      "type": "process",
+      "command": "dotnet",
+      "args": [
+        "build",
+        "src/DiscordSky.Bot/DiscordSky.Bot.csproj"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "dotnet: run Discord Sky Bot",
+      "type": "process",
+      "command": "dotnet",
+      "args": [
+        "run",
+        "--project",
+        "src/DiscordSky.Bot/DiscordSky.Bot.csproj"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "DOTNET_ENVIRONMENT": "Development"
+        }
+      },
+      "problemMatcher": "$msCompile",
+      "group": "none"
+    }
+  ]
+}

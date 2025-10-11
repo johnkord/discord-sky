@@ -1,0 +1,18 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+  "name": ".NET Launch (Discord Sky Bot)",
+  "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "dotnet: build",
+      "program": "${workspaceFolder}/src/DiscordSky.Bot/bin/Debug/net8.0/DiscordSky.Bot.dll",
+      "args": [],
+      "cwd": "${workspaceFolder}/src/DiscordSky.Bot",
+      "env": {
+        "DOTNET_ENVIRONMENT": "Development"
+      },
+      "console": "integratedTerminal"
+    }
+  ]
+}
