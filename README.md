@@ -1,8 +1,30 @@
 # Discord-Sky
 ## Summary
-This is a silly discord bot that will listen for a bot command, take in context from the chat, generate a ChatGPT prompt based on: (a static PREFIX, a chat-specified middle section, and a static SUFFIX) then respond as a chat message in that with the completion from ChatGPT.
+Discord Sky is a modular Discord agent built around a lightweight plugin system. Each plugin hooks into the shared lifecycle to compose richer behaviour without tangled event handlers. The default bundle ships with:
 
-The bot also supports image generation based on posted images and text prompts.
+- **Chat plugin** – turns prefixed chat into OpenAI conversations using the channel history.
+- **Image plugin** – watches for text + image combinations and calls OpenAI's image generation pipeline.
+- **Notifier plugin** – optionally scrapes configured job boards and DMs curated summaries on a schedule.
+
+## Architecture
+The entrypoint (`discord_sky.main`) wires the shared HTTP session, creates a `BotAgent`, and registers the plugins it needs. Plugins extend a tiny base class with lifecycle hooks:
+
+1. `on_loaded` – prepare resources when the agent starts.
+2. `on_ready` – run once Discord confirms the connection.
+3. `handle_message` – decide whether and how to respond to each message.
+4. `on_shutdown` – release background tasks cleanly.
+
+This separation keeps each capability independent while still sharing transport, configuration, and logging.
+
+### Context pipeline
+
+OpenAI calls are prepared through `ConversationContextBuilder`, which selects the relevant channel history and any registered tool outputs. The builder exposes:
+
+- configurable history character budgets and message filters via `Settings`.
+- `add_tool_provider` hooks for attaching domain-specific tool results (search, retrieval, etc.).
+- `render_prompt()` on the resulting `ConversationContext` to gather the final string payload sent to the API.
+
+This modular layer keeps the logic for “which messages and artefacts reach OpenAI” in one place, making future tool integrations straightforward.
 
 ## How to use
 Please refer to `env_template.sh` to create your own `env.sh` file by copying `env_template.sh` to `env.sh` and then modify it fill in defaults and suit your needs. You will need a ChatGPT API account (which costs money per token). You will also need to create a Discord token for a bot.
@@ -13,11 +35,23 @@ When a user specifies the bot prefix (which is the default `!react(USER SPECIFIE
 Additionally, when a user posts an image with a text description, the bot will use the image and text to generate a new image using OpenAI's DALL-E model and post it to the chat channel.
 
 ### Running the bot
-- Run `python3 run_sky.py` to run the bot locally.
+- Run `./run_sky.sh` (after creating `env.sh`) to launch the bot locally. The script now executes `python -m discord_sky.main`, which wires the modular services together.
 - The latest version of this bot has already been built into a docker image and is available for use at https://hub.docker.com/repository/docker/johnkordich/sky/general
-    - You can run `./start_docker.sh` to pull and run the pre-built image.
+    - You can run `./start_docker.sh` to pull and run the pre-built image. Additional environment variables (such as image settings and notifier URLs) are now passed through.
     - You can run `./stop_docker.sh` to stop/remove the container from the step above
 - You can run this in Kubernetes, check the "k8s" directory. Please replace the secrets in `discord-sky-secret-template.yaml` similarly to `env_template.sh` above.
+
+### Configuration overview
+Configuration is powered by Pydantic. The required environment variables are unchanged from the legacy bot:
+
+- `BOT_TOKEN`, `BOT_PREFIX`, `BOT_CHANNELS`, `BOT_CONTEXT`, `BOT_MESSAGE_LIMIT`
+- `CHATGPT_API_KEY`, `CHATGPT_MODEL`, `CHATGPT_PROMPT_PREFIX`, `CHATGPT_PROMPT_SUFFIX`, `CHATGPT_USER_SPECIFIED_MIDDLE_SECTION`
+
+Optional variables introduce richer behaviour:
+
+- `OPENAI_IMAGE_MODEL`, `OPENAI_IMAGE_SIZE` – tune the image pipeline
+- `DM_USER_ID`, `MINUTES_BETWEEN_MESSAGES`, `URL_TO_FETCH`, `URL_TO_FETCH2` – enable the job notifier loop when all are provided
+- `HTTP_TIMEOUT_SECONDS` – customise outbound HTTP timeouts
 
 ## Development
 
@@ -32,7 +66,7 @@ pytest tests/ -v
 To run tests with coverage:
 
 ```
-pytest tests/ -v --cov=sky
+pytest tests/ -v --cov=discord_sky
 ```
 
 ### Linting

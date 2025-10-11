@@ -4,4 +4,4 @@ COPY ./requirements.txt /app
 RUN pip install --trusted-host pypi.python.org -r requirements.txt
 RUN apt update && apt install -y expect-dev
 COPY . /app
-CMD ["unbuffer", "python3", "sky.py"]
+CMD ["unbuffer", "python3", "-m", "discord_sky.main"]

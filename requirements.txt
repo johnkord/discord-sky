@@ -1,4 +1,5 @@
 discord
-requests
-pytz
+aiohttp
+pydantic
+pydantic-settings
 beautifulsoup4
