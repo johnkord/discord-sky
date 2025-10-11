@@ -1,5 +1,0 @@
-discord
-aiohttp
-pydantic
-pydantic-settings
-beautifulsoup4
