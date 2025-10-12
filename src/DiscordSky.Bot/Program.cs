@@ -4,7 +4,6 @@ using DiscordSky.Bot.Bot;
 using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Integrations.OpenAI;
 using DiscordSky.Bot.Orchestration;
-using DiscordSky.Bot.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
@@ -29,10 +28,6 @@ builder.Services.AddHttpClient<IOpenAiClient, OpenAiClient>();
 builder.Services.AddSingleton<SafetyFilter>();
 builder.Services.AddSingleton<ContextAggregator>();
 builder.Services.AddSingleton<CreativeOrchestrator>();
-builder.Services.AddSingleton<BitStarterService>();
-builder.Services.AddSingleton<GremlinStudioService>();
-builder.Services.AddSingleton<HeckleCycleService>();
-builder.Services.AddSingleton<MischiefQuestService>();
 builder.Services.AddHostedService<DiscordBotService>();
 
 var app = builder.Build();

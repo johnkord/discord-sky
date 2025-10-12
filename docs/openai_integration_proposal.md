@@ -1,7 +1,7 @@
 # Discord Sky Bot – OpenAI-Powered Creative Engine Proposal
 
 ## Overview
-- **Problem**: The bot maintains multiple bespoke content generators (`BitStarterService`, `GremlinStudioService`, `HeckleCycleService`, `MischiefQuestService`) that duplicate creative logic, are hard to extend, and lack shared context.
+- **Problem (historical)**: The bot originally maintained multiple bespoke content generators (`BitStarterService`, `GremlinStudioService`, `HeckleCycleService`, `MischiefQuestService`) that duplicated creative logic, were hard to extend, and lacked shared context. These have since been removed in favor of the unified orchestrator described below.
 - **Proposal**: Replace service-specific generators with a unified OpenAI integration that orchestrates chat completions, image generation, and tool calls using shared context (channel history, configuration, lightweight knowledge caches).
 - **Outcome**: Increase content quality and adaptability, reduce maintenance overhead, and unlock new interaction modes (multi-modal prompts, dynamic memory).
 
@@ -93,7 +93,7 @@
 - What cadence should we use to refresh pinned knowledge summaries and ensure they stay relevant?
 
 ## Appendix
-- **Legacy Services**: `BitStarterService`, `GremlinStudioService`, `HeckleCycleService`, `MischiefQuestService` (to be deprecated).
-- **Current Status**: Legacy services now delegate to the OpenAI Responses API for generation while preserving existing DTOs, allowing gradual migration of command handlers.
-- **Models**: `BitStarterRequest/Response`, `GremlinArtifact`, `HeckleResponse`, `MischiefQuest` remain as DTOs initially to reduce churn.
+- **Legacy Services**: `BitStarterService`, `GremlinStudioService`, `HeckleCycleService`, `MischiefQuestService` (fully retired; superseded by the Creative Orchestrator flow).
+- **Current Status**: All persona output flows route through the orchestrator and Discord conversation context; no separate legacy generators remain in code.
+- **Models**: `BitStarterRequest/Response`, `GremlinArtifact`, `HeckleResponse`, `MischiefQuest` were removed alongside their services once the orchestrator covered their functionality.
 - **Dependencies**: `OpenAI .NET SDK` or lightweight REST client; optional Azure Storage SDK for asset hosting.
