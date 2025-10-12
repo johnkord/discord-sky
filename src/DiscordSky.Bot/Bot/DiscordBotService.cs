@@ -1,9 +1,11 @@
 using Discord;
 using Discord.Commands;
 using Discord.WebSocket;
+using System;
+using System.Linq;
 using DiscordSky.Bot.Configuration;
-using DiscordSky.Bot.Models;
-using DiscordSky.Bot.Services;
+using DiscordSky.Bot.Models.Orchestration;
+using DiscordSky.Bot.Orchestration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -16,28 +18,20 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly ILogger<DiscordBotService> _logger;
     private readonly ChaosSettings _chaosSettings;
     private readonly BotOptions _options;
-    private readonly BitStarterService _bitStarter;
-    private readonly GremlinStudioService _gremlinStudio;
-    private readonly HeckleCycleService _heckleCycle;
-    private readonly MischiefQuestService _questService;
+    private readonly CreativeOrchestrator _orchestrator;
+    private const string CommandKeyword = "!sky";
 
     public DiscordBotService(
         DiscordSocketClient client,
         IOptions<BotOptions> options,
         ChaosSettings chaosSettings,
-        BitStarterService bitStarter,
-        GremlinStudioService gremlinStudio,
-        HeckleCycleService heckleCycle,
-        MischiefQuestService questService,
+        CreativeOrchestrator orchestrator,
         ILogger<DiscordBotService> logger)
     {
         _client = client;
         _options = options.Value;
         _chaosSettings = chaosSettings;
-        _bitStarter = bitStarter;
-        _gremlinStudio = gremlinStudio;
-        _heckleCycle = heckleCycle;
-        _questService = questService;
+        _orchestrator = orchestrator;
         _logger = logger;
     }
 
@@ -121,93 +115,80 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         var context = new SocketCommandContext(_client, message);
         var content = message.Content.Trim();
 
-        if (content.StartsWith("!chaos", StringComparison.OrdinalIgnoreCase))
+        if (content.StartsWith(CommandKeyword, StringComparison.OrdinalIgnoreCase))
         {
-            await HandleChaosAsync(context, content);
-        }
-        else if (content.StartsWith("!quest", StringComparison.OrdinalIgnoreCase))
-        {
-            await HandleQuestAsync(context);
-        }
-        else if (content.StartsWith("!heckle-done", StringComparison.OrdinalIgnoreCase))
-        {
-            await HandleHeckleDoneAsync(context);
-        }
-        else if (content.StartsWith("!heckle", StringComparison.OrdinalIgnoreCase))
-        {
-            await HandleHeckleAsync(context, content);
-        }
-        else if (content.StartsWith("!remix", StringComparison.OrdinalIgnoreCase))
-        {
-            await HandleRemixAsync(context, message);
+            await HandlePersonaAsync(context, content, message);
         }
     }
 
-    private async Task HandleChaosAsync(SocketCommandContext context, string content)
+    private async Task HandlePersonaAsync(SocketCommandContext context, string content, SocketUserMessage message)
     {
-        var topic = content.Length > 6 ? content[6..].Trim() : string.Empty;
-        if (string.IsNullOrWhiteSpace(topic))
+        var payload = content[CommandKeyword.Length..].TrimStart();
+        if (string.IsNullOrWhiteSpace(payload))
         {
-            await context.Channel.SendMessageAsync("Throw me a topic! Usage: !chaos <topic>");
+            await context.Channel.SendMessageAsync($"Usage: {CommandKeyword}(persona) [topic]");
             return;
         }
 
-        var participants = context.Channel is SocketTextChannel textChannel
-            ? textChannel.Users.Where(u => !u.IsBot).Select(u => u.DisplayName).Take(6).ToArray()
-            : new[] { context.User.Username };
-
-        var response = _bitStarter.Generate(new BitStarterRequest(topic, participants), _chaosSettings);
-        var payload = string.Join('\n', response.ScriptLines);
-
-        await context.Channel.SendMessageAsync($"**{response.Title}**\n{payload}\nTags: {string.Join(", ", response.MentionTags)}");
-    }
-
-    private async Task HandleQuestAsync(SocketCommandContext context)
-    {
-        var quest = _questService.DrawQuest(_chaosSettings);
-        var steps = string.Join("\n", quest.Steps.Select((step, index) => $"{index + 1}. {step}"));
-
-        await context.Channel.SendMessageAsync($"**{quest.Title}**\n{steps}\nReward: {quest.RewardKind} – {quest.RewardDescription}");
-    }
-
-    private async Task HandleHeckleAsync(SocketCommandContext context, string content)
-    {
-        var declaration = content.Length > 7 ? content[7..].Trim() : string.Empty;
-        if (string.IsNullOrWhiteSpace(declaration))
+        if (!payload.StartsWith('('))
         {
-            await context.Channel.SendMessageAsync("What are we nudging you about? Usage: !heckle <promise>");
+            await context.Channel.SendMessageAsync($"Usage: {CommandKeyword}(persona) [topic]");
             return;
         }
 
-        var trigger = new HeckleTrigger(context.User.Username, declaration, DateTimeOffset.UtcNow, Delivered: false);
-        var response = _heckleCycle.BuildResponse(trigger, _chaosSettings);
+        var closingParenthesisIndex = payload.IndexOf(')');
+        if (closingParenthesisIndex < 0)
+        {
+            await context.Channel.SendMessageAsync($"Usage: {CommandKeyword}(persona) [topic]");
+            return;
+        }
 
-        await context.Channel.SendMessageAsync($"{response.Reminder}\nNext poke at {response.NextNudgeAt:HH:mm} UTC.");
-        await context.Channel.SendMessageAsync($"When you're done, type `!heckle-done` so I can drop the celebration.");
+        var persona = payload[1..closingParenthesisIndex].Trim();
+        if (string.IsNullOrWhiteSpace(persona))
+        {
+            await context.Channel.SendMessageAsync($"Usage: {CommandKeyword}(persona) [topic]");
+            return;
+        }
+
+        var remainder = payload[(closingParenthesisIndex + 1)..].Trim();
+        string? topic = string.IsNullOrWhiteSpace(remainder) ? null : remainder;
+
+        if (message.Attachments.Count > 0)
+        {
+            var attachmentSummary = string.Join(", ", message.Attachments.Select(a => a.Filename));
+            var attachmentLine = $"Attachments shared: {attachmentSummary}";
+            topic = string.IsNullOrWhiteSpace(topic)
+                ? attachmentLine
+                : $"{topic}\n\n{attachmentLine}";
+        }
+
+        await context.Channel.TriggerTypingAsync();
+
+        var request = new CreativeRequest(
+            persona,
+            topic,
+            GetDisplayName(context.User),
+            context.User.Id,
+            context.Channel.Id,
+            (context.Guild as SocketGuild)?.Id,
+            DateTimeOffset.UtcNow);
+
+        var result = await _orchestrator.ExecuteAsync(request, context, CancellationToken.None);
+        var reply = string.IsNullOrWhiteSpace(result.PrimaryMessage)
+            ? $"{persona} seems momentarily speechless."
+            : result.PrimaryMessage;
+
+        await context.Channel.SendMessageAsync(reply);
     }
 
-    private async Task HandleRemixAsync(SocketCommandContext context, SocketUserMessage message)
+    private static string GetDisplayName(SocketUser user)
     {
-        var seed = message.Content.Length > 6 ? message.Content[6..].Trim() : "server chaos";
-        var attachments = message.Attachments.Select(a => a.Filename).ToArray();
+        if (user is SocketGuildUser guildUser)
+        {
+            return guildUser.DisplayName;
+        }
 
-        var prompt = new GremlinPrompt(seed, GremlinArtifactKind.ImageMashup, attachments);
-        var artifact = _gremlinStudio.Remix(prompt, _chaosSettings);
-        var payload = string.Join("\n", artifact.Payloads.Select(line => $"• {line}"));
-
-        await context.Channel.SendMessageAsync($"**{artifact.Title}**\n{payload}");
-    }
-
-    private async Task HandleHeckleDoneAsync(SocketCommandContext context)
-    {
-        var trigger = new HeckleTrigger(context.User.Username, "completed chaos", DateTimeOffset.UtcNow, Delivered: true);
-        var response = _heckleCycle.BuildResponse(trigger, _chaosSettings);
-
-        var celebration = string.IsNullOrWhiteSpace(response.FollowUpCelebration)
-            ? $"🎊 {context.User.Username} actually shipped something!"
-            : response.FollowUpCelebration;
-
-        await context.Channel.SendMessageAsync(celebration);
+        return user.GlobalName ?? user.Username;
     }
 
     public async ValueTask DisposeAsync()

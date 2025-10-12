@@ -1,33 +1,31 @@
-using System;
 using DiscordSky.Bot.Configuration;
-using DiscordSky.Bot.Models;
-using DiscordSky.Bot.Services;
+using DiscordSky.Bot.Orchestration;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DiscordSky.Tests;
 
-public class ServiceSmokeTests
+public class OrchestrationSmokeTests
 {
-    private readonly ChaosSettings _settings = new();
-
     [Fact]
-    public void BitStarter_ProducesScriptWithParticipants()
+    public void SafetyFilter_RateLimitsBeyondConfiguredCap()
     {
-        var service = new BitStarterService(new Random(42));
-        var response = service.Generate(new BitStarterRequest("The Great Meme", ["alice", "bob"]), _settings);
+        var settings = new ChaosSettings { MaxPromptsPerHour = 2 };
+        var filter = new SafetyFilter(settings, NullLogger<SafetyFilter>.Instance);
 
-        Assert.NotEmpty(response.ScriptLines);
-        Assert.StartsWith("@", response.MentionTags[0]);
+        var now = DateTimeOffset.UtcNow;
+        Assert.False(filter.ShouldRateLimit(now));
+        Assert.False(filter.ShouldRateLimit(now.AddSeconds(1)));
+        Assert.True(filter.ShouldRateLimit(now.AddSeconds(2)));
     }
 
     [Fact]
-    public void QuestService_AddsBonusStepWhenSpicy()
+    public void SafetyFilter_SanitizesMentions()
     {
-        var spicySettings = new ChaosSettings { AnnoyanceLevel = 0.9 };
-        var service = new MischiefQuestService(new Random(13));
+        var filter = new SafetyFilter(new ChaosSettings(), NullLogger<SafetyFilter>.Instance);
 
-        var quest = service.DrawQuest(spicySettings);
+        var sanitized = filter.SanitizeMentions(" @Agent Chaos! ");
 
-        Assert.Contains(quest.Steps, step => step.Contains("Bonus chaos", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("AgentChaos", sanitized);
     }
 
     [Fact]

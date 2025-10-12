@@ -8,28 +8,19 @@ Be the gleeful chaos spark that keeps creative Discord crews laughing, riffing, 
 - **Goblin Band (Members)** — wants playful writing prompts, surreal remixes, and collaborative bits served on demand.
 - **Reluctant Adults (Productivity-minded)** — tolerate the bot as long as it nudges progress with a wink and a meme.
 
-Success = channels full of inside jokes, surprise art drops, and lighthearted nudges that keep threads active without crossing the line into spam.
+Success = channels full of inside jokes, surprise persona riffs, and lighthearted nudges that keep threads active without crossing the line into spam.
 
 ## Core Shenanigans
-1. **Bit-starter Grenade**
-   - Trigger: `!chaos <topic>` or a random dice roll after quiet hours.
-   - Output: Over-the-top mini scripts, fake lore drops, and reaction-worthy one-liners tagged to summon likely co-conspirators.
-   - Annoyance knob: Mods can dial how spicy or frequent these drops get per channel.
+1. **Sky Persona Hotline**
+   - Trigger: `!sky(persona) [topic]`.
+   - Output: A channel reply in the requested persona’s voice, blended with the last few messages for context. When no topic is supplied, the persona simply riffs with the chat like another member.
+   - Tone Dial: Chaos settings still modulate temperature, length, and how spicy the muse gets.
 
-2. **Generative Gremlin Studio**
-   - Trigger: `/remix`, image drops, or a dare emoji on a message.
-   - Output: Weird but delightful image mashups, meme caption batches, and soundboard-ready audio hooks.
-   - Memory: The bot hoards the best outputs to escalate future chaos with call-backs.
+2. **Remix Vault (Concept Stage)**
+   - Keep collecting the wildest persona snippets for future callbacks, remix prompts, or highlight reels.
 
-3. **Heckle & Hype Cycle**
-   - Trigger: When someone says they’ll do something "later" or a thread stalls.
-   - Output: Mischievous reminders, faux countdown timers, and celebratory confetti GIFs when stuff actually ships.
-   - Opt-out: Personal snooze words keep the ribbing friendly.
-
-4. **Snackable Mischief Quests**
-   - Trigger: `!quest` or landing enough 🍿 reactions on a message.
-   - Output: Quick scavenger hunts, prompt chains, or collaborative doodle challenges that end with a custom badge or roast.
-   - Leaderboard: Public scoreboard rewards both participation and dramatic flair.
+3. **Heckle & Quest Modules (Future Work)**
+   - The accountability gremlin and quest giver can be reimagined as curated persona presets once the single-command flow feels rock solid.
 
 ## Guardrails with Glitter
 - Mischief budget per channel and quiet hours so nobody rage-quits.
