@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: discord-sky-config
+  namespace: discord-sky
+data:
+  DOTNET_ENVIRONMENT: "Production"
+  Bot__Status: "Sparking chaos sketches"
+  Bot__AllowedChannelNames: ""
+  Bot__CommandPrefix: "!sky"
+  Bot__HistoryMessageLimit: "20"
+  Chaos__AnnoyanceLevel: "0.5"
+  Chaos__MaxScriptLines: "5"
+  Chaos__MaxPromptsPerHour: "20"

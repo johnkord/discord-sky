@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: discord-sky-bot
+  namespace: discord-sky
+  labels:
+    app: discord-sky-bot
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: discord-sky-bot
+  template:
+    metadata:
+      labels:
+        app: discord-sky-bot
+    spec:
+      containers:
+        - name: bot
+          image: <ACR_LOGIN_SERVER>/discordskybot:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef:
+                name: discord-sky-secrets
+            - configMapRef:
+                name: discord-sky-config
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 250m
+              memory: 512Mi
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "cat /proc/1/comm | grep dotnet"
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "cat /proc/1/comm | grep dotnet"
+            initialDelaySeconds: 20
+            periodSeconds: 30
+      restartPolicy: Always

@@ -7,6 +7,8 @@ character_moods.json
 # .NET / dotnet
 bin/
 obj/
+k8s/discord-sky/secret.yaml
+k8s/discord-sky/secret.env
 .vs/
 *.user
 *.suo

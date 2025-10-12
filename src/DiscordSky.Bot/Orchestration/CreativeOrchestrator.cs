@@ -34,11 +34,6 @@ public sealed class CreativeOrchestrator
 
     public async Task<CreativeResult> ExecuteAsync(CreativeRequest request, SocketCommandContext commandContext, CancellationToken cancellationToken)
     {
-        if (_safetyFilter.IsQuietHour(request.Timestamp))
-        {
-            return new CreativeResult("Shh… quiet hours. Logging that spark for later.");
-        }
-
         if (_safetyFilter.ShouldRateLimit(request.Timestamp))
         {
             return new CreativeResult("I'm catching my breath—try again soon!");

@@ -41,8 +41,6 @@ public sealed class SafetyFilter
         return false;
     }
 
-    public bool IsQuietHour(DateTimeOffset timestamp) => _settings.IsQuietHour(timestamp);
-
     public string SanitizeMentions(string name)
     {
         var trimmed = name.Trim();
