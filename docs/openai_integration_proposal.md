@@ -64,7 +64,7 @@
 
 ## API Usage & Configuration
 - New `OpenAIOptions` section in `appsettings` containing endpoint, apiKey (secret), default models (gpt-4.1-mini, dall-e-2), rate limits, and fallbacks.
-- Reuse existing `ChaosSettings` to map to LLM parameters (temperature, top_p, frequency penalty, max tokens) and to adjust context length.
+- Reuse existing `ChaosSettings` to map to LLM parameters (frequency penalty, max tokens) and to adjust context length.
 - Implement exponential backoff, retries, and fallback models for resilience.
 - Log prompt IDs, token counts, latency, and completion status for monitoring.
 

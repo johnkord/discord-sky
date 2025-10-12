@@ -19,7 +19,6 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly ChaosSettings _chaosSettings;
     private readonly BotOptions _options;
     private readonly CreativeOrchestrator _orchestrator;
-    private const string CommandKeyword = "!sky";
 
     public DiscordBotService(
         DiscordSocketClient client,
@@ -115,7 +114,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         var context = new SocketCommandContext(_client, message);
         var content = message.Content.Trim();
 
-        if (content.StartsWith(CommandKeyword, StringComparison.OrdinalIgnoreCase))
+        if (!string.IsNullOrWhiteSpace(_options.CommandPrefix) && content.StartsWith(_options.CommandPrefix, StringComparison.OrdinalIgnoreCase))
         {
             await HandlePersonaAsync(context, content, message);
         }
@@ -123,30 +122,36 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
     private async Task HandlePersonaAsync(SocketCommandContext context, string content, SocketUserMessage message)
     {
-        var payload = content[CommandKeyword.Length..].TrimStart();
+        var prefix = _options.CommandPrefix;
+        if (string.IsNullOrWhiteSpace(prefix))
+        {
+            return;
+        }
+
+        var payload = content[prefix.Length..].TrimStart();
         if (string.IsNullOrWhiteSpace(payload))
         {
-            await context.Channel.SendMessageAsync($"Usage: {CommandKeyword}(persona) [topic]");
+            await context.Channel.SendMessageAsync($"Usage: {prefix}(persona) [topic]");
             return;
         }
 
         if (!payload.StartsWith('('))
         {
-            await context.Channel.SendMessageAsync($"Usage: {CommandKeyword}(persona) [topic]");
+            await context.Channel.SendMessageAsync($"Usage: {prefix}(persona) [topic]");
             return;
         }
 
         var closingParenthesisIndex = payload.IndexOf(')');
         if (closingParenthesisIndex < 0)
         {
-            await context.Channel.SendMessageAsync($"Usage: {CommandKeyword}(persona) [topic]");
+            await context.Channel.SendMessageAsync($"Usage: {prefix}(persona) [topic]");
             return;
         }
 
         var persona = payload[1..closingParenthesisIndex].Trim();
         if (string.IsNullOrWhiteSpace(persona))
         {
-            await context.Channel.SendMessageAsync($"Usage: {CommandKeyword}(persona) [topic]");
+            await context.Channel.SendMessageAsync($"Usage: {prefix}(persona) [topic]");
             return;
         }
 
@@ -177,8 +182,13 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         var reply = string.IsNullOrWhiteSpace(result.PrimaryMessage)
             ? $"{persona} seems momentarily speechless."
             : result.PrimaryMessage;
+        MessageReference? reference = null;
+        if (result.ReplyToMessageId.HasValue)
+        {
+            reference = new MessageReference(result.ReplyToMessageId.Value);
+        }
 
-        await context.Channel.SendMessageAsync(reply);
+        await context.Channel.SendMessageAsync(reply, messageReference: reference);
     }
 
     private static string GetDisplayName(SocketUser user)

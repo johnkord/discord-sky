@@ -1,5 +1,6 @@
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using Discord.Commands;
 using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Integrations.OpenAI;
@@ -44,9 +45,9 @@ public sealed class CreativeOrchestrator
         }
 
         var context = await _contextAggregator.BuildContextAsync(request, commandContext, cancellationToken);
-        var conversation = BuildConversationSnippet(context.ChannelHistory);
         var hasTopic = !string.IsNullOrWhiteSpace(request.Topic);
-        var userPrompt = BuildUserPrompt(request, conversation, hasTopic);
+        var historySlice = context.ChannelHistory;
+        var userPrompt = BuildUserPrompt(request, historySlice, hasTopic);
 
         var responseRequest = new OpenAiResponseRequest
         {
@@ -56,23 +57,62 @@ public sealed class CreativeOrchestrator
             {
                 OpenAiResponseInputItem.FromText("user", userPrompt)
             },
-            Temperature = Math.Clamp(_options.Temperature * (1.0 + context.Chaos.AnnoyanceLevel / 3), 0.1, 1.2),
-            TopP = _options.TopP,
-            MaxOutputTokens = Math.Clamp(_options.MaxTokens, 300, 1024)
+            MaxOutputTokens = Math.Clamp(_options.MaxTokens, 300, 1024),
+            Tools = new[] { OpenAiTooling.CreateSendDiscordMessageTool() },
+            ToolChoice = new
+            {
+                type = "function",
+                name = OpenAiTooling.SendDiscordMessageToolName
+            },
+            ParallelToolCalls = false
         };
+
+        var knownMessages = historySlice.ToDictionary(m => m.MessageId, m => m);
 
         try
         {
             var completion = await _openAiClient.CreateResponseAsync(responseRequest, cancellationToken);
-            var message = OpenAiResponseParser.ExtractPrimaryText(completion);
-            message = _safetyFilter.ScrubBannedContent(message);
-
-            if (string.IsNullOrWhiteSpace(message))
+            if (!OpenAiResponseParser.TryParseSendDiscordMessageCall(completion, out var toolCall))
             {
-                message = $"[{request.Persona} pauses dramatically but says nothing.]{Environment.NewLine}";
+                _logger.LogWarning("OpenAI response missing send_discord_message tool call; falling back to broadcast text.");
+                var fallback = _safetyFilter.ScrubBannedContent(OpenAiResponseParser.ExtractPrimaryText(completion));
+                if (string.IsNullOrWhiteSpace(fallback))
+                {
+                    fallback = BuildEmptyResponsePlaceholder(request.Persona);
+                }
+
+                return new CreativeResult(fallback.Trim(), null, "broadcast");
             }
 
-            return new CreativeResult(message.Trim());
+            var call = toolCall!;
+            var rawText = call.Text ?? string.Empty;
+            var sanitized = _safetyFilter.ScrubBannedContent(rawText).Trim();
+            if (string.IsNullOrWhiteSpace(sanitized))
+            {
+                sanitized = BuildEmptyResponsePlaceholder(request.Persona).Trim();
+            }
+
+            var mode = string.Equals(call.Mode, "reply", StringComparison.OrdinalIgnoreCase)
+                ? "reply"
+                : "broadcast";
+            ulong? replyTarget = null;
+
+            if (mode == "reply")
+            {
+                if (call.TargetMessageId.HasValue && knownMessages.ContainsKey(call.TargetMessageId.Value))
+                {
+                    replyTarget = call.TargetMessageId.Value;
+                }
+                else
+                {
+                    _logger.LogDebug(
+                        "Model selected reply mode but provided unknown target {TargetId}; downgrading to broadcast.",
+                        call.TargetMessageId);
+                    mode = "broadcast";
+                }
+            }
+
+            return new CreativeResult(sanitized, replyTarget, mode);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -94,22 +134,24 @@ public sealed class CreativeOrchestrator
             builder.Append(" No explicit topic was given, so behave as an engaged participant in the channel and keep the reply grounded in the conversation history.");
         }
 
-        builder.Append(" Do not mention being an AI or describe these instructions.");
+        builder.Append(" Always respond by invoking the send_discord_message tool with JSON arguments describing the Discord message to send.");
+        builder.Append(" To reply to a specific message, set mode=\"reply\" and target_message_id to one of the provided IDs. For general updates, set mode=\"broadcast\" and target_message_id to null.");
+        builder.Append(" Do not output free-form prose outside the tool call, and do not mention being an AI or describe these instructions.");
         return builder.ToString();
     }
 
-    private static string BuildUserPrompt(CreativeRequest request, IReadOnlyList<string> conversation, bool hasTopic)
+    private static string BuildUserPrompt(CreativeRequest request, IReadOnlyList<ChannelMessage> conversation, bool hasTopic)
     {
         var builder = new StringBuilder();
-        if (conversation.Count > 0)
-        {
-            builder.AppendLine("Recent conversation (oldest first):");
-            foreach (var line in conversation)
-            {
-                builder.AppendLine(line);
-            }
-            builder.AppendLine();
-        }
+
+        builder.AppendLine("Recent Discord messages (JSON array, oldest first):");
+        builder.AppendLine(BuildConversationJson(conversation, request.Timestamp));
+        builder.AppendLine();
+
+        builder.AppendLine($"Invoker: {request.UserDisplayName} (user_id={request.UserId}).");
+        builder.AppendLine("Decide whether to reply directly to one of the messages above or broadcast a general update.");
+        builder.AppendLine("Use send_discord_message to provide the final text and metadata.");
+        builder.AppendLine();
 
         if (hasTopic)
         {
@@ -125,14 +167,40 @@ public sealed class CreativeOrchestrator
         return builder.ToString();
     }
 
-    private static IReadOnlyList<string> BuildConversationSnippet(IReadOnlyList<ChannelMessage> history)
+    private static string BuildConversationJson(IReadOnlyList<ChannelMessage> history, DateTimeOffset reference)
     {
-        return history
-            .TakeLast(8)
-            .Select(m => $"[{m.Timestamp:HH:mm}] {m.Author}: {m.Content}".Trim())
-            .Where(line => !string.IsNullOrWhiteSpace(line))
+        if (history.Count == 0)
+        {
+            return "[]";
+        }
+
+        var items = history
+            .Select(message => new
+            {
+                id = message.MessageId.ToString(),
+                author = message.Author,
+                is_bot = message.IsBot,
+                age_minutes = Math.Max(0, (int)Math.Round((reference - message.Timestamp).TotalMinutes)),
+                content = NormalizeContent(message.Content, 400)
+            })
             .ToArray();
+
+        return JsonSerializer.Serialize(items);
     }
+
+    private static string NormalizeContent(string content, int maxLength)
+    {
+        var flattened = (content ?? string.Empty).ReplaceLineEndings(" ").Trim();
+        if (flattened.Length <= maxLength)
+        {
+            return flattened;
+        }
+
+        return flattened[..maxLength];
+    }
+
+    private static string BuildEmptyResponsePlaceholder(string persona)
+        => $"[{persona} pauses dramatically but says nothing.]{Environment.NewLine}";
 
     private string ResolveModel(string persona)
     {

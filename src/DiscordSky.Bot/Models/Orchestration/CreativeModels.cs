@@ -18,6 +18,16 @@ public sealed record CreativeContext(
     IReadOnlyList<ChannelMessage> ChannelHistory
 );
 
-public sealed record CreativeResult(string PrimaryMessage);
+public sealed record CreativeResult(
+    string PrimaryMessage,
+    ulong? ReplyToMessageId = null,
+    string Mode = "broadcast"
+);
 
-public sealed record ChannelMessage(string Author, string Content, DateTimeOffset Timestamp);
+public sealed record ChannelMessage(
+    ulong MessageId,
+    string Author,
+    string Content,
+    DateTimeOffset Timestamp,
+    bool IsBot
+);

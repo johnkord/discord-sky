@@ -11,6 +11,8 @@ public sealed class BotOptions
     public ulong? HomeChannelId { get; init; }
     public string Status { get; init; } = "Brewing chaos";
     public List<string> AllowedChannelNames { get; init; } = new();
+    public string CommandPrefix { get; init; } = "!sky";
+    public int HistoryMessageLimit { get; init; } = 20;
 
     public bool IsChannelAllowed(string? channelName)
     {

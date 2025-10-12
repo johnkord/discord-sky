@@ -14,12 +14,6 @@ public sealed class OpenAiResponseRequest
     [JsonPropertyName("input")]
     public IReadOnlyList<OpenAiResponseInputItem> Input { get; init; } = Array.Empty<OpenAiResponseInputItem>();
 
-    [JsonPropertyName("temperature")]
-    public double? Temperature { get; init; }
-
-    [JsonPropertyName("top_p")]
-    public double? TopP { get; init; }
-
     [JsonPropertyName("max_output_tokens")]
     public int? MaxOutputTokens { get; init; }
 
@@ -34,19 +28,6 @@ public sealed class OpenAiResponseRequest
 
     [JsonPropertyName("parallel_tool_calls")]
     public bool? ParallelToolCalls { get; init; }
-
-    public static OpenAiResponseRequest CreateSummarizationRequest(string model, string instructions, string content)
-    {
-        return new OpenAiResponseRequest
-        {
-            Model = model,
-            Instructions = instructions,
-            Input = new[] { OpenAiResponseInputItem.FromText("user", content) },
-            Temperature = 0.4,
-            TopP = 0.9,
-            MaxOutputTokens = 300
-        };
-    }
 }
 
 public sealed class OpenAiResponseInputItem
@@ -97,6 +78,18 @@ public sealed class OpenAiResponseOutputItem
     [JsonPropertyName("type")]
     public string Type { get; init; } = string.Empty;
 
+    [JsonPropertyName("id")]
+    public string? Id { get; init; }
+
+    [JsonPropertyName("call_id")]
+    public string? CallId { get; init; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; init; }
+
+    [JsonPropertyName("arguments")]
+    public string? Arguments { get; init; }
+
     [JsonPropertyName("status")]
     public string? Status { get; init; }
 
@@ -104,7 +97,8 @@ public sealed class OpenAiResponseOutputItem
     public string? Role { get; init; }
 
     [JsonPropertyName("content")]
-    public List<OpenAiResponseOutputContent> Content { get; init; } = new();
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<OpenAiResponseOutputContent>? Content { get; init; }
 }
 
 public sealed class OpenAiResponseOutputContent
@@ -114,6 +108,15 @@ public sealed class OpenAiResponseOutputContent
 
     [JsonPropertyName("text")]
     public string? Text { get; init; }
+
+    [JsonPropertyName("id")]
+    public string? Id { get; init; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; init; }
+
+    [JsonPropertyName("arguments")]
+    public string? Arguments { get; init; }
 
     [JsonPropertyName("annotations")]
     public object? Annotations { get; init; }
@@ -158,8 +161,21 @@ public sealed class OpenAiTool
     [JsonPropertyName("type")]
     public string Type { get; init; } = "function";
 
+    [JsonPropertyName("name")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Name { get; init; }
+
+    [JsonPropertyName("description")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Description { get; init; }
+
+    [JsonPropertyName("parameters")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public object? Parameters { get; init; }
+
     [JsonPropertyName("function")]
-    public OpenAiToolFunction Function { get; init; } = new();
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public OpenAiToolFunction? Function { get; init; }
 }
 
 public sealed class OpenAiToolFunction

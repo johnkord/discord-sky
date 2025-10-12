@@ -46,7 +46,10 @@ public sealed class OpenAiClient : IOpenAiClient
         {
             try
             {
-                using var content = new StringContent(JsonSerializer.Serialize(payload, SerializerOptions), Encoding.UTF8, "application/json");
+                var payloadJson = JsonSerializer.Serialize(payload, SerializerOptions);
+                _logger.LogInformation("Dispatching OpenAI request to {Path}: {Payload}", path, payloadJson);
+
+                using var content = new StringContent(payloadJson, Encoding.UTF8, "application/json");
                 using var response = await _httpClient.PostAsync(path, content, cancellationToken);
                 var raw = await response.Content.ReadAsStringAsync(cancellationToken);
 
