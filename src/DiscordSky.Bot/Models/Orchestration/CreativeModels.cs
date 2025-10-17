@@ -1,3 +1,4 @@
+using System;
 using DiscordSky.Bot.Configuration;
 
 namespace DiscordSky.Bot.Models.Orchestration;
@@ -24,10 +25,20 @@ public sealed record CreativeResult(
     string Mode = "broadcast"
 );
 
-public sealed record ChannelMessage(
-    ulong MessageId,
-    string Author,
-    string Content,
-    DateTimeOffset Timestamp,
-    bool IsBot
-);
+public sealed record ChannelMessage
+{
+    public ulong MessageId { get; init; }
+    public string Author { get; init; } = string.Empty;
+    public string Content { get; init; } = string.Empty;
+    public DateTimeOffset Timestamp { get; init; }
+    public bool IsBot { get; init; }
+    public IReadOnlyList<ChannelImage> Images { get; init; } = Array.Empty<ChannelImage>();
+}
+
+public sealed record ChannelImage
+{
+    public Uri Url { get; init; } = null!;
+    public string Filename { get; init; } = string.Empty;
+    public string Source { get; init; } = string.Empty;
+    public DateTimeOffset Timestamp { get; init; }
+}

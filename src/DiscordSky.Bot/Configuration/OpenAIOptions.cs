@@ -11,6 +11,7 @@ public sealed class OpenAIOptions
     public int MaxTokens { get; init; } = 1200;
     public int RetryCount { get; init; } = 2;
     public int TimeoutSeconds { get; init; } = 30;
+    public string VisionDetail { get; init; } = "auto";
 
     public Dictionary<string, string> IntentModelOverrides { get; init; } = new();
 }

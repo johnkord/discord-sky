@@ -40,17 +40,18 @@ public sealed class OpenAiResponseInputItem
 
     public static OpenAiResponseInputItem FromText(string role, string text)
     {
+        return FromContent(role, new[]
+        {
+            OpenAiResponseInputContent.FromText(text)
+        });
+    }
+
+    public static OpenAiResponseInputItem FromContent(string role, IReadOnlyList<OpenAiResponseInputContent> content)
+    {
         return new OpenAiResponseInputItem
         {
             Role = role,
-            Content = new[]
-            {
-                new OpenAiResponseInputContent
-                {
-                    Type = "input_text",
-                    Text = text ?? string.Empty
-                }
-            }
+            Content = content
         };
     }
 }
@@ -61,7 +62,35 @@ public sealed class OpenAiResponseInputContent
     public string Type { get; init; } = "input_text";
 
     [JsonPropertyName("text")]
-    public string Text { get; init; } = string.Empty;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Text { get; init; }
+
+    [JsonPropertyName("image_url")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ImageUrl { get; init; }
+
+    [JsonPropertyName("detail")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Detail { get; init; }
+
+    public static OpenAiResponseInputContent FromText(string text)
+    {
+        return new OpenAiResponseInputContent
+        {
+            Type = "input_text",
+            Text = text ?? string.Empty
+        };
+    }
+
+    public static OpenAiResponseInputContent FromImage(Uri url, string? detail)
+    {
+        return new OpenAiResponseInputContent
+        {
+            Type = "input_image",
+            ImageUrl = url.ToString(),
+            Detail = string.IsNullOrWhiteSpace(detail) ? null : detail
+        };
+    }
 }
 
 public sealed class OpenAiResponse

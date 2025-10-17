@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text.Json;
 using DiscordSky.Bot.Integrations.OpenAI;
 using DiscordSky.Bot.Models.Orchestration;
 
@@ -89,5 +90,31 @@ public class OpenAiResponseParserTests
 
         Assert.False(parsed);
         Assert.Null(payload);
+    }
+
+    [Fact]
+    public void InputSerialization_IncludesMixedTextAndImages()
+    {
+        var builder = new List<OpenAiResponseInputContent>
+        {
+            OpenAiResponseInputContent.FromText("Describe the photo."),
+            OpenAiResponseInputContent.FromImage(new Uri("https://cdn.discordapp.com/image.png"), "auto")
+        };
+
+        var request = new OpenAiResponseRequest
+        {
+            Model = "gpt-test",
+            Input = new[]
+            {
+                OpenAiResponseInputItem.FromContent("user", builder)
+            }
+        };
+
+        var json = JsonSerializer.Serialize(request, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.Contains("\"type\":\"input_text\"", json);
+        Assert.Contains("\"type\":\"input_image\"", json);
+        Assert.Contains("\"image_url\":\"https://cdn.discordapp.com/image.png\"", json);
+        Assert.Contains("Describe the photo.", json);
     }
 }

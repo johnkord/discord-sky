@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace DiscordSky.Bot.Configuration;
 
@@ -14,6 +15,13 @@ public sealed class BotOptions
     public string CommandPrefix { get; init; } = "!sky";
     public int HistoryMessageLimit { get; init; } = 20;
     public string DefaultPersona { get; init; } = "Weird Al";
+    public bool AllowImageContext { get; init; } = true;
+    public int HistoryImageLimit { get; init; } = 3;
+    public List<string> ImageHostAllowList { get; init; } = new()
+    {
+        "cdn.discordapp.com",
+        "media.discordapp.net"
+    };
 
     public bool IsChannelAllowed(string? channelName)
     {

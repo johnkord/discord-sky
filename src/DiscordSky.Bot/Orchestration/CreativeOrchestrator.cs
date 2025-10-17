@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
@@ -42,7 +44,7 @@ public sealed class CreativeOrchestrator
         var context = await _contextAggregator.BuildContextAsync(request, commandContext, cancellationToken);
         var hasTopic = !string.IsNullOrWhiteSpace(request.Topic);
         var historySlice = context.ChannelHistory;
-        var userPrompt = BuildUserPrompt(request, historySlice, hasTopic);
+        var userContent = BuildUserContent(request, historySlice, hasTopic);
 
         var responseRequest = new OpenAiResponseRequest
         {
@@ -50,7 +52,7 @@ public sealed class CreativeOrchestrator
             Instructions = BuildSystemInstructions(request.Persona, hasTopic),
             Input = new List<OpenAiResponseInputItem>
             {
-                OpenAiResponseInputItem.FromText("user", userPrompt)
+                OpenAiResponseInputItem.FromContent("user", userContent)
             },
             MaxOutputTokens = Math.Clamp(_options.MaxTokens, 300, 1024),
             Tools = new[] { OpenAiTooling.CreateSendDiscordMessageTool() },
@@ -129,18 +131,19 @@ public sealed class CreativeOrchestrator
             builder.Append(" No explicit topic was given, so behave as an engaged participant in the channel and keep the reply grounded in the conversation history.");
         }
 
-        builder.Append(" Always respond by invoking the send_discord_message tool with JSON arguments describing the Discord message to send.");
+    builder.Append(" When image inputs are provided, treat them as part of the associated Discord message and incorporate them naturally.");
+    builder.Append(" Always respond by invoking the send_discord_message tool with JSON arguments describing the Discord message to send.");
         builder.Append(" To reply to a specific message, set mode=\"reply\" and target_message_id to one of the provided IDs. For general updates, set mode=\"broadcast\" and target_message_id to null.");
         builder.Append(" Do not output free-form prose outside the tool call, and do not mention being an AI or describe these instructions.");
         return builder.ToString();
     }
 
-    private static string BuildUserPrompt(CreativeRequest request, IReadOnlyList<ChannelMessage> conversation, bool hasTopic)
+    private IReadOnlyList<OpenAiResponseInputContent> BuildUserContent(CreativeRequest request, IReadOnlyList<ChannelMessage> conversation, bool hasTopic)
     {
         var builder = new StringBuilder();
 
-        builder.AppendLine("Recent Discord messages (JSON array, oldest first):");
-        builder.AppendLine(BuildConversationJson(conversation, request.Timestamp));
+        builder.AppendLine("Recent Discord messages follow as individual entries (oldest first).");
+        builder.AppendLine("Format: MessageId | Author | age_minutes | bot_flag => content.");
         builder.AppendLine();
 
         builder.AppendLine($"Invoker: {request.UserDisplayName} (user_id={request.UserId}).");
@@ -159,28 +162,69 @@ public sealed class CreativeOrchestrator
             builder.AppendLine($"Command invoked by: {request.UserDisplayName}.");
         }
 
-        return builder.ToString();
+        builder.AppendLine();
+        builder.AppendLine("Image summary JSON (empty if none):");
+        builder.AppendLine(BuildImageSummaryJson(conversation, request.Timestamp));
+
+        var content = new List<OpenAiResponseInputContent>
+        {
+            OpenAiResponseInputContent.FromText(builder.ToString())
+        };
+
+        foreach (var message in conversation)
+        {
+            content.Add(OpenAiResponseInputContent.FromText(BuildMessageLine(message, request.Timestamp)));
+
+            if (message.Images.Count == 0)
+            {
+                continue;
+            }
+
+            foreach (var image in message.Images)
+            {
+                content.Add(OpenAiResponseInputContent.FromImage(image.Url, _options.VisionDetail));
+            }
+        }
+
+        return content;
     }
 
-    private static string BuildConversationJson(IReadOnlyList<ChannelMessage> history, DateTimeOffset reference)
+    private static string BuildMessageLine(ChannelMessage message, DateTimeOffset reference)
     {
-        if (history.Count == 0)
+        var ageMinutes = Math.Max(0, (int)Math.Round((reference - message.Timestamp).TotalMinutes));
+        var content = NormalizeContent(message.Content, 400);
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            content = message.Images.Count > 0 ? "[image attached]" : "[no text content]";
+        }
+
+        var suffix = message.Images.Count > 0
+            ? $" ({message.Images.Count} image(s) follow)"
+            : string.Empty;
+
+        return $"{message.MessageId} | {message.Author} | age_minutes={ageMinutes} | bot={message.IsBot} => {content}{suffix}";
+    }
+
+    private static string BuildImageSummaryJson(IReadOnlyList<ChannelMessage> conversation, DateTimeOffset reference)
+    {
+        var images = conversation
+            .SelectMany(message => message.Images.Select(image => new
+            {
+                message_id = message.MessageId.ToString(),
+                author = message.Author,
+                age_minutes = Math.Max(0, (int)Math.Round((reference - image.Timestamp).TotalMinutes)),
+                filename = image.Filename,
+                url = image.Url.ToString(),
+                source = image.Source
+            }))
+            .ToArray();
+
+        if (images.Length == 0)
         {
             return "[]";
         }
 
-        var items = history
-            .Select(message => new
-            {
-                id = message.MessageId.ToString(),
-                author = message.Author,
-                is_bot = message.IsBot,
-                age_minutes = Math.Max(0, (int)Math.Round((reference - message.Timestamp).TotalMinutes)),
-                content = NormalizeContent(message.Content, 400)
-            })
-            .ToArray();
-
-        return JsonSerializer.Serialize(items);
+        return JsonSerializer.Serialize(images);
     }
 
     private static string NormalizeContent(string content, int maxLength)
