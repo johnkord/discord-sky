@@ -13,6 +13,7 @@ public sealed class BotOptions
     public List<string> AllowedChannelNames { get; init; } = new();
     public string CommandPrefix { get; init; } = "!sky";
     public int HistoryMessageLimit { get; init; } = 20;
+    public string DefaultPersona { get; init; } = "Weird Al";
 
     public bool IsChannelAllowed(string? channelName)
     {

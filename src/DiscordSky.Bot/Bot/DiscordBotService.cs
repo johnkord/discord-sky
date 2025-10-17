@@ -129,33 +129,36 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         }
 
         var payload = content[prefix.Length..].TrimStart();
+        var defaultPersona = GetDefaultPersona();
+
+        string persona;
+        string remainder;
+
         if (string.IsNullOrWhiteSpace(payload))
         {
-            await context.Channel.SendMessageAsync($"Usage: {prefix}(persona) [topic]");
-            return;
+            persona = defaultPersona;
+            remainder = string.Empty;
         }
-
-        if (!payload.StartsWith('('))
+        else if (payload.StartsWith('('))
         {
-            await context.Channel.SendMessageAsync($"Usage: {prefix}(persona) [topic]");
-            return;
-        }
+            var closingParenthesisIndex = payload.IndexOf(')');
+            if (closingParenthesisIndex < 0)
+            {
+                await context.Channel.SendMessageAsync($"Usage: {prefix}(persona) [topic]");
+                return;
+            }
 
-        var closingParenthesisIndex = payload.IndexOf(')');
-        if (closingParenthesisIndex < 0)
+            var extractedPersona = payload[1..closingParenthesisIndex].Trim();
+            persona = string.IsNullOrWhiteSpace(extractedPersona) ? defaultPersona : extractedPersona;
+
+            remainder = payload[(closingParenthesisIndex + 1)..].Trim();
+        }
+        else
         {
-            await context.Channel.SendMessageAsync($"Usage: {prefix}(persona) [topic]");
-            return;
+            persona = defaultPersona;
+            remainder = payload;
         }
 
-        var persona = payload[1..closingParenthesisIndex].Trim();
-        if (string.IsNullOrWhiteSpace(persona))
-        {
-            await context.Channel.SendMessageAsync($"Usage: {prefix}(persona) [topic]");
-            return;
-        }
-
-        var remainder = payload[(closingParenthesisIndex + 1)..].Trim();
         string? topic = string.IsNullOrWhiteSpace(remainder) ? null : remainder;
 
         if (message.Attachments.Count > 0)
@@ -204,5 +207,15 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await _client.DisposeAsync();
+    }
+
+    private string GetDefaultPersona()
+    {
+        if (!string.IsNullOrWhiteSpace(_options.DefaultPersona))
+        {
+            return _options.DefaultPersona.Trim();
+        }
+
+        return "Weird Al";
     }
 }
