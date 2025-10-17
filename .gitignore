@@ -51,3 +51,4 @@ ENV/
 Thumbs.db
 
 .venv
+env-inventory.md

@@ -19,19 +19,22 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly ChaosSettings _chaosSettings;
     private readonly BotOptions _options;
     private readonly CreativeOrchestrator _orchestrator;
+    private readonly IRandomProvider _randomProvider;
 
     public DiscordBotService(
         DiscordSocketClient client,
         IOptions<BotOptions> options,
         ChaosSettings chaosSettings,
         CreativeOrchestrator orchestrator,
-        ILogger<DiscordBotService> logger)
+        ILogger<DiscordBotService> logger,
+        IRandomProvider? randomProvider = null)
     {
         _client = client;
         _options = options.Value;
         _chaosSettings = chaosSettings;
         _orchestrator = orchestrator;
         _logger = logger;
+        _randomProvider = randomProvider ?? DefaultRandomProvider.Instance;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -114,9 +117,23 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         var context = new SocketCommandContext(_client, message);
         var content = message.Content.Trim();
 
-        if (!string.IsNullOrWhiteSpace(_options.CommandPrefix) && content.StartsWith(_options.CommandPrefix, StringComparison.OrdinalIgnoreCase))
+        var hasPrefix = !string.IsNullOrWhiteSpace(_options.CommandPrefix) && content.StartsWith(_options.CommandPrefix, StringComparison.OrdinalIgnoreCase);
+
+        if (hasPrefix)
         {
             await HandlePersonaAsync(context, content, message);
+            return;
+        }
+
+        // Ambient reply chance
+        if (_chaosSettings.AmbientReplyChance > 0)
+        {
+            var roll = _randomProvider.NextDouble();
+            if (roll < _chaosSettings.AmbientReplyChance)
+            {
+                _logger.LogDebug("Ambient reply triggered (roll={Roll:F3} < chance={Chance:F3}) for message {MessageId} in channel {Channel}.", roll, _chaosSettings.AmbientReplyChance, message.Id, channelName);
+                await HandlePersonaAsync(context, _options.CommandPrefix, message);
+            }
         }
     }
 
@@ -218,4 +235,16 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
         return "Weird Al";
     }
+}
+
+public interface IRandomProvider
+{
+    double NextDouble();
+}
+
+public sealed class DefaultRandomProvider : IRandomProvider
+{
+    public static DefaultRandomProvider Instance { get; } = new();
+    private readonly Random _random = new();
+    public double NextDouble() => _random.NextDouble();
 }

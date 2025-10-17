@@ -46,6 +46,26 @@ Examples:
 - `!sky(chaotic bard)`
 - `!sky Tell us a tour story from the road.`
 
+### Ambient Replies (Passive Mode)
+The bot can occasionally interject on normal chat messages without being explicitly invoked. This is controlled by `Chaos:AmbientReplyChance` (a probability between 0.0 and 1.0). Default is `0.25` (25% chance). Set to `0` to disable.
+
+When triggered, the bot behaves exactly like a bare prefix command (e.g. `!sky`) — using the default persona and no explicit topic, informed by recent channel history.
+
+Tuning suggestions:
+- Small busy servers: 0.10–0.20
+- Quiet community: 0.25–0.35
+- Disable for announcement-only channels by listing allowed channel names or setting chance to 0.
+
+Example JSON snippet:
+```json
+"Chaos": {
+   "AnnoyanceLevel": 0.5,
+   "MaxScriptLines": 5,
+   "MaxPromptsPerHour": 20,
+   "AmbientReplyChance": 0.25
+}
+```
+
 ## Testing
 Run the smoke tests to validate configuration helpers and safety rails:
 ```bash
