@@ -15,11 +15,6 @@ public sealed class OpenAIOptions
 
     public Dictionary<string, string> IntentModelOverrides { get; init; } = new();
 
-    public OpenAiReasoningOptions? Reasoning { get; init; }
-}
-
-public sealed class OpenAiReasoningOptions
-{
-    public string? Effort { get; init; }
-    public string? Summary { get; init; }
+    public string? ReasoningEffort { get; init; }
+    public string? ReasoningSummary { get; init; }
 }

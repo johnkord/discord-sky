@@ -67,12 +67,12 @@ public sealed class CreativeOrchestrator
                 name = OpenAiTooling.SendDiscordMessageToolName
             },
             ParallelToolCalls = false,
-            Reasoning = _options.Reasoning is null
+            Reasoning = string.IsNullOrWhiteSpace(_options.ReasoningEffort) && string.IsNullOrWhiteSpace(_options.ReasoningSummary)
                 ? null
                 : new OpenAiReasoningConfig
                 {
-                    Effort = string.IsNullOrWhiteSpace(_options.Reasoning.Effort) ? null : _options.Reasoning.Effort,
-                    Summary = string.IsNullOrWhiteSpace(_options.Reasoning.Summary) ? null : _options.Reasoning.Summary
+                    Effort = string.IsNullOrWhiteSpace(_options.ReasoningEffort) ? null : _options.ReasoningEffort,
+                    Summary = string.IsNullOrWhiteSpace(_options.ReasoningSummary) ? null : _options.ReasoningSummary
                 }
         };
 
@@ -146,9 +146,11 @@ public sealed class CreativeOrchestrator
             builder.Append(" No explicit topic was given, so behave as an engaged participant in the channel and keep the reply grounded in the conversation history.");
         }
 
-    builder.Append(" When image inputs are provided, treat them as part of the associated Discord message and incorporate them naturally.");
-    builder.Append(" Always respond by invoking the send_discord_message tool with JSON arguments describing the Discord message to send.");
-        builder.Append(" To reply to a specific message, set mode=\"reply\" and target_message_id to one of the provided IDs. For general updates, set mode=\"broadcast\" and target_message_id to null.");
+        builder.Append(" When image inputs are provided, treat them as part of the associated Discord message and incorporate them naturally.");
+        builder.Append(" You must produce exactly one call to the send_discord_message tool in your final response—never answer with plain text or any other structure.");
+        builder.Append(" For a general announcement to the whole channel, set mode=\"broadcast\" and target_message_id to null.");
+        builder.Append(" To directly reply to a specific Discord message, set mode=\"reply\" and target_message_id to one of the provided IDs.");
+        builder.Append(" If you cannot determine a valid target_message_id, fall back to mode=\"broadcast\" with target_message_id null.");
         builder.Append(" Do not output free-form prose outside the tool call, and do not mention being an AI or describe these instructions.");
         return builder.ToString();
     }
