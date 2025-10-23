@@ -28,6 +28,10 @@ public sealed class OpenAiResponseRequest
 
     [JsonPropertyName("parallel_tool_calls")]
     public bool? ParallelToolCalls { get; init; }
+
+    [JsonPropertyName("reasoning")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public OpenAiReasoningConfig? Reasoning { get; init; }
 }
 
 public sealed class OpenAiResponseInputItem
@@ -174,6 +178,17 @@ public sealed class OpenAiResponseFormat
     [JsonPropertyName("json_schema")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public OpenAiJsonSchema? JsonSchema { get; init; }
+}
+
+public sealed class OpenAiReasoningConfig
+{
+    [JsonPropertyName("effort")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Effort { get; init; }
+
+    [JsonPropertyName("summary")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Summary { get; init; }
 }
 
 public sealed class OpenAiJsonSchema

@@ -20,6 +20,11 @@ public sealed class CreativeOrchestrator
     private readonly OpenAIOptions _options;
     private readonly ILogger<CreativeOrchestrator> _logger;
 
+    private static readonly JsonSerializerOptions LoggingSerializerOptions = new(JsonSerializerDefaults.Web)
+    {
+        WriteIndented = true
+    };
+
     public CreativeOrchestrator(
         ContextAggregator contextAggregator,
         IOpenAiClient openAiClient,
@@ -61,7 +66,14 @@ public sealed class CreativeOrchestrator
                 type = "function",
                 name = OpenAiTooling.SendDiscordMessageToolName
             },
-            ParallelToolCalls = false
+            ParallelToolCalls = false,
+            Reasoning = _options.Reasoning is null
+                ? null
+                : new OpenAiReasoningConfig
+                {
+                    Effort = string.IsNullOrWhiteSpace(_options.Reasoning.Effort) ? null : _options.Reasoning.Effort,
+                    Summary = string.IsNullOrWhiteSpace(_options.Reasoning.Summary) ? null : _options.Reasoning.Summary
+                }
         };
 
         var knownMessages = historySlice.ToDictionary(m => m.MessageId, m => m);
@@ -71,7 +83,10 @@ public sealed class CreativeOrchestrator
             var completion = await _openAiClient.CreateResponseAsync(responseRequest, cancellationToken);
             if (!OpenAiResponseParser.TryParseSendDiscordMessageCall(completion, out var toolCall))
             {
-                _logger.LogWarning("OpenAI response missing send_discord_message tool call; falling back to broadcast text.");
+                var serializedResponse = SerializeResponseForLogging(completion);
+                _logger.LogWarning(
+                    "OpenAI response missing send_discord_message tool call; falling back to broadcast text. Raw response: {Response}",
+                    serializedResponse);
                 var fallback = _safetyFilter.ScrubBannedContent(OpenAiResponseParser.ExtractPrimaryText(completion));
                 if (string.IsNullOrWhiteSpace(fallback))
                 {
@@ -240,6 +255,18 @@ public sealed class CreativeOrchestrator
 
     private static string BuildEmptyResponsePlaceholder(string persona)
         => $"[{persona} pauses dramatically but says nothing.]{Environment.NewLine}";
+
+    private static string SerializeResponseForLogging(OpenAiResponse response)
+    {
+        try
+        {
+            return JsonSerializer.Serialize(response, LoggingSerializerOptions);
+        }
+        catch
+        {
+            return "<failed to serialize OpenAI response>";
+        }
+    }
 
     private string ResolveModel(string persona)
     {
