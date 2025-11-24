@@ -121,7 +121,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
         if (hasPrefix)
         {
-            await HandlePersonaAsync(context, content, message);
+            await HandlePersonaAsync(context, content, message, CreativeInvocationKind.Command);
             return;
         }
 
@@ -132,12 +132,12 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             if (roll < _chaosSettings.AmbientReplyChance)
             {
                 _logger.LogDebug("Ambient reply triggered (roll={Roll:F3} < chance={Chance:F3}) for message {MessageId} in channel {Channel}.", roll, _chaosSettings.AmbientReplyChance, message.Id, channelName);
-                await HandlePersonaAsync(context, _options.CommandPrefix, message);
+                await HandlePersonaAsync(context, _options.CommandPrefix, message, CreativeInvocationKind.Ambient);
             }
         }
     }
 
-    private async Task HandlePersonaAsync(SocketCommandContext context, string content, SocketUserMessage message)
+    private async Task HandlePersonaAsync(SocketCommandContext context, string content, SocketUserMessage message, CreativeInvocationKind invocationKind)
     {
         var prefix = _options.CommandPrefix;
         if (string.IsNullOrWhiteSpace(prefix))
@@ -187,7 +187,10 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 : $"{topic}\n\n{attachmentLine}";
         }
 
-        await context.Channel.TriggerTypingAsync();
+        if (invocationKind == CreativeInvocationKind.Command)
+        {
+            await context.Channel.TriggerTypingAsync();
+        }
 
         var request = new CreativeRequest(
             persona,
@@ -196,12 +199,19 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             context.User.Id,
             context.Channel.Id,
             (context.Guild as SocketGuild)?.Id,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            invocationKind);
 
         var result = await _orchestrator.ExecuteAsync(request, context, CancellationToken.None);
         var reply = string.IsNullOrWhiteSpace(result.PrimaryMessage)
-            ? $"{persona} seems momentarily speechless."
+            ? CreativeOrchestrator.BuildEmptyResponsePlaceholder(persona, invocationKind)
             : result.PrimaryMessage;
+
+        if (string.IsNullOrWhiteSpace(reply))
+        {
+            _logger.LogDebug("Invocation {InvocationKind} produced no reply for persona {Persona}; suppressing send.", invocationKind, persona);
+            return;
+        }
         MessageReference? reference = null;
         if (result.ReplyToMessageId.HasValue)
         {

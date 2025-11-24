@@ -43,7 +43,10 @@ public sealed class CreativeOrchestrator
     {
         if (_safetyFilter.ShouldRateLimit(request.Timestamp))
         {
-            return new CreativeResult("I'm catching my breath—try again soon!");
+            var rateLimited = request.InvocationKind == CreativeInvocationKind.Ambient
+                ? string.Empty
+                : "I'm catching my breath—try again soon!";
+            return new CreativeResult(rateLimited);
         }
 
         var context = await _contextAggregator.BuildContextAsync(request, commandContext, cancellationToken);
@@ -90,7 +93,7 @@ public sealed class CreativeOrchestrator
                 var fallback = _safetyFilter.ScrubBannedContent(OpenAiResponseParser.ExtractPrimaryText(completion));
                 if (string.IsNullOrWhiteSpace(fallback))
                 {
-                    fallback = BuildEmptyResponsePlaceholder(request.Persona);
+                    fallback = BuildEmptyResponsePlaceholder(request.Persona, request.InvocationKind);
                 }
 
                 return new CreativeResult(fallback.Trim(), null, "broadcast");
@@ -101,7 +104,7 @@ public sealed class CreativeOrchestrator
             var sanitized = _safetyFilter.ScrubBannedContent(rawText).Trim();
             if (string.IsNullOrWhiteSpace(sanitized))
             {
-                sanitized = BuildEmptyResponsePlaceholder(request.Persona).Trim();
+                sanitized = BuildEmptyResponsePlaceholder(request.Persona, request.InvocationKind).Trim();
             }
 
             var mode = string.Equals(call.Mode, "reply", StringComparison.OrdinalIgnoreCase)
@@ -129,7 +132,10 @@ public sealed class CreativeOrchestrator
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Failed to craft response for persona {Persona}", request.Persona);
-            return new CreativeResult($"My {request.Persona} impression short-circuited—try again!");
+            var failure = request.InvocationKind == CreativeInvocationKind.Ambient
+                ? string.Empty
+                : $"My {request.Persona} impression short-circuited—try again!";
+            return new CreativeResult(failure);
         }
     }
 
@@ -255,8 +261,15 @@ public sealed class CreativeOrchestrator
         return flattened[..maxLength];
     }
 
-    private static string BuildEmptyResponsePlaceholder(string persona)
-        => $"[{persona} pauses dramatically but says nothing.]{Environment.NewLine}";
+    internal static string BuildEmptyResponsePlaceholder(string persona, CreativeInvocationKind invocationKind)
+    {
+        if (invocationKind == CreativeInvocationKind.Ambient)
+        {
+            return string.Empty;
+        }
+
+        return $"[{persona} pauses dramatically but says nothing.]";
+    }
 
     private static string SerializeResponseForLogging(OpenAiResponse response)
     {

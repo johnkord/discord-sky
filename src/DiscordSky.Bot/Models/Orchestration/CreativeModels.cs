@@ -3,6 +3,12 @@ using DiscordSky.Bot.Configuration;
 
 namespace DiscordSky.Bot.Models.Orchestration;
 
+public enum CreativeInvocationKind
+{
+    Command,
+    Ambient
+}
+
 public sealed record CreativeRequest(
     string Persona,
     string? Topic,
@@ -10,7 +16,8 @@ public sealed record CreativeRequest(
     ulong UserId,
     ulong ChannelId,
     ulong? GuildId,
-    DateTimeOffset Timestamp
+    DateTimeOffset Timestamp,
+    CreativeInvocationKind InvocationKind = CreativeInvocationKind.Command
 );
 
 public sealed record CreativeContext(
