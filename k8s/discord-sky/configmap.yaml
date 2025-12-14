@@ -5,7 +5,7 @@ metadata:
   namespace: discord-sky
 data:
   DOTNET_ENVIRONMENT: "Production"
-  Bot__Status: "Sparking chaos sketches"
+  Bot__Status: "SnooPING AS usual"
   Bot__AllowedChannelNames: ""
   Bot__CommandPrefix: "!sky"
   Bot__HistoryMessageLimit: "20"

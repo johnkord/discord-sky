@@ -21,6 +21,9 @@ public sealed class ContextAggregator
     private readonly bool _allowImageContext;
     private readonly int _historyImageLimit;
     private readonly HashSet<string> _imageHostAllowList;
+    private readonly int _replyChainDepth;
+    private readonly bool _includeOwnMessagesInHistory;
+    private ulong? _botUserId;
 
     private static readonly string[] ImageExtensions =
     {
@@ -56,6 +59,17 @@ public sealed class ContextAggregator
             (bot.ImageHostAllowList ?? new List<string>()).Where(h => !string.IsNullOrWhiteSpace(h))
                 .Select(h => h.Trim().ToLowerInvariant()),
             StringComparer.OrdinalIgnoreCase);
+
+        _replyChainDepth = Math.Clamp(bot.ReplyChainDepth, 1, 100);
+        _includeOwnMessagesInHistory = bot.IncludeOwnMessagesInHistory;
+    }
+
+    /// <summary>
+    /// Sets the bot's user ID for filtering purposes. Must be called after the Discord client is ready.
+    /// </summary>
+    public void SetBotUserId(ulong botUserId)
+    {
+        _botUserId = botUserId;
     }
 
     public async Task<CreativeContext> BuildContextAsync(CreativeRequest request, SocketCommandContext commandContext, CancellationToken cancellationToken)
@@ -95,9 +109,14 @@ public sealed class ContextAggregator
                         continue;
                     }
 
+                    // Include this bot's messages if configured, skip other bots
                     if (message.Author.IsBot)
                     {
-                        continue;
+                        var isThisBot = _botUserId.HasValue && message.Author.Id == _botUserId.Value;
+                        if (!isThisBot || !_includeOwnMessagesInHistory)
+                        {
+                            continue;
+                        }
                     }
 
                     if (!string.IsNullOrWhiteSpace(_commandPrefix) && trimmed.StartsWith(_commandPrefix, StringComparison.OrdinalIgnoreCase))
@@ -112,7 +131,9 @@ public sealed class ContextAggregator
                         Content = message.Content ?? string.Empty,
                         Timestamp = message.Timestamp,
                         IsBot = message.Author.IsBot,
-                        Images = images
+                        Images = images,
+                        ReferencedMessageId = message.Reference?.MessageId.IsSpecified == true ? message.Reference.MessageId.Value : null,
+                        IsFromThisBot = _botUserId.HasValue && message.Author.Id == _botUserId.Value
                     });
                 }
             }
@@ -134,6 +155,71 @@ public sealed class ContextAggregator
         }
 
         return TrimImageOverflow(ordered, _historyImageLimit);
+    }
+
+    /// <summary>
+    /// Gathers the reply chain by walking ReferencedMessage backwards from the trigger message.
+    /// </summary>
+    public async Task<IReadOnlyList<ChannelMessage>> GatherReplyChainAsync(
+        IMessage triggerMessage,
+        IMessageChannel channel,
+        CancellationToken cancellationToken = default)
+    {
+        var chain = new List<ChannelMessage>();
+        var current = triggerMessage;
+        var visited = new HashSet<ulong>();
+
+        while (current != null && chain.Count < _replyChainDepth)
+        {
+            if (!visited.Add(current.Id))
+            {
+                // Prevent infinite loops from circular references
+                break;
+            }
+
+            IReadOnlyList<ChannelImage> images = Array.Empty<ChannelImage>();
+            if (_allowImageContext)
+            {
+                images = CollectImages(current);
+            }
+
+            chain.Add(new ChannelMessage
+            {
+                MessageId = current.Id,
+                Author = current.Author.Username,
+                Content = current.Content ?? string.Empty,
+                Timestamp = current.Timestamp,
+                IsBot = current.Author.IsBot,
+                Images = images,
+                ReferencedMessageId = current.Reference?.MessageId.IsSpecified == true ? current.Reference.MessageId.Value : null,
+                IsFromThisBot = _botUserId.HasValue && current.Author.Id == _botUserId.Value
+            });
+
+            // Walk to the parent message
+            if (current.Reference?.MessageId.IsSpecified != true)
+            {
+                break;
+            }
+
+            try
+            {
+                current = await channel.GetMessageAsync(current.Reference.MessageId.Value);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed to fetch referenced message {MessageId} in reply chain", current.Reference.MessageId.Value);
+                break;
+            }
+        }
+
+        chain.Reverse(); // Oldest first
+        
+        _logger.LogInformation(
+            "Gathered reply chain with {Count} messages: {Chain}",
+            chain.Count,
+            string.Join(" -> ", chain.Select(m => $"{(m.IsFromThisBot ? "Bot" : m.Author)}:{m.MessageId}")));
+        
+        return chain;
     }
 
     private IReadOnlyList<ChannelImage> CollectImages(IMessage message)

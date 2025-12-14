@@ -6,7 +6,8 @@ namespace DiscordSky.Bot.Models.Orchestration;
 public enum CreativeInvocationKind
 {
     Command,
-    Ambient
+    Ambient,
+    DirectReply
 }
 
 public sealed record CreativeRequest(
@@ -17,7 +18,10 @@ public sealed record CreativeRequest(
     ulong ChannelId,
     ulong? GuildId,
     DateTimeOffset Timestamp,
-    CreativeInvocationKind InvocationKind = CreativeInvocationKind.Command
+    CreativeInvocationKind InvocationKind = CreativeInvocationKind.Command,
+    IReadOnlyList<ChannelMessage>? ReplyChain = null,
+    bool IsInThread = false,
+    ulong? TriggerMessageId = null
 );
 
 public sealed record CreativeContext(
@@ -40,6 +44,8 @@ public sealed record ChannelMessage
     public DateTimeOffset Timestamp { get; init; }
     public bool IsBot { get; init; }
     public IReadOnlyList<ChannelImage> Images { get; init; } = Array.Empty<ChannelImage>();
+    public ulong? ReferencedMessageId { get; init; }
+    public bool IsFromThisBot { get; init; }
 }
 
 public sealed record ChannelImage

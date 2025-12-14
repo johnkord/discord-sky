@@ -19,6 +19,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly ChaosSettings _chaosSettings;
     private readonly BotOptions _options;
     private readonly CreativeOrchestrator _orchestrator;
+    private readonly ContextAggregator _contextAggregator;
     private readonly IRandomProvider _randomProvider;
 
     public DiscordBotService(
@@ -26,6 +27,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         IOptions<BotOptions> options,
         ChaosSettings chaosSettings,
         CreativeOrchestrator orchestrator,
+        ContextAggregator contextAggregator,
         ILogger<DiscordBotService> logger,
         IRandomProvider? randomProvider = null)
     {
@@ -33,6 +35,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _options = options.Value;
         _chaosSettings = chaosSettings;
         _orchestrator = orchestrator;
+        _contextAggregator = contextAggregator;
         _logger = logger;
         _randomProvider = randomProvider ?? DefaultRandomProvider.Instance;
     }
@@ -41,6 +44,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     {
         _client.Log += OnLogAsync;
         _client.MessageReceived += OnMessageReceivedAsync;
+        _client.Ready += OnReadyAsync;
 
         if (string.IsNullOrWhiteSpace(_options.Token))
         {
@@ -59,10 +63,18 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _logger.LogInformation("Discord Sky bot started and listening for chaos triggers.");
     }
 
+    private Task OnReadyAsync()
+    {
+        _contextAggregator.SetBotUserId(_client.CurrentUser.Id);
+        _logger.LogInformation("Bot ready. User ID: {BotUserId}", _client.CurrentUser.Id);
+        return Task.CompletedTask;
+    }
+
     public async Task StopAsync(CancellationToken cancellationToken)
     {
         _client.Log -= OnLogAsync;
         _client.MessageReceived -= OnMessageReceivedAsync;
+        _client.Ready -= OnReadyAsync;
 
         if (string.IsNullOrWhiteSpace(_options.Token))
         {
@@ -116,6 +128,35 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
         var context = new SocketCommandContext(_client, message);
         var content = message.Content.Trim();
+
+        // Check if this is a reply to the bot
+        if (message.Reference?.MessageId.IsSpecified == true)
+        {
+            // Try to get the referenced message - it might be cached or we need to fetch it
+            IMessage? referencedMessage = message.ReferencedMessage;
+            if (referencedMessage == null)
+            {
+                try
+                {
+                    referencedMessage = await message.Channel.GetMessageAsync(message.Reference.MessageId.Value);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Failed to fetch referenced message {MessageId}", message.Reference.MessageId.Value);
+                }
+            }
+
+            if (referencedMessage?.Author.Id == _client.CurrentUser.Id)
+            {
+                _logger.LogDebug(
+                    "Direct reply detected: {UserId} replied to bot message {BotMessageId}",
+                    message.Author.Id,
+                    referencedMessage.Id);
+
+                await HandleDirectReplyAsync(context, message);
+                return;
+            }
+        }
 
         var hasPrefix = !string.IsNullOrWhiteSpace(_options.CommandPrefix) && content.StartsWith(_options.CommandPrefix, StringComparison.OrdinalIgnoreCase);
 
@@ -217,6 +258,68 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         {
             reference = new MessageReference(result.ReplyToMessageId.Value);
         }
+
+        await context.Channel.SendMessageAsync(reply, messageReference: reference);
+    }
+
+    private async Task HandleDirectReplyAsync(SocketCommandContext context, SocketUserMessage message)
+    {
+        // Show typing indicator for direct replies (same as Command)
+        await context.Channel.TriggerTypingAsync();
+
+        // Gather the reply chain
+        var replyChain = await _contextAggregator.GatherReplyChainAsync(
+            message,
+            context.Channel,
+            CancellationToken.None);
+
+        // Use the default persona for now (persona persistence will be tracked in app state)
+        // TODO: Extract persona from the original bot message if persona tracking is implemented
+        var persona = GetDefaultPersona();
+
+        // The user's reply content becomes the topic
+        var topic = message.Content.Trim();
+        if (message.Attachments.Count > 0)
+        {
+            var attachmentSummary = string.Join(", ", message.Attachments.Select(a => a.Filename));
+            var attachmentLine = $"Attachments shared: {attachmentSummary}";
+            topic = string.IsNullOrWhiteSpace(topic)
+                ? attachmentLine
+                : $"{topic}\n\n{attachmentLine}";
+        }
+
+        // Detect if we're in a thread
+        var isInThread = context.Channel is Discord.IThreadChannel;
+
+        var request = new CreativeRequest(
+            persona,
+            string.IsNullOrWhiteSpace(topic) ? null : topic,
+            GetDisplayName(context.User),
+            context.User.Id,
+            context.Channel.Id,
+            (context.Guild as SocketGuild)?.Id,
+            DateTimeOffset.UtcNow,
+            CreativeInvocationKind.DirectReply,
+            replyChain,
+            isInThread,
+            message.Id);
+
+        var result = await _orchestrator.ExecuteAsync(request, context, CancellationToken.None);
+        var reply = string.IsNullOrWhiteSpace(result.PrimaryMessage)
+            ? CreativeOrchestrator.BuildEmptyResponsePlaceholder(persona, CreativeInvocationKind.DirectReply)
+            : result.PrimaryMessage;
+
+        if (string.IsNullOrWhiteSpace(reply))
+        {
+            _logger.LogDebug("DirectReply produced no reply for persona {Persona}; suppressing send.", persona);
+            return;
+        }
+
+        // For DirectReply, default to replying to the user's message (the trigger)
+        // unless the orchestrator chose a different target
+        MessageReference? reference = result.ReplyToMessageId.HasValue
+            ? new MessageReference(result.ReplyToMessageId.Value)
+            : new MessageReference(message.Id);
 
         await context.Channel.SendMessageAsync(reply, messageReference: reference);
     }

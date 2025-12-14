@@ -54,15 +54,21 @@ public sealed class CreativeOrchestrator
         var historySlice = context.ChannelHistory;
         var userContent = BuildUserContent(request, historySlice, hasTopic);
 
+        // When reasoning is enabled, we need more output tokens to accommodate both reasoning AND the tool call
+        var hasReasoning = !string.IsNullOrWhiteSpace(_options.ReasoningEffort) || !string.IsNullOrWhiteSpace(_options.ReasoningSummary);
+        var maxOutputTokens = hasReasoning
+            ? Math.Clamp(_options.MaxTokens * 3, 1500, 4096)  // Triple tokens for reasoning models
+            : Math.Clamp(_options.MaxTokens, 300, 1024);
+
         var responseRequest = new OpenAiResponseRequest
         {
             Model = ResolveModel(request.Persona),
-            Instructions = BuildSystemInstructions(request.Persona, hasTopic),
+            Instructions = BuildSystemInstructions(request.Persona, hasTopic, request.InvocationKind, request.ReplyChain, request.IsInThread),
             Input = new List<OpenAiResponseInputItem>
             {
                 OpenAiResponseInputItem.FromContent("user", userContent)
             },
-            MaxOutputTokens = Math.Clamp(_options.MaxTokens, 300, 1024),
+            MaxOutputTokens = maxOutputTokens,
             Tools = new[] { OpenAiTooling.CreateSendDiscordMessageTool() },
             ToolChoice = new
             {
@@ -70,13 +76,13 @@ public sealed class CreativeOrchestrator
                 name = OpenAiTooling.SendDiscordMessageToolName
             },
             ParallelToolCalls = false,
-            Reasoning = string.IsNullOrWhiteSpace(_options.ReasoningEffort) && string.IsNullOrWhiteSpace(_options.ReasoningSummary)
-                ? null
-                : new OpenAiReasoningConfig
+            Reasoning = hasReasoning
+                ? new OpenAiReasoningConfig
                 {
                     Effort = string.IsNullOrWhiteSpace(_options.ReasoningEffort) ? null : _options.ReasoningEffort,
                     Summary = string.IsNullOrWhiteSpace(_options.ReasoningSummary) ? null : _options.ReasoningSummary
                 }
+                : null
         };
 
         var knownMessages = historySlice.ToDictionary(m => m.MessageId, m => m);
@@ -139,11 +145,20 @@ public sealed class CreativeOrchestrator
         }
     }
 
-    private static string BuildSystemInstructions(string persona, bool hasTopic)
+    private static string BuildSystemInstructions(string persona, bool hasTopic, CreativeInvocationKind invocationKind, IReadOnlyList<ChannelMessage>? replyChain, bool isInThread)
     {
         var builder = new StringBuilder();
         builder.Append($"You are roleplaying as {persona}. Stay fully in character, respond conversationally, and keep replies under four sentences.");
-        if (hasTopic)
+
+        if (invocationKind == CreativeInvocationKind.DirectReply && replyChain?.Count > 0)
+        {
+            builder.Append(" Someone is replying directly to something you said earlier.");
+            builder.Append(" IMPORTANT: Read the user's CURRENT message carefully and respond to what they are actually saying or asking NOW—do not just continue the previous topic if they've changed subjects or asked you something new.");
+            builder.Append(" The reply chain showing the conversation history is provided—your messages are marked with bot=true. Use this context to inform your response.");
+            builder.Append(" This is your chance to double down, contradict yourself, escalate the bit, or go completely off the rails.");
+            builder.Append(" Feel free to pretend you never said something, claim the user misheard, or break the fourth wall.");
+        }
+        else if (hasTopic)
         {
             builder.Append(" Address the provided topic directly while weaving in relevant details from the conversation history.");
         }
@@ -153,7 +168,14 @@ public sealed class CreativeOrchestrator
         }
 
         builder.Append(" When image inputs are provided, treat them as part of the associated Discord message and incorporate them naturally.");
-        builder.Append(" You must produce exactly one call to the send_discord_message tool in your final response—never answer with plain text or any other structure.");
+
+        if (isInThread)
+        {
+            builder.Append(" This conversation is happening in a Discord thread, so the context is more focused. Feel free to be extra chaotic since you have a captive audience.");
+        }
+
+        // Strongly emphasize tool call requirement
+        builder.Append(" CRITICAL REQUIREMENT: You MUST call the send_discord_message tool. Your entire response must be a tool call—no plain text, no other output. If you do not call the tool, you have failed.");
         builder.Append(" For a general announcement to the whole channel, set mode=\"broadcast\" and target_message_id to null.");
         builder.Append(" To directly reply to a specific Discord message, set mode=\"reply\" and target_message_id to one of the provided IDs.");
         builder.Append(" If you cannot determine a valid target_message_id, fall back to mode=\"broadcast\" with target_message_id null.");
@@ -164,6 +186,23 @@ public sealed class CreativeOrchestrator
     private IReadOnlyList<OpenAiResponseInputContent> BuildUserContent(CreativeRequest request, IReadOnlyList<ChannelMessage> conversation, bool hasTopic)
     {
         var builder = new StringBuilder();
+
+        // Add reply chain context prominently for DirectReply invocations
+        if (request.InvocationKind == CreativeInvocationKind.DirectReply && request.ReplyChain?.Count > 0)
+        {
+            builder.AppendLine("=== CONVERSATION HISTORY (reply chain) ===");
+            foreach (var chainMsg in request.ReplyChain)
+            {
+                var ageMinutes = Math.Max(0, (int)Math.Round((request.Timestamp - chainMsg.Timestamp).TotalMinutes));
+                var authorLabel = chainMsg.IsFromThisBot ? "You (bot)" : chainMsg.Author;
+                var replyNote = chainMsg.ReferencedMessageId.HasValue ? " (replying)" : "";
+                builder.AppendLine($"[{ageMinutes} min ago] {authorLabel}{replyNote}: \"{NormalizeContent(chainMsg.Content, 300)}\"");
+            }
+            builder.AppendLine("===========================================");
+            builder.AppendLine();
+            builder.AppendLine($">>> CURRENT MESSAGE FROM {request.UserDisplayName.ToUpperInvariant()} (respond to THIS): \"{request.Topic}\" <<<");
+            builder.AppendLine();
+        }
 
         builder.AppendLine("Recent Discord messages follow as individual entries (oldest first).");
         builder.AppendLine("Format: MessageId | Author | age_minutes | bot_flag => content.");
