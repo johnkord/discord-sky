@@ -716,7 +716,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 participantMemories[userId] = (displayName, memories);
             }
 
-            _logger.LogDebug(
+            _logger.LogInformation(
                 "Processing conversation window for channel {ChannelId}: {MessageCount} messages, {ParticipantCount} participants",
                 channelId, messages.Count, participantIds.Count);
 
@@ -769,7 +769,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                     case MemoryAction.Save:
                         if (existingMemories is not null && IsDuplicateMemory(op.Content!, existingMemories))
                         {
-                            _logger.LogDebug("Skipping duplicate memory for user {UserId}: {Content}", userId, op.Content);
+                            _logger.LogInformation("Skipping duplicate memory for user {UserId}: {Content}", userId, op.Content);
                             continue;
                         }
                         await _memoryStore.SaveMemoryAsync(
@@ -789,7 +789,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
             if (userOps.Count > 0)
             {
-                _logger.LogDebug("Processed {Count} memory operation(s) for user {UserId}", userOps.Count, userId);
+                _logger.LogInformation("Processed {Count} memory operation(s) for user {UserId}", userOps.Count, userId);
             }
 
             // After all operations, check if the user is at or near the memory cap
