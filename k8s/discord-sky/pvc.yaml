@@ -6,10 +6,9 @@ metadata:
   labels:
     app: discord-sky-bot
 spec:
+  storageClassName: azurefile
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
       storage: 256Mi
-  # Uses the cluster's default StorageClass.
-  # Override with: storageClassName: "managed-csi"

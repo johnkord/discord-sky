@@ -59,6 +59,7 @@ jobs:
         run: |
           kubectl apply -f k8s/discord-sky/namespace.yaml
           kubectl apply -f k8s/discord-sky/configmap.yaml
+          kubectl apply -f k8s/discord-sky/pvc.yaml
           # Note: secrets should be pre-created in the cluster or managed separately
           kubectl apply -f k8s/discord-sky/deployment.yaml
 
