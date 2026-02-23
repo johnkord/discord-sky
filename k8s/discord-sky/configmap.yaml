@@ -5,10 +5,10 @@ metadata:
   namespace: discord-sky
 data:
   DOTNET_ENVIRONMENT: "Production"
+  ASPNETCORE_URLS: "http://+:8080"
   Bot__Status: "SnooPING AS usual"
   Bot__AllowedChannelNames: ""
   Bot__CommandPrefix: "!sky"
   Bot__HistoryMessageLimit: "20"
-  Chaos__AnnoyanceLevel: "0.5"
-  Chaos__MaxScriptLines: "5"
+  Bot__MemoryDataPath: "/app/data/user_memories"
   Chaos__MaxPromptsPerHour: "20"

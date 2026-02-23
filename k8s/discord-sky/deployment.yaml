@@ -32,20 +32,26 @@ spec:
             limits:
               cpu: 250m
               memory: 512Mi
+          ports:
+            - containerPort: 8080
+              name: health
+          volumeMounts:
+            - name: memory-data
+              mountPath: /app/data/user_memories
           livenessProbe:
-            exec:
-              command:
-                - /bin/sh
-                - -c
-                - "cat /proc/1/comm | grep dotnet"
+            httpGet:
+              path: /healthz
+              port: 8080
             initialDelaySeconds: 30
             periodSeconds: 30
           readinessProbe:
-            exec:
-              command:
-                - /bin/sh
-                - -c
-                - "cat /proc/1/comm | grep dotnet"
+            httpGet:
+              path: /healthz
+              port: 8080
             initialDelaySeconds: 20
             periodSeconds: 30
+      volumes:
+        - name: memory-data
+          persistentVolumeClaim:
+            claimName: discord-sky-memory
       restartPolicy: Always

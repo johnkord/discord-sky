@@ -1,6 +1,3 @@
-using System;
-using DiscordSky.Bot.Configuration;
-
 namespace DiscordSky.Bot.Models.Orchestration;
 
 public enum CreativeInvocationKind
@@ -21,20 +18,75 @@ public sealed record CreativeRequest(
     CreativeInvocationKind InvocationKind = CreativeInvocationKind.Command,
     IReadOnlyList<ChannelMessage>? ReplyChain = null,
     bool IsInThread = false,
-    ulong? TriggerMessageId = null
+    ulong? TriggerMessageId = null,
+    ChannelContext? Channel = null,
+    IReadOnlyList<UserMemory>? UserMemories = null
+);
+
+/// <summary>
+/// Metadata about the Discord channel and server where the message originated.
+/// </summary>
+public sealed record ChannelContext(
+    string? ChannelName,
+    string? ChannelTopic,
+    string? ServerName,
+    bool IsNsfw,
+    string? ThreadName,
+    int? MemberCount,
+    int RecentMessageCount,
+    DateTimeOffset? BotLastSpokeAt
 );
 
 public sealed record CreativeContext(
-    CreativeRequest Request,
-    ChaosSettings Chaos,
     IReadOnlyList<ChannelMessage> ChannelHistory
 );
 
 public sealed record CreativeResult(
     string PrimaryMessage,
-    ulong? ReplyToMessageId = null,
-    string Mode = "broadcast"
+    ulong? ReplyToMessageId = null
 );
+
+public sealed record UserMemory(
+    string Content,
+    string Context,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset LastReferencedAt,
+    int ReferenceCount
+);
+
+/// <summary>
+/// A memory operation that targets a specific user, produced by conversation-window extraction.
+/// </summary>
+public sealed record MultiUserMemoryOperation(
+    ulong UserId,
+    MemoryAction Action,
+    int? MemoryIndex,
+    string? Content,
+    string? Context
+);
+
+public enum MemoryAction { Save, Update, Forget }
+
+/// <summary>
+/// A single message buffered for conversation-window memory extraction.
+/// </summary>
+public sealed record BufferedMessage(
+    ulong AuthorId,
+    string AuthorDisplayName,
+    string Content,
+    DateTimeOffset Timestamp);
+
+/// <summary>
+/// Accumulates messages per channel for debounced conversation-window extraction.
+/// </summary>
+internal sealed class ChannelMessageBuffer
+{
+    public List<BufferedMessage> Messages { get; } = new();
+    public Timer? DebounceTimer { get; set; }
+    public DateTimeOffset FirstMessageAt { get; set; }
+    public DateTimeOffset LastMessageAt { get; set; }
+    public readonly object Lock = new();
+}
 
 public sealed record ChannelMessage
 {

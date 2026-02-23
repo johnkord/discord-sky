@@ -1,7 +1,7 @@
-using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using DiscordSky.Bot.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace DiscordSky.Bot.Orchestration;
 
@@ -9,14 +9,15 @@ public sealed class SafetyFilter
 {
     private readonly ChaosSettings _settings;
     private readonly ILogger<SafetyFilter> _logger;
-    private readonly ConcurrentQueue<DateTimeOffset> _promptHistory = new();
+    private readonly Queue<DateTimeOffset> _promptHistory = new();
+    private readonly object _rateLimitLock = new();
+    private readonly Regex? _banWordRegex;
 
-    private static readonly Regex MentionSanitizer = new("[^a-zA-Z0-9]", RegexOptions.Compiled);
-
-    public SafetyFilter(ChaosSettings settings, ILogger<SafetyFilter> logger)
+    public SafetyFilter(IOptions<ChaosSettings> settings, ILogger<SafetyFilter> logger)
     {
-        _settings = settings;
+        _settings = settings.Value;
         _logger = logger;
+        _banWordRegex = BuildBanWordRegex(_settings.BanWords);
     }
 
     public bool ShouldRateLimit(DateTimeOffset timestamp)
@@ -26,46 +27,51 @@ public sealed class SafetyFilter
             return false;
         }
 
-        _promptHistory.Enqueue(timestamp);
-        while (_promptHistory.TryPeek(out var head) && timestamp - head > TimeSpan.FromHours(1))
+        lock (_rateLimitLock)
         {
-            _promptHistory.TryDequeue(out _);
+            _promptHistory.Enqueue(timestamp);
+            while (_promptHistory.Count > 0 && timestamp - _promptHistory.Peek() > TimeSpan.FromHours(1))
+            {
+                _promptHistory.Dequeue();
+            }
+
+            if (_promptHistory.Count > _settings.MaxPromptsPerHour)
+            {
+                _logger.LogInformation("Creative request throttled due to MaxPromptsPerHour limit {Limit}", _settings.MaxPromptsPerHour);
+                return true;
+            }
+
+            return false;
         }
-
-        if (_promptHistory.Count > _settings.MaxPromptsPerHour)
-        {
-            _logger.LogInformation("Creative request throttled due to MaxPromptsPerHour limit {Limit}", _settings.MaxPromptsPerHour);
-            return true;
-        }
-
-        return false;
-    }
-
-    public string SanitizeMentions(string name)
-    {
-        var trimmed = name.Trim();
-        var normalized = MentionSanitizer.Replace(trimmed, string.Empty);
-        return string.IsNullOrWhiteSpace(normalized) ? "chaos" : normalized;
     }
 
     public string ScrubBannedContent(string text)
     {
-        if (_settings.BanWords.Count == 0)
+        if (_banWordRegex is null)
         {
             return text;
         }
 
-        var result = text;
-        foreach (var banWord in _settings.BanWords)
-        {
-            if (string.IsNullOrWhiteSpace(banWord))
-            {
-                continue;
-            }
+        return _banWordRegex.Replace(text, "***");
+    }
 
-            result = Regex.Replace(result, Regex.Escape(banWord), "***", RegexOptions.IgnoreCase);
+    private static Regex? BuildBanWordRegex(IReadOnlyList<string> banWords)
+    {
+        if (banWords.Count == 0)
+        {
+            return null;
         }
 
-        return result;
+        var patterns = banWords
+            .Where(w => !string.IsNullOrWhiteSpace(w))
+            .Select(Regex.Escape)
+            .ToList();
+
+        if (patterns.Count == 0)
+        {
+            return null;
+        }
+
+        return new Regex(string.Join("|", patterns), RegexOptions.IgnoreCase | RegexOptions.Compiled);
     }
 }

@@ -52,3 +52,9 @@ Thumbs.db
 
 .venv
 env-inventory.md
+
+# User memory data
+data/
+
+# K8s secrets (real values)
+k8s/discord-sky/secret.yaml

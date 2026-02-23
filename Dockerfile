@@ -23,5 +23,6 @@ WORKDIR /app
 COPY --from=build /app/publish .
 
 ENV DOTNET_EnableDiagnostics=0
+EXPOSE 8080
 
 ENTRYPOINT ["dotnet", "DiscordSky.Bot.dll"]

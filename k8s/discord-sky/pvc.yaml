@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: discord-sky-memory
+  namespace: discord-sky
+  labels:
+    app: discord-sky-bot
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 256Mi
+  # Uses the cluster's default StorageClass.
+  # Override with: storageClassName: "managed-csi"

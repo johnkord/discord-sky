@@ -1,7 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 using System.Text.RegularExpressions;
 using Discord;
 using Discord.Commands;
@@ -14,7 +10,6 @@ namespace DiscordSky.Bot.Orchestration;
 
 public sealed class ContextAggregator
 {
-    private readonly ChaosSettings _chaosSettings;
     private readonly ILogger<ContextAggregator> _logger;
     private readonly string _commandPrefix;
     private readonly int _historyLimit;
@@ -40,11 +35,9 @@ public sealed class ContextAggregator
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     public ContextAggregator(
-        ChaosSettings chaosSettings,
         IOptions<BotOptions> botOptions,
         ILogger<ContextAggregator> logger)
     {
-        _chaosSettings = chaosSettings;
         _logger = logger;
 
         var bot = botOptions.Value;
@@ -75,13 +68,13 @@ public sealed class ContextAggregator
     public async Task<CreativeContext> BuildContextAsync(CreativeRequest request, SocketCommandContext commandContext, CancellationToken cancellationToken)
     {
         var history = await GatherHistoryAsync(commandContext, cancellationToken);
-        return new CreativeContext(request, _chaosSettings, history);
+        return new CreativeContext(history);
     }
 
     private async Task<IReadOnlyList<ChannelMessage>> GatherHistoryAsync(SocketCommandContext commandContext, CancellationToken cancellationToken)
     {
         var messages = new List<ChannelMessage>();
-        var fetchLimit = Math.Max(_historyLimit * 2, _historyLimit);
+        var fetchLimit = _historyLimit * 2;
 
         try
         {

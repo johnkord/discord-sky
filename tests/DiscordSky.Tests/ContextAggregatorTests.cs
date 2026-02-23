@@ -1,5 +1,3 @@
-using System;
-using System.Linq;
 using DiscordSky.Bot.Models.Orchestration;
 using DiscordSky.Bot.Orchestration;
 

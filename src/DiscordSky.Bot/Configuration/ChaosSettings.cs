@@ -2,8 +2,6 @@ namespace DiscordSky.Bot.Configuration;
 
 public sealed class ChaosSettings
 {
-    public double AnnoyanceLevel { get; init; } = 0.5;
-    public int MaxScriptLines { get; init; } = 6;
     public int MaxPromptsPerHour { get; init; } = 20;
     public List<string> BanWords { get; init; } = new();
     /// <summary>

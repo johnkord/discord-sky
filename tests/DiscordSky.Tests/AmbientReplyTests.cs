@@ -1,12 +1,5 @@
-using System.Threading;
-using System.Threading.Tasks;
-using Discord;
-using Discord.WebSocket;
 using DiscordSky.Bot.Bot;
 using DiscordSky.Bot.Configuration;
-using DiscordSky.Bot.Orchestration;
-using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 
 namespace DiscordSky.Tests;
 
