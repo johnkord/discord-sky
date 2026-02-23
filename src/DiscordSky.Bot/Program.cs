@@ -2,6 +2,7 @@
 using Discord.WebSocket;
 using DiscordSky.Bot.Bot;
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Integrations.LinkUnfurling;
 using DiscordSky.Bot.Memory;
 using DiscordSky.Bot.Orchestration;
 using Microsoft.Extensions.AI;
@@ -37,6 +38,7 @@ builder.Services.AddSingleton<IChatClient>(sp =>
 		.AsIChatClient();
 });
 
+builder.Services.AddHttpClient<TweetUnfurler>();
 builder.Services.AddSingleton<SafetyFilter>();
 builder.Services.AddSingleton<ContextAggregator>();
 builder.Services.AddSingleton<CreativeOrchestrator>();

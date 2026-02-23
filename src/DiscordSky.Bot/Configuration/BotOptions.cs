@@ -30,6 +30,11 @@ public sealed class BotOptions
     public bool IncludeOwnMessagesInHistory { get; init; } = true;
 
     /// <summary>
+    /// Whether to unfurl links (e.g. X/Twitter tweets) and include their content as context.
+    /// </summary>
+    public bool EnableLinkUnfurling { get; init; } = true;
+
+    /// <summary>
     /// Whether per-user memory is enabled.
     /// </summary>
     public bool EnableUserMemory { get; init; } = true;

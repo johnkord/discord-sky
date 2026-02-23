@@ -313,6 +313,7 @@ public sealed class CreativeOrchestrator
         }
 
         builder.Append(" When image inputs are provided, treat them as part of the associated Discord message and incorporate them naturally.");
+        builder.Append(" When unfurled links (such as tweets) appear, treat the unfurled text and images as content the user shared. Reference or react to them naturally as part of the conversation.");
 
         if (isInThread)
         {
@@ -439,18 +440,38 @@ public sealed class CreativeOrchestrator
             new TextContent(builder.ToString())
         };
 
+        // Include unfurled links from the triggering message (e.g. tweets)
+        if (request.UnfurledLinks is { Count: > 0 })
+        {
+            foreach (var link in request.UnfurledLinks)
+            {
+                content.Add(new TextContent($"[Unfurled {link.SourceType} from {link.Author}]: {link.Text}"));
+
+                foreach (var image in link.Images)
+                {
+                    content.Add(new UriContent(image.Url, "image/*"));
+                }
+            }
+        }
+
         foreach (var message in conversation)
         {
             content.Add(new TextContent(BuildMessageLine(message, request.Timestamp)));
 
-            if (message.Images.Count == 0)
-            {
-                continue;
-            }
-
             foreach (var image in message.Images)
             {
                 content.Add(new UriContent(image.Url, "image/*"));
+            }
+
+            foreach (var link in message.UnfurledLinks)
+            {
+                var linkText = $"[Unfurled {link.SourceType} from {link.Author}]: {link.Text}";
+                content.Add(new TextContent(linkText));
+
+                foreach (var image in link.Images)
+                {
+                    content.Add(new UriContent(image.Url, "image/*"));
+                }
             }
         }
 
@@ -466,9 +487,12 @@ public sealed class CreativeOrchestrator
             content = message.Images.Count > 0 ? "[image attached]" : "[no text content]";
         }
 
-        var suffix = message.Images.Count > 0
-            ? $" ({message.Images.Count} image(s) follow)"
-            : string.Empty;
+        var suffixParts = new List<string>();
+        if (message.Images.Count > 0)
+            suffixParts.Add($"{message.Images.Count} image(s) follow");
+        if (message.UnfurledLinks.Count > 0)
+            suffixParts.Add($"{message.UnfurledLinks.Count} unfurled link(s) follow");
+        var suffix = suffixParts.Count > 0 ? $" ({string.Join(", ", suffixParts)})" : string.Empty;
 
         return $"{message.MessageId} | {message.Author} | age_minutes={ageMinutes} | bot={message.IsBot} => {content}{suffix}";
     }

@@ -3,6 +3,7 @@ using Discord;
 using Discord.Commands;
 using Discord.WebSocket;
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Integrations.LinkUnfurling;
 using DiscordSky.Bot.Memory;
 using DiscordSky.Bot.Models.Orchestration;
 using DiscordSky.Bot.Orchestration;
@@ -21,6 +22,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly CreativeOrchestrator _orchestrator;
     private readonly ContextAggregator _contextAggregator;
     private readonly IUserMemoryStore _memoryStore;
+    private readonly TweetUnfurler _tweetUnfurler;
     private readonly IRandomProvider _randomProvider;
     private readonly ConcurrentDictionary<ulong, (string Persona, DateTimeOffset CreatedAt)> _personaCache = new();
     private readonly ConcurrentDictionary<ulong, ChannelMessageBuffer> _channelBuffers = new();
@@ -35,6 +37,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         CreativeOrchestrator orchestrator,
         ContextAggregator contextAggregator,
         IUserMemoryStore memoryStore,
+        TweetUnfurler tweetUnfurler,
         ILogger<DiscordBotService> logger,
         IRandomProvider? randomProvider = null)
     {
@@ -44,6 +47,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _orchestrator = orchestrator;
         _contextAggregator = contextAggregator;
         _memoryStore = memoryStore;
+        _tweetUnfurler = tweetUnfurler;
         _logger = logger;
         _randomProvider = randomProvider ?? DefaultRandomProvider.Instance;
     }
@@ -301,6 +305,14 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             }
         }
 
+        // Unfurl links (e.g. tweets) from the triggering message
+        IReadOnlyList<UnfurledLink>? unfurledLinks = null;
+        if (_options.EnableLinkUnfurling && !string.IsNullOrWhiteSpace(topic))
+        {
+            unfurledLinks = await _tweetUnfurler.UnfurlTweetsAsync(topic, DateTimeOffset.UtcNow, _shutdownCts.Token);
+            if (unfurledLinks.Count == 0) unfurledLinks = null;
+        }
+
         var request = new CreativeRequest(
             persona,
             topic,
@@ -311,7 +323,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             DateTimeOffset.UtcNow,
             invocationKind,
             Channel: channelContext,
-            UserMemories: userMemories);
+            UserMemories: userMemories,
+            UnfurledLinks: unfurledLinks);
 
         var result = await _orchestrator.ExecuteAsync(request, context, _shutdownCts.Token);
         var reply = string.IsNullOrWhiteSpace(result.PrimaryMessage)
@@ -377,6 +390,14 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             }
         }
 
+        // Unfurl links (e.g. tweets) from the reply message
+        IReadOnlyList<UnfurledLink>? unfurledLinks = null;
+        if (_options.EnableLinkUnfurling && !string.IsNullOrWhiteSpace(topic))
+        {
+            unfurledLinks = await _tweetUnfurler.UnfurlTweetsAsync(topic, DateTimeOffset.UtcNow, _shutdownCts.Token);
+            if (unfurledLinks.Count == 0) unfurledLinks = null;
+        }
+
         var request = new CreativeRequest(
             persona,
             string.IsNullOrWhiteSpace(topic) ? null : topic,
@@ -390,7 +411,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             isInThread,
             message.Id,
             channelContext,
-            userMemories);
+            userMemories,
+            unfurledLinks);
 
         var result = await _orchestrator.ExecuteAsync(request, context, _shutdownCts.Token);
         var reply = string.IsNullOrWhiteSpace(result.PrimaryMessage)

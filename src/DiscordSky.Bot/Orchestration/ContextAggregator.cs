@@ -2,6 +2,7 @@ using System.Text.RegularExpressions;
 using Discord;
 using Discord.Commands;
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Integrations.LinkUnfurling;
 using DiscordSky.Bot.Models.Orchestration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -11,6 +12,7 @@ namespace DiscordSky.Bot.Orchestration;
 public sealed class ContextAggregator
 {
     private readonly ILogger<ContextAggregator> _logger;
+    private readonly TweetUnfurler _tweetUnfurler;
     private readonly string _commandPrefix;
     private readonly int _historyLimit;
     private readonly bool _allowImageContext;
@@ -18,6 +20,7 @@ public sealed class ContextAggregator
     private readonly HashSet<string> _imageHostAllowList;
     private readonly int _replyChainDepth;
     private readonly bool _includeOwnMessagesInHistory;
+    private readonly bool _enableLinkUnfurling;
     private ulong? _botUserId;
 
     private static readonly string[] ImageExtensions =
@@ -36,9 +39,11 @@ public sealed class ContextAggregator
 
     public ContextAggregator(
         IOptions<BotOptions> botOptions,
+        TweetUnfurler tweetUnfurler,
         ILogger<ContextAggregator> logger)
     {
         _logger = logger;
+        _tweetUnfurler = tweetUnfurler;
 
         var bot = botOptions.Value;
         _commandPrefix = bot.CommandPrefix ?? string.Empty;
@@ -55,6 +60,7 @@ public sealed class ContextAggregator
 
         _replyChainDepth = Math.Clamp(bot.ReplyChainDepth, 1, 100);
         _includeOwnMessagesInHistory = bot.IncludeOwnMessagesInHistory;
+        _enableLinkUnfurling = bot.EnableLinkUnfurling;
     }
 
     /// <summary>
@@ -136,6 +142,11 @@ public sealed class ContextAggregator
             _logger.LogDebug(ex, "Failed to gather channel history for {ChannelId}", commandContext.Channel.Id);
         }
 
+        if (_enableLinkUnfurling)
+        {
+            messages = await UnfurlLinksInMessagesAsync(messages, cancellationToken);
+        }
+
         var ordered = messages
             .OrderByDescending(m => m.Timestamp)
             .Take(_historyLimit)
@@ -176,6 +187,10 @@ public sealed class ContextAggregator
                 images = CollectImages(current);
             }
 
+            var unfurledLinks = _enableLinkUnfurling
+                ? await _tweetUnfurler.UnfurlTweetsAsync(current.Content ?? string.Empty, current.Timestamp, cancellationToken)
+                : Array.Empty<UnfurledLink>();
+
             chain.Add(new ChannelMessage
             {
                 MessageId = current.Id,
@@ -184,6 +199,7 @@ public sealed class ContextAggregator
                 Timestamp = current.Timestamp,
                 IsBot = current.Author.IsBot,
                 Images = images,
+                UnfurledLinks = unfurledLinks,
                 ReferencedMessageId = current.Reference?.MessageId.IsSpecified == true ? current.Reference.MessageId.Value : null,
                 IsFromThisBot = _botUserId.HasValue && current.Author.Id == _botUserId.Value
             });
@@ -213,6 +229,28 @@ public sealed class ContextAggregator
             string.Join(" -> ", chain.Select(m => $"{(m.IsFromThisBot ? "Bot" : m.Author)}:{m.MessageId}")));
         
         return chain;
+    }
+
+    private async Task<List<ChannelMessage>> UnfurlLinksInMessagesAsync(
+        List<ChannelMessage> messages,
+        CancellationToken cancellationToken)
+    {
+        var tasks = messages.Select(async msg =>
+        {
+            try
+            {
+                var links = await _tweetUnfurler.UnfurlTweetsAsync(msg.Content, msg.Timestamp, cancellationToken);
+                return links.Count > 0 ? msg with { UnfurledLinks = links } : msg;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogDebug(ex, "Failed to unfurl links in message {MessageId}", msg.MessageId);
+                return msg;
+            }
+        });
+
+        var results = await Task.WhenAll(tasks);
+        return results.ToList();
     }
 
     private IReadOnlyList<ChannelImage> CollectImages(IMessage message)

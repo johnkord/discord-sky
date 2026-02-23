@@ -20,7 +20,8 @@ public sealed record CreativeRequest(
     bool IsInThread = false,
     ulong? TriggerMessageId = null,
     ChannelContext? Channel = null,
-    IReadOnlyList<UserMemory>? UserMemories = null
+    IReadOnlyList<UserMemory>? UserMemories = null,
+    IReadOnlyList<UnfurledLink>? UnfurledLinks = null
 );
 
 /// <summary>
@@ -96,6 +97,7 @@ public sealed record ChannelMessage
     public DateTimeOffset Timestamp { get; init; }
     public bool IsBot { get; init; }
     public IReadOnlyList<ChannelImage> Images { get; init; } = Array.Empty<ChannelImage>();
+    public IReadOnlyList<UnfurledLink> UnfurledLinks { get; init; } = Array.Empty<UnfurledLink>();
     public ulong? ReferencedMessageId { get; init; }
     public bool IsFromThisBot { get; init; }
 }
@@ -106,4 +108,16 @@ public sealed record ChannelImage
     public string Filename { get; init; } = string.Empty;
     public string Source { get; init; } = string.Empty;
     public DateTimeOffset Timestamp { get; init; }
+}
+
+/// <summary>
+/// Content extracted from a linked resource (e.g. a tweet).
+/// </summary>
+public sealed record UnfurledLink
+{
+    public string SourceType { get; init; } = string.Empty;
+    public Uri OriginalUrl { get; init; } = null!;
+    public string Text { get; init; } = string.Empty;
+    public string Author { get; init; } = string.Empty;
+    public IReadOnlyList<ChannelImage> Images { get; init; } = Array.Empty<ChannelImage>();
 }
