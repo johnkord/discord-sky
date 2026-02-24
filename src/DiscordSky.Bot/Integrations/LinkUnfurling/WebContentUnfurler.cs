@@ -35,6 +35,14 @@ public sealed class WebContentUnfurler : ILinkUnfurler
     private static readonly TimeSpan FetchTimeout = TimeSpan.FromSeconds(10);
 
     /// <summary>
+    /// Realistic browser User-Agent string. Many sites (e.g. Reddit) return 403
+    /// for bot-like User-Agents. Using a standard browser UA allows content access
+    /// equivalent to what a user would see when clicking the link.
+    /// </summary>
+    private const string BrowserUserAgent =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+    /// <summary>
     /// Matches common URLs in message text.
     /// Allows ')' so that URLs with balanced parentheses (e.g. Wikipedia) are captured intact.
     /// Unbalanced trailing ')' is handled by <see cref="CleanUrlString"/>.
@@ -228,8 +236,9 @@ public sealed class WebContentUnfurler : ILinkUnfurler
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Add("User-Agent", "Mozilla/5.0 (compatible; DiscordSkyBot/1.0)");
-            request.Headers.Add("Accept", "text/html,application/xhtml+xml");
+            request.Headers.Add("User-Agent", BrowserUserAgent);
+            request.Headers.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+            request.Headers.Add("Accept-Language", "en-US,en;q=0.9");
 
             using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
 
