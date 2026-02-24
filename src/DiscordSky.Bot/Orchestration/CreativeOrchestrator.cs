@@ -447,10 +447,12 @@ public sealed class CreativeOrchestrator
             foreach (var link in request.UnfurledLinks)
             {
                 var linkHeader = $"[Unfurled {link.SourceType} from {link.Author}]";
-                var imageNote = link.Images.Count > 0
-                    ? $" ({link.Images.Count} image(s) — not shown)"
-                    : string.Empty;
-                content.Add(new TextContent($"{linkHeader}{imageNote}: {link.Text}"));
+                content.Add(new TextContent($"{linkHeader}: {link.Text}"));
+
+                foreach (var image in link.Images)
+                {
+                    content.Add(new UriContent(image.Url, "image/*"));
+                }
             }
         }
 
@@ -466,10 +468,12 @@ public sealed class CreativeOrchestrator
             foreach (var link in message.UnfurledLinks)
             {
                 var linkHeader = $"[Unfurled {link.SourceType} from {link.Author}]";
-                var imageNote = link.Images.Count > 0
-                    ? $" ({link.Images.Count} image(s) — not shown)"
-                    : string.Empty;
-                content.Add(new TextContent($"{linkHeader}{imageNote}: {link.Text}"));
+                content.Add(new TextContent($"{linkHeader}: {link.Text}"));
+
+                foreach (var image in link.Images)
+                {
+                    content.Add(new UriContent(image.Url, "image/*"));
+                }
             }
         }
 
