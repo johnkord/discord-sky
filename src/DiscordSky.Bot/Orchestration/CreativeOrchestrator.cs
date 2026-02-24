@@ -1,3 +1,4 @@
+using System.ClientModel;
 using System.Text;
 using System.Text.Json;
 using Discord.Commands;
@@ -329,7 +330,7 @@ public sealed class CreativeOrchestrator
         return builder.ToString();
     }
 
-    private List<AIContent> BuildUserContent(CreativeRequest request, IReadOnlyList<ChannelMessage> conversation, bool hasTopic)
+    internal List<AIContent> BuildUserContent(CreativeRequest request, IReadOnlyList<ChannelMessage> conversation, bool hasTopic)
     {
         var builder = new StringBuilder();
 
@@ -445,12 +446,11 @@ public sealed class CreativeOrchestrator
         {
             foreach (var link in request.UnfurledLinks)
             {
-                content.Add(new TextContent($"[Unfurled {link.SourceType} from {link.Author}]: {link.Text}"));
-
-                foreach (var image in link.Images)
-                {
-                    content.Add(new UriContent(image.Url, "image/*"));
-                }
+                var linkHeader = $"[Unfurled {link.SourceType} from {link.Author}]";
+                var imageNote = link.Images.Count > 0
+                    ? $" ({link.Images.Count} image(s) — not shown)"
+                    : string.Empty;
+                content.Add(new TextContent($"{linkHeader}{imageNote}: {link.Text}"));
             }
         }
 
@@ -465,13 +465,11 @@ public sealed class CreativeOrchestrator
 
             foreach (var link in message.UnfurledLinks)
             {
-                var linkText = $"[Unfurled {link.SourceType} from {link.Author}]: {link.Text}";
-                content.Add(new TextContent(linkText));
-
-                foreach (var image in link.Images)
-                {
-                    content.Add(new UriContent(image.Url, "image/*"));
-                }
+                var linkHeader = $"[Unfurled {link.SourceType} from {link.Author}]";
+                var imageNote = link.Images.Count > 0
+                    ? $" ({link.Images.Count} image(s) — not shown)"
+                    : string.Empty;
+                content.Add(new TextContent($"{linkHeader}{imageNote}: {link.Text}"));
             }
         }
 
@@ -528,12 +526,44 @@ public sealed class CreativeOrchestrator
             {
                 return await _chatClient.GetResponseAsync(messages, chatOptions, cancellationToken);
             }
+            catch (ClientResultException crEx) when (
+                !cancellationToken.IsCancellationRequested &&
+                crEx.Message.Contains("invalid_image_url", StringComparison.OrdinalIgnoreCase))
+            {
+                // An image URL is inaccessible to OpenAI's servers.
+                // Strip all UriContent from the messages and retry once.
+                _logger.LogWarning(crEx,
+                    "Image URL rejected by API on attempt {Attempt}/{MaxAttempts}; stripping images and retrying",
+                    attempt, maxAttempts);
+                StripImageContent(messages);
+                // Fall through to retry immediately without the images
+            }
             catch (Exception ex) when (attempt < maxAttempts && IsTransient(ex) && !cancellationToken.IsCancellationRequested)
             {
                 var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt));
                 _logger.LogWarning(ex, "Transient error on attempt {Attempt}/{MaxAttempts}, retrying in {Delay}s",
                     attempt, maxAttempts, delay.TotalSeconds);
                 await Task.Delay(delay, cancellationToken);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Removes all <see cref="UriContent"/> items from every message so the request
+    /// can be retried without images (e.g. after an <c>invalid_image_url</c> error).
+    /// </summary>
+    internal static void StripImageContent(IList<ChatMessage> messages)
+    {
+        for (int i = 0; i < messages.Count; i++)
+        {
+            var msg = messages[i];
+            if (msg.Contents.Any(c => c is UriContent))
+            {
+                // Rebuild the message without UriContent.
+                // We replace the entire ChatMessage because Contents may be backed
+                // by a fixed-size array that doesn't support RemoveAt.
+                var filtered = msg.Contents.Where(c => c is not UriContent).ToList();
+                messages[i] = new ChatMessage(msg.Role, filtered);
             }
         }
     }

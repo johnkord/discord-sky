@@ -39,6 +39,16 @@ builder.Services.AddSingleton<IChatClient>(sp =>
 });
 
 builder.Services.AddHttpClient<TweetUnfurler>();
+builder.Services.AddHttpClient<WebContentUnfurler>();
+builder.Services.AddSingleton<ILinkUnfurler>(sp =>
+{
+	var unfurlers = new ILinkUnfurler[]
+	{
+		sp.GetRequiredService<TweetUnfurler>(),         // Specialized: tweets first
+		sp.GetRequiredService<WebContentUnfurler>()     // General: everything else
+	};
+	return new CompositeUnfurler(unfurlers, sp.GetRequiredService<ILogger<CompositeUnfurler>>());
+});
 builder.Services.AddSingleton<SafetyFilter>();
 builder.Services.AddSingleton<ContextAggregator>();
 builder.Services.AddSingleton<CreativeOrchestrator>();

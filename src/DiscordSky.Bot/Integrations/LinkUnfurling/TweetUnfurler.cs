@@ -8,7 +8,7 @@ namespace DiscordSky.Bot.Integrations.LinkUnfurling;
 /// <summary>
 /// Extracts tweet content (text + images) from X/Twitter links using the fxtwitter API.
 /// </summary>
-public sealed class TweetUnfurler
+public sealed class TweetUnfurler : ILinkUnfurler
 {
     private readonly HttpClient _httpClient;
     private readonly ILogger<TweetUnfurler> _logger;
@@ -28,6 +28,21 @@ public sealed class TweetUnfurler
     {
         _httpClient = httpClient;
         _logger = logger;
+    }
+
+    /// <inheritdoc />
+    public bool CanHandle(Uri url)
+    {
+        return TweetUrlRegex.IsMatch(url.AbsoluteUri);
+    }
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<UnfurledLink>> UnfurlAsync(
+        string messageContent,
+        DateTimeOffset messageTimestamp,
+        CancellationToken cancellationToken = default)
+    {
+        return UnfurlTweetsAsync(messageContent, messageTimestamp, cancellationToken);
     }
 
     /// <summary>
@@ -85,7 +100,13 @@ public sealed class TweetUnfurler
     }
 
     /// <summary>
+    /// Timeout for individual tweet fetches.
+    /// </summary>
+    private static readonly TimeSpan FetchTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
     /// Fetches tweet data from the fxtwitter API and converts it to an UnfurledLink.
+    /// Handles per-tweet timeouts gracefully without cancelling sibling operations.
     /// </summary>
     internal async Task<UnfurledLink?> FetchTweetAsync(
         string tweetId,
@@ -97,19 +118,31 @@ public sealed class TweetUnfurler
 
         _logger.LogDebug("Fetching tweet {TweetId} from fxtwitter API", tweetId);
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, apiUrl);
-        request.Headers.Add("User-Agent", "DiscordSkyBot/1.0");
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(FetchTimeout);
 
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
-
-        if (!response.IsSuccessStatusCode)
+        try
         {
-            _logger.LogDebug("fxtwitter API returned {StatusCode} for tweet {TweetId}", response.StatusCode, tweetId);
+            using var request = new HttpRequestMessage(HttpMethod.Get, apiUrl);
+            request.Headers.Add("User-Agent", "DiscordSkyBot/1.0");
+
+            using var response = await _httpClient.SendAsync(request, cts.Token);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogDebug("fxtwitter API returned {StatusCode} for tweet {TweetId}", response.StatusCode, tweetId);
+                return null;
+            }
+
+            var json = await response.Content.ReadAsStringAsync(cts.Token);
+            return ParseFxTwitterResponse(json, originalUrl, messageTimestamp);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // Per-tweet timeout — not a global cancellation. Return null gracefully.
+            _logger.LogDebug("Timeout fetching tweet {TweetId} from fxtwitter API", tweetId);
             return null;
         }
-
-        var json = await response.Content.ReadAsStringAsync(cancellationToken);
-        return ParseFxTwitterResponse(json, originalUrl, messageTimestamp);
     }
 
     /// <summary>

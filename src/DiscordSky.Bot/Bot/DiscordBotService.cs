@@ -22,7 +22,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly CreativeOrchestrator _orchestrator;
     private readonly ContextAggregator _contextAggregator;
     private readonly IUserMemoryStore _memoryStore;
-    private readonly TweetUnfurler _tweetUnfurler;
+    private readonly ILinkUnfurler _linkUnfurler;
     private readonly IRandomProvider _randomProvider;
     private readonly ConcurrentDictionary<ulong, (string Persona, DateTimeOffset CreatedAt)> _personaCache = new();
     private readonly ConcurrentDictionary<ulong, ChannelMessageBuffer> _channelBuffers = new();
@@ -37,7 +37,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         CreativeOrchestrator orchestrator,
         ContextAggregator contextAggregator,
         IUserMemoryStore memoryStore,
-        TweetUnfurler tweetUnfurler,
+        ILinkUnfurler linkUnfurler,
         ILogger<DiscordBotService> logger,
         IRandomProvider? randomProvider = null)
     {
@@ -47,7 +47,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _orchestrator = orchestrator;
         _contextAggregator = contextAggregator;
         _memoryStore = memoryStore;
-        _tweetUnfurler = tweetUnfurler;
+        _linkUnfurler = linkUnfurler;
         _logger = logger;
         _randomProvider = randomProvider ?? DefaultRandomProvider.Instance;
     }
@@ -309,7 +309,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         IReadOnlyList<UnfurledLink>? unfurledLinks = null;
         if (_options.EnableLinkUnfurling && !string.IsNullOrWhiteSpace(topic))
         {
-            unfurledLinks = await _tweetUnfurler.UnfurlTweetsAsync(topic, DateTimeOffset.UtcNow, _shutdownCts.Token);
+            unfurledLinks = await _linkUnfurler.UnfurlAsync(topic, DateTimeOffset.UtcNow, _shutdownCts.Token);
             if (unfurledLinks.Count == 0) unfurledLinks = null;
         }
 
@@ -394,7 +394,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         IReadOnlyList<UnfurledLink>? unfurledLinks = null;
         if (_options.EnableLinkUnfurling && !string.IsNullOrWhiteSpace(topic))
         {
-            unfurledLinks = await _tweetUnfurler.UnfurlTweetsAsync(topic, DateTimeOffset.UtcNow, _shutdownCts.Token);
+            unfurledLinks = await _linkUnfurler.UnfurlAsync(topic, DateTimeOffset.UtcNow, _shutdownCts.Token);
             if (unfurledLinks.Count == 0) unfurledLinks = null;
         }
 

@@ -12,7 +12,7 @@ namespace DiscordSky.Bot.Orchestration;
 public sealed class ContextAggregator
 {
     private readonly ILogger<ContextAggregator> _logger;
-    private readonly TweetUnfurler _tweetUnfurler;
+    private readonly ILinkUnfurler _linkUnfurler;
     private readonly string _commandPrefix;
     private readonly int _historyLimit;
     private readonly bool _allowImageContext;
@@ -39,11 +39,11 @@ public sealed class ContextAggregator
 
     public ContextAggregator(
         IOptions<BotOptions> botOptions,
-        TweetUnfurler tweetUnfurler,
+        ILinkUnfurler linkUnfurler,
         ILogger<ContextAggregator> logger)
     {
         _logger = logger;
-        _tweetUnfurler = tweetUnfurler;
+        _linkUnfurler = linkUnfurler;
 
         var bot = botOptions.Value;
         _commandPrefix = bot.CommandPrefix ?? string.Empty;
@@ -188,7 +188,7 @@ public sealed class ContextAggregator
             }
 
             var unfurledLinks = _enableLinkUnfurling
-                ? await _tweetUnfurler.UnfurlTweetsAsync(current.Content ?? string.Empty, current.Timestamp, cancellationToken)
+                ? await _linkUnfurler.UnfurlAsync(current.Content ?? string.Empty, current.Timestamp, cancellationToken)
                 : Array.Empty<UnfurledLink>();
 
             chain.Add(new ChannelMessage
@@ -239,7 +239,7 @@ public sealed class ContextAggregator
         {
             try
             {
-                var links = await _tweetUnfurler.UnfurlTweetsAsync(msg.Content, msg.Timestamp, cancellationToken);
+                var links = await _linkUnfurler.UnfurlAsync(msg.Content, msg.Timestamp, cancellationToken);
                 return links.Count > 0 ? msg with { UnfurledLinks = links } : msg;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
