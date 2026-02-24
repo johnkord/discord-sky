@@ -269,6 +269,78 @@ public class RedditUnfurlerTests
         Assert.Equal("[deleted]", result[0].Author);
     }
 
+    // ── Image Extraction ────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("https://i.redd.it/abc123.jpg", true)]
+    [InlineData("https://i.imgur.com/xyz.png", true)]
+    [InlineData("https://preview.redd.it/img.webp", true)]
+    [InlineData("https://pbs.twimg.com/media/img.jpg", true)]
+    [InlineData("https://example.com/photo.jpg", true)]     // image extension
+    [InlineData("https://example.com/photo.gif", true)]
+    [InlineData("https://example.com/page", false)]          // no extension, unknown host
+    [InlineData("https://reddit.com/r/pics/comments/x/y/", false)]
+    public void IsImageUrl_DetectsImageUrls(string url, bool expected)
+    {
+        Assert.Equal(expected, RedditUnfurler.IsImageUrl(new Uri(url)));
+    }
+
+    [Fact]
+    public void ParseArcticShiftResponse_ImagePost_ExtractsFullResImage()
+    {
+        var postJson = BuildPostJson(
+            title: "Cool sunset",
+            author: "photographer",
+            subreddit: "r/pics",
+            score: 500,
+            numComments: 20,
+            isSelf: false,
+            url: "https://i.redd.it/abc123.jpg");
+
+        var result = RedditUnfurler.ParseArcticShiftResponse(
+            postJson, null,
+            new Uri("https://reddit.com/r/pics/comments/xyz/cool_sunset/"), DateTimeOffset.UtcNow);
+
+        Assert.NotNull(result);
+        Assert.Single(result.Images);
+        Assert.Equal("reddit-image", result.Images[0].Source);
+        Assert.Equal(new Uri("https://i.redd.it/abc123.jpg"), result.Images[0].Url);
+        Assert.Equal("abc123.jpg", result.Images[0].Filename);
+    }
+
+    [Fact]
+    public void ParseArcticShiftResponse_NonImageLinkPost_FallsBackToThumbnail()
+    {
+        // Post links to a webpage, not a direct image — should use thumbnail
+        var postJson = """{"data": [{"title": "Article", "author": "user", "subreddit_name_prefixed": "r/news", "url": "https://example.com/article", "is_self": false, "score": 10, "num_comments": 1, "thumbnail": "https://b.thumbs.redditmedia.com/thumb.jpg"}]}""";
+
+        var result = RedditUnfurler.ParseArcticShiftResponse(
+            postJson, null,
+            new Uri("https://reddit.com/r/news/comments/abc/article/"), DateTimeOffset.UtcNow);
+
+        Assert.NotNull(result);
+        Assert.Single(result.Images);
+        Assert.Equal("reddit-thumbnail", result.Images[0].Source);
+    }
+
+    [Fact]
+    public void ParseArcticShiftResponse_SelfPost_NoImages()
+    {
+        var postJson = BuildPostJson(
+            title: "Question",
+            selftext: "Why?",
+            author: "user",
+            subreddit: "r/AskReddit",
+            isSelf: true);
+
+        var result = RedditUnfurler.ParseArcticShiftResponse(
+            postJson, null,
+            new Uri("https://reddit.com/r/AskReddit/comments/abc/question/"), DateTimeOffset.UtcNow);
+
+        Assert.NotNull(result);
+        Assert.Empty(result.Images);
+    }
+
     // ── UnfurlAsync ───────────────────────────────────────────────────
 
     [Fact]

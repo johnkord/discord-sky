@@ -57,6 +57,26 @@ public sealed class RedditUnfurler : ILinkUnfurler
         @"https?://(?:(?:www\.|old\.|new\.)?reddit\.com)/r/(\w+)/comments/(\w+)",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    /// <summary>
+    /// Known image hosting domains. URLs on these domains are treated as
+    /// direct image links (the URL itself is the full-resolution image).
+    /// </summary>
+    private static readonly HashSet<string> ImageHosts = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "i.redd.it",
+        "i.imgur.com",
+        "preview.redd.it",
+        "pbs.twimg.com"
+    };
+
+    /// <summary>
+    /// Common image file extensions.
+    /// </summary>
+    private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"
+    };
+
     public RedditUnfurler(HttpClient httpClient, ILogger<RedditUnfurler> logger)
     {
         _httpClient = httpClient;
@@ -280,18 +300,37 @@ public sealed class RedditUnfurler : ILinkUnfurler
 
             // Extract images (thumbnail or preview)
             var images = new List<ChannelImage>();
-            var thumbnail = GetStringProp(post, "thumbnail");
-            if (!string.IsNullOrWhiteSpace(thumbnail)
-                && thumbnail != "self" && thumbnail != "default" && thumbnail != "nsfw" && thumbnail != "spoiler"
-                && Uri.TryCreate(thumbnail, UriKind.Absolute, out var thumbUri))
+
+            // For link posts, check if the URL is a direct image
+            if (!isSelf && !string.IsNullOrWhiteSpace(linkUrl)
+                && Uri.TryCreate(linkUrl, UriKind.Absolute, out var linkUri)
+                && IsImageUrl(linkUri))
             {
                 images.Add(new ChannelImage
                 {
-                    Url = thumbUri,
-                    Filename = Path.GetFileName(thumbUri.LocalPath),
-                    Source = "reddit-thumbnail",
+                    Url = linkUri,
+                    Filename = Path.GetFileName(linkUri.LocalPath),
+                    Source = "reddit-image",
                     Timestamp = messageTimestamp
                 });
+            }
+
+            // Fall back to thumbnail if no full-res image was found
+            if (images.Count == 0)
+            {
+                var thumbnail = GetStringProp(post, "thumbnail");
+                if (!string.IsNullOrWhiteSpace(thumbnail)
+                    && thumbnail != "self" && thumbnail != "default" && thumbnail != "nsfw" && thumbnail != "spoiler"
+                    && Uri.TryCreate(thumbnail, UriKind.Absolute, out var thumbUri))
+                {
+                    images.Add(new ChannelImage
+                    {
+                        Url = thumbUri,
+                        Filename = Path.GetFileName(thumbUri.LocalPath),
+                        Source = "reddit-thumbnail",
+                        Timestamp = messageTimestamp
+                    });
+                }
             }
 
             var authorDisplay = !string.IsNullOrWhiteSpace(author) ? $"u/{author}" : string.Empty;
@@ -366,5 +405,18 @@ public sealed class RedditUnfurler : ILinkUnfurler
             return string.IsNullOrWhiteSpace(value) ? null : value;
         }
         return null;
+    }
+
+    /// <summary>
+    /// Returns true if the URL points to a direct image, either by
+    /// matching a known image host or having an image file extension.
+    /// </summary>
+    internal static bool IsImageUrl(Uri uri)
+    {
+        if (ImageHosts.Contains(uri.Host))
+            return true;
+
+        var ext = Path.GetExtension(uri.LocalPath);
+        return !string.IsNullOrEmpty(ext) && ImageExtensions.Contains(ext);
     }
 }
