@@ -86,6 +86,17 @@ public sealed class WebContentUnfurler : ILinkUnfurler
         "www.x.com",
         "vxtwitter.com",
         "fxtwitter.com",
+        // Reddit — handled by RedditUnfurler
+        "reddit.com",
+        "www.reddit.com",
+        "old.reddit.com",
+        "new.reddit.com",
+        "np.reddit.com",
+        "redd.it",
+        // Hacker News — handled by HackerNewsUnfurler
+        "news.ycombinator.com",
+        // Wikipedia — handled by WikipediaUnfurler
+        // Note: CanHandle() also has a dynamic *.wikipedia.org check for all language editions
         // Media/binary-heavy sites that won't yield useful text
         "youtube.com",
         "www.youtube.com",
@@ -148,6 +159,12 @@ public sealed class WebContentUnfurler : ILinkUnfurler
         }
 
         if (SkippedDomains.Contains(url.Host))
+        {
+            return false;
+        }
+
+        // Dynamic check for all Wikipedia language editions (300+ exist)
+        if (url.Host.EndsWith(".wikipedia.org", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }

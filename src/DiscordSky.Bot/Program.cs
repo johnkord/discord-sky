@@ -39,12 +39,18 @@ builder.Services.AddSingleton<IChatClient>(sp =>
 });
 
 builder.Services.AddHttpClient<TweetUnfurler>();
+builder.Services.AddHttpClient<RedditUnfurler>();
+builder.Services.AddHttpClient<HackerNewsUnfurler>();
+builder.Services.AddHttpClient<WikipediaUnfurler>();
 builder.Services.AddHttpClient<WebContentUnfurler>();
 builder.Services.AddSingleton<ILinkUnfurler>(sp =>
 {
 	var unfurlers = new ILinkUnfurler[]
 	{
-		sp.GetRequiredService<TweetUnfurler>(),         // Specialized: tweets first
+		sp.GetRequiredService<TweetUnfurler>(),         // Specialized: tweets
+		sp.GetRequiredService<RedditUnfurler>(),        // Specialized: Reddit posts/comments
+		sp.GetRequiredService<HackerNewsUnfurler>(),    // Specialized: HN stories/comments
+		sp.GetRequiredService<WikipediaUnfurler>(),     // Specialized: Wikipedia articles
 		sp.GetRequiredService<WebContentUnfurler>()     // General: everything else
 	};
 	return new CompositeUnfurler(unfurlers, sp.GetRequiredService<ILogger<CompositeUnfurler>>());

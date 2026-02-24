@@ -10,13 +10,9 @@ public class WebContentUnfurlerTests
     // ── CanHandle ──────────────────────────────────────────────────────
 
     [Theory]
-    [InlineData("https://www.reddit.com/r/csharp/comments/abc123/", true)]
-    [InlineData("https://old.reddit.com/r/programming/comments/xyz/", true)]
-    [InlineData("https://en.wikipedia.org/wiki/C_Sharp", true)]
     [InlineData("https://stackoverflow.com/questions/12345/", true)]
     [InlineData("https://medium.com/@user/article-title-abc123", true)]
     [InlineData("https://example.com/page", true)]
-    [InlineData("https://news.ycombinator.com/item?id=12345", true)]
     [InlineData("https://github.com/dotnet/runtime/issues/1", true)]
     public void CanHandle_GeneralUrls_ReturnsTrue(string url, bool expected)
     {
@@ -39,6 +35,17 @@ public class WebContentUnfurlerTests
     [InlineData("https://i.imgur.com/abc.jpg")]
     [InlineData("https://cdn.discordapp.com/attachments/1/2/img.png")]
     [InlineData("https://tenor.com/view/gif-123")]
+    // Reddit — handled by RedditUnfurler
+    [InlineData("https://www.reddit.com/r/csharp/comments/abc123/")]
+    [InlineData("https://old.reddit.com/r/programming/comments/xyz/")]
+    [InlineData("https://redd.it/abc123")]
+    // Hacker News — handled by HackerNewsUnfurler
+    [InlineData("https://news.ycombinator.com/item?id=12345")]
+    // Wikipedia — handled by WikipediaUnfurler (dynamic *.wikipedia.org check)
+    [InlineData("https://en.wikipedia.org/wiki/C_Sharp")]
+    [InlineData("https://en.m.wikipedia.org/wiki/Test")]
+    [InlineData("https://pt.wikipedia.org/wiki/Brasil")]
+    [InlineData("https://zh.m.wikipedia.org/wiki/Test")]
     public void CanHandle_SkippedDomains_ReturnsFalse(string url)
     {
         var unfurler = CreateUnfurler();
