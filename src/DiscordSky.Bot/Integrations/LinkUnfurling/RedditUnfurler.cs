@@ -144,8 +144,9 @@ public sealed class RedditUnfurler : ILinkUnfurler
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, jsonUrl);
-            // Reddit's JSON API works with any UA, but we use a descriptive one
-            request.Headers.Add("User-Agent", "DiscordSkyBot/1.0 (link unfurling)");
+            // Use browser UA — Reddit blocks bot UAs from datacenter IPs even on .json endpoints
+            request.Headers.Add("User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
 
             using var response = await _httpClient.SendAsync(request, cts.Token);
 
