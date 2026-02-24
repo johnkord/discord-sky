@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 using Discord;
 using Discord.Commands;
@@ -131,6 +132,7 @@ public sealed class ContextAggregator
                         Timestamp = message.Timestamp,
                         IsBot = message.Author.IsBot,
                         Images = images,
+                        UnfurledLinks = ExtractEmbedsAsUnfurledLinks(message.Embeds, message.Timestamp),
                         ReferencedMessageId = message.Reference?.MessageId.IsSpecified == true ? message.Reference.MessageId.Value : null,
                         IsFromThisBot = _botUserId.HasValue && message.Author.Id == _botUserId.Value
                     });
@@ -187,9 +189,11 @@ public sealed class ContextAggregator
                 images = CollectImages(current);
             }
 
-            var unfurledLinks = _enableLinkUnfurling
+            var embedLinks = ExtractEmbedsAsUnfurledLinks(current.Embeds, current.Timestamp);
+            var httpLinks = _enableLinkUnfurling
                 ? await _linkUnfurler.UnfurlAsync(current.Content ?? string.Empty, current.Timestamp, cancellationToken)
                 : Array.Empty<UnfurledLink>();
+            var unfurledLinks = MergeUnfurledLinks(httpLinks, embedLinks);
 
             chain.Add(new ChannelMessage
             {
@@ -239,13 +243,14 @@ public sealed class ContextAggregator
         {
             try
             {
-                var links = await _linkUnfurler.UnfurlAsync(msg.Content, msg.Timestamp, cancellationToken);
-                return links.Count > 0 ? msg with { UnfurledLinks = links } : msg;
+                var httpLinks = await _linkUnfurler.UnfurlAsync(msg.Content, msg.Timestamp, cancellationToken);
+                var merged = MergeUnfurledLinks(httpLinks, msg.UnfurledLinks);
+                return merged.Count > 0 ? msg with { UnfurledLinks = merged } : msg;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogDebug(ex, "Failed to unfurl links in message {MessageId}", msg.MessageId);
-                return msg;
+                return msg; // Keep any embed-derived links already on the message
             }
         });
 
@@ -426,5 +431,177 @@ public sealed class ContextAggregator
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Extracts content from Discord-generated embeds on a message, producing UnfurledLink objects
+    /// without any HTTP calls. This is especially valuable for sites like Reddit that block
+    /// datacenter IPs — Discord has already fetched and cached the content in its embed.
+    /// </summary>
+    internal static IReadOnlyList<UnfurledLink> ExtractEmbedsAsUnfurledLinks(
+        IReadOnlyCollection<IEmbed> embeds, DateTimeOffset messageTimestamp)
+    {
+        if (embeds == null || embeds.Count == 0)
+        {
+            return Array.Empty<UnfurledLink>();
+        }
+
+        var results = new List<UnfurledLink>();
+        var seenUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var embed in embeds)
+        {
+            if (string.IsNullOrWhiteSpace(embed.Url))
+            {
+                continue;
+            }
+
+            // Only extract from rich/link embeds with meaningful content
+            if (embed.Type != EmbedType.Rich && embed.Type != EmbedType.Link)
+            {
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(embed.Title) && string.IsNullOrWhiteSpace(embed.Description))
+            {
+                continue;
+            }
+
+            if (!Uri.TryCreate(embed.Url, UriKind.Absolute, out var uri))
+            {
+                continue;
+            }
+
+            if (!seenUrls.Add(embed.Url))
+            {
+                continue;
+            }
+
+            var sb = new StringBuilder();
+            if (!string.IsNullOrWhiteSpace(embed.Title))
+            {
+                sb.AppendLine(embed.Title);
+            }
+
+            if (!string.IsNullOrWhiteSpace(embed.Description))
+            {
+                sb.Append(embed.Description);
+            }
+
+            var text = sb.ToString().Trim();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                continue;
+            }
+
+            // Extract images from the embed
+            var images = new List<ChannelImage>();
+            if (embed.Image.HasValue && !string.IsNullOrWhiteSpace(embed.Image.Value.Url)
+                && Uri.TryCreate(embed.Image.Value.Url, UriKind.Absolute, out var imgUri))
+            {
+                images.Add(new ChannelImage
+                {
+                    Url = imgUri,
+                    Filename = Path.GetFileName(imgUri.LocalPath),
+                    Source = "embed-image",
+                    Timestamp = messageTimestamp
+                });
+            }
+            else if (embed.Thumbnail.HasValue && !string.IsNullOrWhiteSpace(embed.Thumbnail.Value.Url)
+                && Uri.TryCreate(embed.Thumbnail.Value.Url, UriKind.Absolute, out var thumbUri))
+            {
+                images.Add(new ChannelImage
+                {
+                    Url = thumbUri,
+                    Filename = Path.GetFileName(thumbUri.LocalPath),
+                    Source = "embed-thumbnail",
+                    Timestamp = messageTimestamp
+                });
+            }
+
+            // Build author string from embed metadata
+            var author = embed.Author?.Name ?? string.Empty;
+            if (embed.Footer.HasValue && !string.IsNullOrWhiteSpace(embed.Footer.Value.Text))
+            {
+                author = !string.IsNullOrWhiteSpace(author)
+                    ? $"{author} · {embed.Footer.Value.Text}"
+                    : embed.Footer.Value.Text;
+            }
+
+            // Determine source type from URL
+            var sourceType = DetermineEmbedSourceType(uri);
+
+            results.Add(new UnfurledLink
+            {
+                SourceType = sourceType,
+                OriginalUrl = uri,
+                Text = text,
+                Author = author,
+                Images = images
+            });
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Merges HTTP-unfurled links (from the unfurler pipeline) with embed-derived links.
+    /// HTTP-unfurled links take priority for the same URL since they typically contain richer content.
+    /// Embed-derived links fill in for URLs where the HTTP unfurler failed (e.g. Reddit 403s from datacenters).
+    /// </summary>
+    internal static IReadOnlyList<UnfurledLink> MergeUnfurledLinks(
+        IReadOnlyList<UnfurledLink> httpLinks,
+        IReadOnlyList<UnfurledLink> embedLinks)
+    {
+        if (embedLinks.Count == 0)
+        {
+            return httpLinks;
+        }
+
+        if (httpLinks.Count == 0)
+        {
+            return embedLinks;
+        }
+
+        var httpUrls = new HashSet<string>(
+            httpLinks.Select(l => l.OriginalUrl.AbsoluteUri),
+            StringComparer.OrdinalIgnoreCase);
+
+        var merged = new List<UnfurledLink>(httpLinks);
+        foreach (var embedLink in embedLinks)
+        {
+            if (!httpUrls.Contains(embedLink.OriginalUrl.AbsoluteUri))
+            {
+                merged.Add(embedLink);
+            }
+        }
+
+        return merged;
+    }
+
+    private static string DetermineEmbedSourceType(Uri uri)
+    {
+        var host = uri.Host.ToLowerInvariant();
+        if (host.Contains("reddit.com") || host == "redd.it")
+        {
+            return "reddit";
+        }
+
+        if (host.Contains("twitter.com") || host.Contains("x.com") || host == "t.co")
+        {
+            return "tweet";
+        }
+
+        if (host.Contains("wikipedia.org"))
+        {
+            return "wikipedia";
+        }
+
+        if (host == "news.ycombinator.com")
+        {
+            return "hackernews";
+        }
+
+        return "embed";
     }
 }
