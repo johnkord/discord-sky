@@ -6,10 +6,10 @@ using Microsoft.Extensions.Logging;
 namespace DiscordSky.Bot.Integrations.LinkUnfurling;
 
 /// <summary>
-/// Extracts Reddit post/comment content using Reddit's public JSON API.
-/// Appending <c>.json</c> to any Reddit URL returns structured data without
-/// requiring OAuth or API keys, and bypasses IP/UA blocking that affects
-/// HTML page requests from datacenter IPs.
+/// Extracts Reddit post and comment content using the Arctic Shift API.
+/// Reddit blocks all Azure datacenter IPs, so we use Arctic Shift
+/// (<c>arctic-shift.photon-reddit.com</c>) which mirrors Reddit data
+/// without authentication or API keys.
 /// </summary>
 public sealed class RedditUnfurler : ILinkUnfurler
 {
@@ -22,13 +22,17 @@ public sealed class RedditUnfurler : ILinkUnfurler
     internal const int MaxContentLength = 4000;
 
     /// <summary>
+    /// Base URL for the Arctic Shift API.
+    /// </summary>
+    internal const string ArcticShiftBaseUrl = "https://arctic-shift.photon-reddit.com";
+
+    /// <summary>
     /// Timeout for individual fetch operations.
     /// </summary>
     private static readonly TimeSpan FetchTimeout = TimeSpan.FromSeconds(10);
 
     /// <summary>
     /// Matches Reddit URLs for posts, comments, and subreddits.
-    /// Captures: subreddit, post ID, (optional) comment ID.
     /// Examples:
     ///   https://www.reddit.com/r/programming/comments/abc123/post_title/
     ///   https://reddit.com/r/AskReddit/comments/abc123/post_title/def456/
@@ -47,7 +51,7 @@ public sealed class RedditUnfurler : ILinkUnfurler
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     /// <summary>
-    /// Matches a Reddit post URL pattern to extract components.
+    /// Matches a Reddit post URL pattern to extract subreddit and post ID.
     /// </summary>
     internal static readonly Regex PostUrlRegex = new(
         @"https?://(?:(?:www\.|old\.|new\.)?reddit\.com)/r/(\w+)/comments/(\w+)",
@@ -72,15 +76,11 @@ public sealed class RedditUnfurler : ILinkUnfurler
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(messageContent))
-        {
             return Array.Empty<UnfurledLink>();
-        }
 
         var matches = RedditUrlRegex.Matches(messageContent);
         if (matches.Count == 0)
-        {
             return Array.Empty<UnfurledLink>();
-        }
 
         var seenUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var tasks = new List<(string url, Task<UnfurledLink?> task)>();
@@ -88,17 +88,10 @@ public sealed class RedditUnfurler : ILinkUnfurler
         foreach (Match match in matches)
         {
             var urlStr = WebContentUnfurler.CleanUrlString(match.Value);
-            if (!seenUrls.Add(urlStr))
-            {
-                continue;
-            }
+            if (!seenUrls.Add(urlStr)) continue;
+            if (!Uri.TryCreate(urlStr, UriKind.Absolute, out var uri)) continue;
 
-            if (!Uri.TryCreate(urlStr, UriKind.Absolute, out var uri))
-            {
-                continue;
-            }
-
-            tasks.Add((urlStr, FetchRedditJsonAsync(uri, messageTimestamp, cancellationToken)));
+            tasks.Add((urlStr, FetchViaArcticShiftAsync(uri, messageTimestamp, cancellationToken)));
         }
 
         var results = new List<UnfurledLink>();
@@ -108,9 +101,7 @@ public sealed class RedditUnfurler : ILinkUnfurler
             {
                 var result = await task;
                 if (result != null)
-                {
                     results.Add(result);
-                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -122,121 +113,115 @@ public sealed class RedditUnfurler : ILinkUnfurler
     }
 
     /// <summary>
-    /// Fetches Reddit JSON data by appending .json to the URL.
+    /// Extracts a Reddit post ID from a URL.
+    /// Handles redd.it short URLs and standard reddit.com post URLs.
+    /// Returns null for subreddit-level URLs without a specific post.
     /// </summary>
-    internal async Task<UnfurledLink?> FetchRedditJsonAsync(
-        Uri url,
-        DateTimeOffset messageTimestamp,
-        CancellationToken cancellationToken)
+    internal static string? ExtractPostId(Uri url)
     {
-        var jsonUrl = BuildJsonUrl(url);
-        if (jsonUrl == null)
+        var urlStr = url.AbsoluteUri;
+
+        var shortMatch = ShortUrlRegex.Match(urlStr);
+        if (shortMatch.Success)
+            return shortMatch.Groups[1].Value;
+
+        var postMatch = PostUrlRegex.Match(urlStr);
+        if (postMatch.Success)
+            return postMatch.Groups[2].Value;
+
+        return null;
+    }
+
+    /// <summary>
+    /// Fetches Reddit post and comment data via the Arctic Shift API.
+    /// </summary>
+    internal async Task<UnfurledLink?> FetchViaArcticShiftAsync(
+        Uri url, DateTimeOffset messageTimestamp, CancellationToken cancellationToken)
+    {
+        var postId = ExtractPostId(url);
+        if (postId == null)
         {
-            _logger.LogDebug("Could not build JSON URL for {Url}", url);
+            _logger.LogDebug("Could not extract post ID from {Url}", url);
             return null;
         }
 
-        _logger.LogDebug("Fetching Reddit JSON from {Url}", jsonUrl);
+        _logger.LogDebug("Fetching Reddit content via Arctic Shift for post {PostId}", postId);
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(FetchTimeout);
 
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, jsonUrl);
-            // Use browser UA — Reddit blocks bot UAs from datacenter IPs even on .json endpoints
-            request.Headers.Add("User-Agent",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
-
-            using var response = await _httpClient.SendAsync(request, cts.Token);
-
-            if (!response.IsSuccessStatusCode)
-            {
-                _logger.LogDebug("Reddit JSON API returned {StatusCode} for {Url}", response.StatusCode, url);
+            // Fetch post data
+            var postJson = await FetchJsonStringAsync(
+                $"{ArcticShiftBaseUrl}/api/posts/ids?ids={postId}", cts.Token);
+            if (postJson == null)
                 return null;
+
+            // Fetch comments (optional — failure is non-fatal)
+            string? commentsJson = null;
+            try
+            {
+                commentsJson = await FetchJsonStringAsync(
+                    $"{ArcticShiftBaseUrl}/api/comments/tree?link_id=t3_{postId}&limit=5", cts.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogDebug("Timeout fetching comments for post {PostId}", postId);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogDebug(ex, "Failed to fetch comments for post {PostId}", postId);
             }
 
-            var json = await response.Content.ReadAsStringAsync(cts.Token);
-            return ParseRedditJson(json, url, messageTimestamp);
+            return ParseArcticShiftResponse(postJson, commentsJson, url, messageTimestamp);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            _logger.LogDebug("Timeout fetching Reddit JSON from {Url}", url);
+            _logger.LogDebug("Timeout fetching via Arctic Shift for post {PostId}", postId);
             return null;
         }
     }
 
     /// <summary>
-    /// Builds the .json URL for a given Reddit URL.
-    /// Handles both full URLs and redd.it short links.
+    /// Parses Arctic Shift API responses into an UnfurledLink.
+    /// Post format: <c>{"data": [{ ...post fields... }]}</c>
+    /// Comments format: <c>{"data": [{ ...comment fields... }]}</c>
     /// </summary>
-    internal static string? BuildJsonUrl(Uri url)
-    {
-        var urlStr = url.AbsoluteUri;
-
-        // Handle redd.it short URLs by expanding them
-        var shortMatch = ShortUrlRegex.Match(urlStr);
-        if (shortMatch.Success)
-        {
-            var postId = shortMatch.Groups[1].Value;
-            return $"https://www.reddit.com/comments/{postId}.json?limit=5&raw_json=1";
-        }
-
-        // Handle standard Reddit URLs
-        var postMatch = PostUrlRegex.Match(urlStr);
-        if (postMatch.Success)
-        {
-            // Get the path up to and including the post ID (may include comment path)
-            var path = url.AbsolutePath.TrimEnd('/');
-            return $"https://www.reddit.com{path}.json?limit=5&raw_json=1";
-        }
-
-        // Subreddit-level URLs (e.g. /r/programming/) - not a specific post
-        // Skip these as they don't represent specific content worth unfurling
-        return null;
-    }
-
-    /// <summary>
-    /// Parses Reddit JSON response into an UnfurledLink.
-    /// Reddit returns an array where [0] is the post listing and [1] is the comments listing.
-    /// </summary>
-    internal static UnfurledLink? ParseRedditJson(string json, Uri originalUrl, DateTimeOffset messageTimestamp)
+    internal static UnfurledLink? ParseArcticShiftResponse(
+        string postJson, string? commentsJson, Uri originalUrl, DateTimeOffset messageTimestamp)
     {
         try
         {
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
+            using var postDoc = JsonDocument.Parse(postJson);
+            var postRoot = postDoc.RootElement;
 
-            // Reddit post JSON is an array: [postListing, commentsListing]
-            if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() == 0)
+            if (!postRoot.TryGetProperty("data", out var dataArray)
+                || dataArray.ValueKind != JsonValueKind.Array
+                || dataArray.GetArrayLength() == 0)
             {
                 return null;
             }
 
-            var postListing = root[0];
-            if (!TryGetFirstChild(postListing, out var postData))
-            {
-                return null;
-            }
+            var post = dataArray[0];
 
-            // Extract post fields
-            var title = GetStringProp(postData, "title");
-            var selftext = GetStringProp(postData, "selftext");
-            var author = GetStringProp(postData, "author");
-            var subreddit = GetStringProp(postData, "subreddit_name_prefixed") ?? GetStringProp(postData, "subreddit");
-            var score = postData.TryGetProperty("score", out var scoreProp) && scoreProp.ValueKind == JsonValueKind.Number
+            // Extract post fields (same field names as Reddit API, flat structure)
+            var title = GetStringProp(post, "title");
+            var selftext = GetStringProp(post, "selftext");
+            var author = GetStringProp(post, "author");
+            var subreddit = GetStringProp(post, "subreddit_name_prefixed")
+                         ?? (GetStringProp(post, "subreddit") is string sub ? $"r/{sub}" : null);
+            var score = post.TryGetProperty("score", out var scoreProp) && scoreProp.ValueKind == JsonValueKind.Number
                 ? scoreProp.GetInt32()
                 : (int?)null;
-            var numComments = postData.TryGetProperty("num_comments", out var commentsProp) && commentsProp.ValueKind == JsonValueKind.Number
+            var numComments = post.TryGetProperty("num_comments", out var commentsProp) && commentsProp.ValueKind == JsonValueKind.Number
                 ? commentsProp.GetInt32()
                 : (int?)null;
-            var linkUrl = GetStringProp(postData, "url");
-            var isSelf = postData.TryGetProperty("is_self", out var isSelfProp) && isSelfProp.ValueKind == JsonValueKind.True;
+            var linkUrl = GetStringProp(post, "url");
+            var isSelf = post.TryGetProperty("is_self", out var isSelfProp) && isSelfProp.ValueKind == JsonValueKind.True;
 
             if (string.IsNullOrWhiteSpace(title))
-            {
                 return null;
-            }
 
             // Build content text
             var sb = new System.Text.StringBuilder();
@@ -262,31 +247,40 @@ public sealed class RedditUnfurler : ILinkUnfurler
             }
 
             // Extract top comments if available
-            if (root.GetArrayLength() > 1)
+            if (!string.IsNullOrWhiteSpace(commentsJson))
             {
-                var commentsListing = root[1];
-                var topComments = ExtractTopComments(commentsListing, maxComments: 3);
-                if (topComments.Count > 0)
+                try
                 {
-                    sb.AppendLine();
-                    sb.AppendLine();
-                    sb.AppendLine("Top comments:");
-                    foreach (var comment in topComments)
+                    using var commentDoc = JsonDocument.Parse(commentsJson);
+                    if (commentDoc.RootElement.TryGetProperty("data", out var commentsArray)
+                        && commentsArray.ValueKind == JsonValueKind.Array)
                     {
-                        sb.AppendLine($"— u/{comment.Author}: {comment.Body}");
+                        var topComments = ExtractTopComments(commentsArray, maxComments: 3);
+                        if (topComments.Count > 0)
+                        {
+                            sb.AppendLine();
+                            sb.AppendLine();
+                            sb.AppendLine("Top comments:");
+                            foreach (var comment in topComments)
+                            {
+                                sb.AppendLine($"— u/{comment.Author}: {comment.Body}");
+                            }
+                        }
                     }
+                }
+                catch (JsonException)
+                {
+                    // Skip comments on parse failure
                 }
             }
 
             var text = sb.ToString().Trim();
             if (text.Length > MaxContentLength)
-            {
                 text = text[..MaxContentLength] + "…";
-            }
 
             // Extract images (thumbnail or preview)
             var images = new List<ChannelImage>();
-            var thumbnail = GetStringProp(postData, "thumbnail");
+            var thumbnail = GetStringProp(post, "thumbnail");
             if (!string.IsNullOrWhiteSpace(thumbnail)
                 && thumbnail != "self" && thumbnail != "default" && thumbnail != "nsfw" && thumbnail != "spoiler"
                 && Uri.TryCreate(thumbnail, UriKind.Absolute, out var thumbUri))
@@ -324,42 +318,26 @@ public sealed class RedditUnfurler : ILinkUnfurler
     }
 
     /// <summary>
-    /// Extracts the top N comments from a Reddit comments listing.
+    /// Extracts the top N comments from an Arctic Shift comments data array.
+    /// Each element is a flat comment object with author, body, score fields.
     /// </summary>
     internal static IReadOnlyList<(string Author, string Body)> ExtractTopComments(
-        JsonElement commentsListing, int maxComments = 3)
+        JsonElement commentsArray, int maxComments = 3)
     {
         var comments = new List<(string Author, string Body)>();
 
-        if (!TryGetChildren(commentsListing, out var children))
-        {
-            return comments;
-        }
-
-        foreach (var child in children)
+        foreach (var comment in commentsArray.EnumerateArray())
         {
             if (comments.Count >= maxComments) break;
 
-            if (!child.TryGetProperty("kind", out var kindProp) || kindProp.GetString() != "t1")
-            {
-                continue;
-            }
-
-            if (!child.TryGetProperty("data", out var data))
-            {
-                continue;
-            }
-
-            var author = GetStringProp(data, "author") ?? "[deleted]";
-            var body = GetStringProp(data, "body") ?? string.Empty;
+            var author = GetStringProp(comment, "author") ?? "[deleted]";
+            var body = GetStringProp(comment, "body") ?? string.Empty;
 
             if (string.IsNullOrWhiteSpace(body)) continue;
 
             // Truncate long comments
             if (body.Length > 300)
-            {
                 body = body[..300] + "…";
-            }
 
             comments.Add((author, body));
         }
@@ -367,39 +345,17 @@ public sealed class RedditUnfurler : ILinkUnfurler
         return comments;
     }
 
-    private static bool TryGetFirstChild(JsonElement listing, out JsonElement childData)
+    private async Task<string?> FetchJsonStringAsync(string url, CancellationToken ct)
     {
-        childData = default;
+        using var response = await _httpClient.GetAsync(url, ct);
 
-        if (!listing.TryGetProperty("data", out var data)
-            || !data.TryGetProperty("children", out var children)
-            || children.GetArrayLength() == 0)
+        if (!response.IsSuccessStatusCode)
         {
-            return false;
+            _logger.LogDebug("Arctic Shift returned {StatusCode} for {Url}", response.StatusCode, url);
+            return null;
         }
 
-        var firstChild = children[0];
-        if (!firstChild.TryGetProperty("data", out childData))
-        {
-            return false;
-        }
-
-        return true;
-    }
-
-    private static bool TryGetChildren(JsonElement listing, out JsonElement.ArrayEnumerator children)
-    {
-        children = default;
-
-        if (!listing.TryGetProperty("data", out var data)
-            || !data.TryGetProperty("children", out var childrenArr)
-            || childrenArr.ValueKind != JsonValueKind.Array)
-        {
-            return false;
-        }
-
-        children = childrenArr.EnumerateArray();
-        return true;
+        return await response.Content.ReadAsStringAsync(ct);
     }
 
     private static string? GetStringProp(JsonElement element, string name)

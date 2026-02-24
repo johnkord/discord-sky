@@ -1,3 +1,4 @@
+using System.Text.Json;
 using DiscordSky.Bot.Integrations.LinkUnfurling;
 
 namespace DiscordSky.Tests;
@@ -32,48 +33,37 @@ public class RedditUnfurlerTests
         Assert.False(unfurler.CanHandle(uri));
     }
 
-    // ── BuildJsonUrl ──────────────────────────────────────────────────
+    // ── ExtractPostId ─────────────────────────────────────────────────
 
-    [Fact]
-    public void BuildJsonUrl_StandardPostUrl_AppendsJson()
+    [Theory]
+    [InlineData("https://www.reddit.com/r/programming/comments/abc123/my_post/", "abc123")]
+    [InlineData("https://reddit.com/r/AskReddit/comments/xyz789/question/", "xyz789")]
+    [InlineData("https://old.reddit.com/r/technology/comments/def456/title/", "def456")]
+    [InlineData("https://redd.it/abc123", "abc123")]
+    [InlineData("https://reddit.com/r/programming/comments/abc123/post_title/def456/", "abc123")]
+    public void ExtractPostId_ValidPostUrls_ReturnsPostId(string url, string expectedId)
     {
-        var uri = new Uri("https://www.reddit.com/r/programming/comments/abc123/my_post/");
+        var result = RedditUnfurler.ExtractPostId(new Uri(url));
 
-        var result = RedditUnfurler.BuildJsonUrl(uri);
-
-        Assert.NotNull(result);
-        Assert.Contains("/r/programming/comments/abc123/my_post.json", result);
-        Assert.Contains("limit=5", result);
-        Assert.Contains("raw_json=1", result);
+        Assert.Equal(expectedId, result);
     }
 
-    [Fact]
-    public void BuildJsonUrl_ShortUrl_ExpandsToCommentsUrl()
+    [Theory]
+    [InlineData("https://www.reddit.com/r/programming/")]
+    [InlineData("https://reddit.com/")]
+    public void ExtractPostId_NonPostUrls_ReturnsNull(string url)
     {
-        var uri = new Uri("https://redd.it/abc123");
-
-        var result = RedditUnfurler.BuildJsonUrl(uri);
-
-        Assert.NotNull(result);
-        Assert.Equal("https://www.reddit.com/comments/abc123.json?limit=5&raw_json=1", result);
-    }
-
-    [Fact]
-    public void BuildJsonUrl_SubredditOnly_ReturnsNull()
-    {
-        var uri = new Uri("https://www.reddit.com/r/programming/");
-
-        var result = RedditUnfurler.BuildJsonUrl(uri);
+        var result = RedditUnfurler.ExtractPostId(new Uri(url));
 
         Assert.Null(result);
     }
 
-    // ── JSON Parsing ──────────────────────────────────────────────────
+    // ── ParseArcticShiftResponse ──────────────────────────────────────
 
     [Fact]
-    public void ParseRedditJson_ValidPost_ExtractsTitleAndContent()
+    public void ParseArcticShiftResponse_ValidPost_ExtractsTitleAndContent()
     {
-        var json = BuildRedditPostJson(
+        var postJson = BuildPostJson(
             title: "Test Post Title",
             selftext: "This is the body of the post",
             author: "testuser",
@@ -82,7 +72,9 @@ public class RedditUnfurlerTests
             numComments: 5,
             isSelf: true);
 
-        var result = RedditUnfurler.ParseRedditJson(json, new Uri("https://reddit.com/r/testing/comments/abc/test/"), DateTimeOffset.UtcNow);
+        var result = RedditUnfurler.ParseArcticShiftResponse(
+            postJson, null,
+            new Uri("https://reddit.com/r/testing/comments/abc/test/"), DateTimeOffset.UtcNow);
 
         Assert.NotNull(result);
         Assert.Equal("reddit", result.SourceType);
@@ -94,9 +86,9 @@ public class RedditUnfurlerTests
     }
 
     [Fact]
-    public void ParseRedditJson_LinkPost_IncludesExternalUrl()
+    public void ParseArcticShiftResponse_LinkPost_IncludesExternalUrl()
     {
-        var json = BuildRedditPostJson(
+        var postJson = BuildPostJson(
             title: "Check this link",
             selftext: null,
             author: "poster",
@@ -106,26 +98,34 @@ public class RedditUnfurlerTests
             isSelf: false,
             url: "https://example.com/article");
 
-        var result = RedditUnfurler.ParseRedditJson(json, new Uri("https://reddit.com/r/links/comments/xyz/check/"), DateTimeOffset.UtcNow);
+        var result = RedditUnfurler.ParseArcticShiftResponse(
+            postJson, null,
+            new Uri("https://reddit.com/r/links/comments/xyz/check/"), DateTimeOffset.UtcNow);
 
         Assert.NotNull(result);
         Assert.Contains("Link: https://example.com/article", result.Text);
     }
 
     [Fact]
-    public void ParseRedditJson_WithComments_ExtractsTopComments()
+    public void ParseArcticShiftResponse_WithComments_ExtractsTopComments()
     {
-        var json = BuildRedditPostJsonWithComments(
+        var postJson = BuildPostJson(
             title: "Discussion Post",
             author: "op",
             subreddit: "r/discuss",
-            comments: new[]
-            {
-                ("commenter1", "First insightful comment"),
-                ("commenter2", "Second thoughtful response")
-            });
+            score: 100,
+            numComments: 2,
+            isSelf: true);
 
-        var result = RedditUnfurler.ParseRedditJson(json, new Uri("https://reddit.com/r/discuss/comments/aaa/post/"), DateTimeOffset.UtcNow);
+        var commentsJson = BuildCommentsJson(new[]
+        {
+            ("commenter1", "First insightful comment"),
+            ("commenter2", "Second thoughtful response")
+        });
+
+        var result = RedditUnfurler.ParseArcticShiftResponse(
+            postJson, commentsJson,
+            new Uri("https://reddit.com/r/discuss/comments/aaa/post/"), DateTimeOffset.UtcNow);
 
         Assert.NotNull(result);
         Assert.Contains("Top comments:", result.Text);
@@ -134,25 +134,29 @@ public class RedditUnfurlerTests
     }
 
     [Fact]
-    public void ParseRedditJson_InvalidJson_ReturnsNull()
+    public void ParseArcticShiftResponse_InvalidJson_ReturnsNull()
     {
-        var result = RedditUnfurler.ParseRedditJson("not valid json", new Uri("https://reddit.com/r/test/comments/x/y/"), DateTimeOffset.UtcNow);
+        var result = RedditUnfurler.ParseArcticShiftResponse(
+            "not valid json", null,
+            new Uri("https://reddit.com/r/test/comments/x/y/"), DateTimeOffset.UtcNow);
 
         Assert.Null(result);
     }
 
     [Fact]
-    public void ParseRedditJson_EmptyArray_ReturnsNull()
+    public void ParseArcticShiftResponse_EmptyDataArray_ReturnsNull()
     {
-        var result = RedditUnfurler.ParseRedditJson("[]", new Uri("https://reddit.com/r/test/comments/x/y/"), DateTimeOffset.UtcNow);
+        var result = RedditUnfurler.ParseArcticShiftResponse(
+            """{"data": []}""", null,
+            new Uri("https://reddit.com/r/test/comments/x/y/"), DateTimeOffset.UtcNow);
 
         Assert.Null(result);
     }
 
     [Fact]
-    public void ParseRedditJson_NoTitle_ReturnsNull()
+    public void ParseArcticShiftResponse_NoTitle_ReturnsNull()
     {
-        var json = BuildRedditPostJson(
+        var postJson = BuildPostJson(
             title: null,
             selftext: "Body without title",
             author: "user",
@@ -161,9 +165,46 @@ public class RedditUnfurlerTests
             numComments: 0,
             isSelf: true);
 
-        var result = RedditUnfurler.ParseRedditJson(json, new Uri("https://reddit.com/r/test/comments/x/y/"), DateTimeOffset.UtcNow);
+        var result = RedditUnfurler.ParseArcticShiftResponse(
+            postJson, null,
+            new Uri("https://reddit.com/r/test/comments/x/y/"), DateTimeOffset.UtcNow);
 
         Assert.Null(result);
+    }
+
+    [Fact]
+    public void ParseArcticShiftResponse_SubredditWithoutPrefix_AddsPrefix()
+    {
+        // Arctic Shift may return "subreddit" without the "r/" prefix
+        var postJson = """{"data": [{"title": "Test", "author": "user", "subreddit": "programming", "score": 10, "num_comments": 1, "is_self": true}]}""";
+
+        var result = RedditUnfurler.ParseArcticShiftResponse(
+            postJson, null,
+            new Uri("https://reddit.com/r/programming/comments/abc/test/"), DateTimeOffset.UtcNow);
+
+        Assert.NotNull(result);
+        Assert.Contains("r/programming", result.Text);
+        Assert.Contains("r/programming", result.Author);
+    }
+
+    [Fact]
+    public void ParseArcticShiftResponse_NullCommentsJson_StillReturnsPost()
+    {
+        var postJson = BuildPostJson(
+            title: "Solo Post",
+            author: "author",
+            subreddit: "r/test",
+            score: 5,
+            numComments: 0,
+            isSelf: true);
+
+        var result = RedditUnfurler.ParseArcticShiftResponse(
+            postJson, null,
+            new Uri("https://reddit.com/r/test/comments/x/y/"), DateTimeOffset.UtcNow);
+
+        Assert.NotNull(result);
+        Assert.Contains("Solo Post", result.Text);
+        Assert.DoesNotContain("Top comments:", result.Text);
     }
 
     // ── Comment Extraction ────────────────────────────────────────────
@@ -172,10 +213,11 @@ public class RedditUnfurlerTests
     public void ExtractTopComments_TruncatesLongComments()
     {
         var longBody = new string('A', 500);
-        var json = BuildCommentsListingJson(new[] { ("author1", longBody) });
-        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        var json = BuildCommentsJson(new[] { ("author1", longBody) });
+        using var doc = JsonDocument.Parse(json);
+        var data = doc.RootElement.GetProperty("data");
 
-        var comments = RedditUnfurler.ExtractTopComments(doc.RootElement);
+        var comments = RedditUnfurler.ExtractTopComments(data);
 
         Assert.Single(comments);
         Assert.True(comments[0].Body.Length <= 301); // 300 + "…"
@@ -187,12 +229,44 @@ public class RedditUnfurlerTests
         var comments = Enumerable.Range(1, 10)
             .Select(i => ($"user{i}", $"comment {i}"))
             .ToArray();
-        var json = BuildCommentsListingJson(comments);
-        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        var json = BuildCommentsJson(comments);
+        using var doc = JsonDocument.Parse(json);
+        var data = doc.RootElement.GetProperty("data");
 
-        var result = RedditUnfurler.ExtractTopComments(doc.RootElement, maxComments: 3);
+        var result = RedditUnfurler.ExtractTopComments(data, maxComments: 3);
 
         Assert.Equal(3, result.Count);
+    }
+
+    [Fact]
+    public void ExtractTopComments_SkipsEmptyBodies()
+    {
+        var json = BuildCommentsJson(new[]
+        {
+            ("user1", ""),
+            ("user2", "valid comment"),
+            ("user3", "  ")
+        });
+        using var doc = JsonDocument.Parse(json);
+        var data = doc.RootElement.GetProperty("data");
+
+        var result = RedditUnfurler.ExtractTopComments(data);
+
+        Assert.Single(result);
+        Assert.Equal("user2", result[0].Author);
+    }
+
+    [Fact]
+    public void ExtractTopComments_DeletedAuthor_ShowsDeleted()
+    {
+        var json = """{"data": [{"body": "orphan comment", "score": 1}]}""";
+        using var doc = JsonDocument.Parse(json);
+        var data = doc.RootElement.GetProperty("data");
+
+        var result = RedditUnfurler.ExtractTopComments(data);
+
+        Assert.Single(result);
+        Assert.Equal("[deleted]", result[0].Author);
     }
 
     // ── UnfurlAsync ───────────────────────────────────────────────────
@@ -226,118 +300,34 @@ public class RedditUnfurlerTests
             Microsoft.Extensions.Logging.Abstractions.NullLogger<RedditUnfurler>.Instance);
     }
 
-    private static string BuildRedditPostJson(
-        string? title, string? selftext, string? author, string? subreddit,
-        int score, int numComments, bool isSelf, string? url = null)
+    /// <summary>
+    /// Builds an Arctic Shift post API response: {"data": [{...flat post fields...}]}
+    /// </summary>
+    private static string BuildPostJson(
+        string? title, string? selftext = null, string? author = null, string? subreddit = null,
+        int score = 0, int numComments = 0, bool isSelf = true, string? url = null)
     {
-        var titleProp = title != null ? $"\"title\": \"{title}\"," : "";
-        var selftextProp = selftext != null ? $"\"selftext\": \"{selftext}\"," : "";
-        var urlProp = url != null ? $"\"url\": \"{url}\"," : "";
+        var props = new List<string>();
+        if (title != null) props.Add($"\"title\": \"{title}\"");
+        if (selftext != null) props.Add($"\"selftext\": \"{selftext}\"");
+        if (author != null) props.Add($"\"author\": \"{author}\"");
+        if (subreddit != null) props.Add($"\"subreddit_name_prefixed\": \"{subreddit}\"");
+        if (url != null) props.Add($"\"url\": \"{url}\"");
+        props.Add($"\"score\": {score}");
+        props.Add($"\"num_comments\": {numComments}");
+        props.Add($"\"is_self\": {isSelf.ToString().ToLowerInvariant()}");
 
-        return $$"""
-        [
-          {
-            "kind": "Listing",
-            "data": {
-              "children": [
-                {
-                  "kind": "t3",
-                  "data": {
-                    {{titleProp}}
-                    {{selftextProp}}
-                    {{urlProp}}
-                    "author": "{{author}}",
-                    "subreddit_name_prefixed": "{{subreddit}}",
-                    "score": {{score}},
-                    "num_comments": {{numComments}},
-                    "is_self": {{isSelf.ToString().ToLowerInvariant()}}
-                  }
-                }
-              ]
-            }
-          },
-          {
-            "kind": "Listing",
-            "data": {
-              "children": []
-            }
-          }
-        ]
-        """;
+        return $$"""{"data": [{ {{string.Join(", ", props)}} }]}""";
     }
 
-    private static string BuildRedditPostJsonWithComments(
-        string title, string author, string subreddit,
-        (string author, string body)[] comments)
+    /// <summary>
+    /// Builds an Arctic Shift comments API response: {"data": [{...flat comment...}, ...]}
+    /// </summary>
+    private static string BuildCommentsJson((string author, string body)[] comments)
     {
-        var commentEntries = string.Join(",\n",
-            comments.Select(c => $$"""
-                {
-                  "kind": "t1",
-                  "data": {
-                    "author": "{{c.author}}",
-                    "body": "{{c.body}}",
-                    "score": 10
-                  }
-                }
-            """));
+        var entries = string.Join(", ",
+            comments.Select(c => $$"""{ "author": "{{c.author}}", "body": "{{c.body}}", "score": 5 }"""));
 
-        return $$"""
-        [
-          {
-            "kind": "Listing",
-            "data": {
-              "children": [
-                {
-                  "kind": "t3",
-                  "data": {
-                    "title": "{{title}}",
-                    "selftext": "",
-                    "author": "{{author}}",
-                    "subreddit_name_prefixed": "{{subreddit}}",
-                    "score": 100,
-                    "num_comments": {{comments.Length}},
-                    "is_self": true
-                  }
-                }
-              ]
-            }
-          },
-          {
-            "kind": "Listing",
-            "data": {
-              "children": [
-                {{commentEntries}}
-              ]
-            }
-          }
-        ]
-        """;
-    }
-
-    private static string BuildCommentsListingJson((string author, string body)[] comments)
-    {
-        var entries = string.Join(",\n",
-            comments.Select(c => $$"""
-                {
-                  "kind": "t1",
-                  "data": {
-                    "author": "{{c.author}}",
-                    "body": "{{c.body}}",
-                    "score": 5
-                  }
-                }
-            """));
-
-        return $$"""
-        {
-          "kind": "Listing",
-          "data": {
-            "children": [
-              {{entries}}
-            ]
-          }
-        }
-        """;
+        return $$"""{"data": [{{entries}}]}""";
     }
 }
