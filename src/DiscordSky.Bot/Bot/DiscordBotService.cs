@@ -26,6 +26,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly IRandomProvider _randomProvider;
     private readonly ConcurrentDictionary<ulong, (string Persona, DateTimeOffset CreatedAt)> _personaCache = new();
     private readonly ConcurrentDictionary<ulong, ChannelMessageBuffer> _channelBuffers = new();
+    private readonly ConcurrentDictionary<ulong, SemaphoreSlim> _userMemoryLocks = new();
     private readonly CancellationTokenSource _shutdownCts = new();
     private const int MaxPersonaCacheSize = 500;
     internal const int DiscordMaxMessageLength = 2000;
@@ -204,7 +205,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 }
             }
 
-            if (referencedMessage?.Author.Id == _client.CurrentUser.Id)
+            if (_client.CurrentUser is not null && referencedMessage?.Author.Id == _client.CurrentUser.Id)
             {
                 _logger.LogDebug(
                     "Direct reply detected: {UserId} replied to bot message {BotMessageId}",
@@ -471,10 +472,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         for (int i = 0; i < chunks.Count; i++)
         {
             var sent = await channel.SendMessageAsync(chunks[i], messageReference: i == 0 ? reference : null);
-            if (i == 0)
-            {
-                CachePersona(sent.Id, persona);
-            }
+            // Cache persona for every chunk so replies to any part preserve character continuity
+            CachePersona(sent.Id, persona);
         }
     }
 
@@ -491,10 +490,26 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             return;
         }
 
+        // First pass: remove entries older than 24 hours
         var cutoff = DateTimeOffset.UtcNow.AddHours(-24);
         foreach (var key in _personaCache.Keys)
         {
             if (_personaCache.TryGetValue(key, out var entry) && entry.CreatedAt < cutoff)
+            {
+                _personaCache.TryRemove(key, out _);
+            }
+        }
+
+        // Second pass: if still over cap, evict oldest entries until at the limit
+        if (_personaCache.Count > MaxPersonaCacheSize)
+        {
+            var excess = _personaCache
+                .OrderBy(kvp => kvp.Value.CreatedAt)
+                .Take(_personaCache.Count - MaxPersonaCacheSize)
+                .Select(kvp => kvp.Key)
+                .ToList();
+
+            foreach (var key in excess)
             {
                 _personaCache.TryRemove(key, out _);
             }
@@ -729,32 +744,55 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             var participantIds = messages
                 .Select(m => m.AuthorId)
                 .Distinct()
+                .OrderBy(id => id) // Consistent lock ordering to prevent deadlocks
                 .ToList();
 
-            var participantMemories = new Dictionary<ulong, (string DisplayName, IReadOnlyList<UserMemory> Memories)>();
-            foreach (var userId in participantIds)
+            // Acquire per-user memory locks for all participants before reading memories.
+            // This prevents cross-window races where two windows for the same user read
+            // indices concurrently and then apply stale index-based operations.
+            var locks = participantIds
+                .Select(id => _userMemoryLocks.GetOrAdd(id, _ => new SemaphoreSlim(1, 1)))
+                .ToList();
+
+            foreach (var sem in locks)
             {
-                var displayName = messages.First(m => m.AuthorId == userId).AuthorDisplayName;
-                var memories = await _memoryStore.GetMemoriesAsync(userId, _shutdownCts.Token);
-                participantMemories[userId] = (displayName, memories);
+                await sem.WaitAsync(_shutdownCts.Token);
             }
 
-            _logger.LogInformation(
-                "Processing conversation window for channel {ChannelId}: {MessageCount} messages, {ParticipantCount} participants",
-                channelId, messages.Count, participantIds.Count);
+            try
+            {
+                var participantMemories = new Dictionary<ulong, (string DisplayName, IReadOnlyList<UserMemory> Memories)>();
+                foreach (var userId in participantIds)
+                {
+                    var displayName = messages.First(m => m.AuthorId == userId).AuthorDisplayName;
+                    var memories = await _memoryStore.GetMemoriesAsync(userId, _shutdownCts.Token);
+                    participantMemories[userId] = (displayName, memories);
+                }
 
-            var operations = await _orchestrator.ExtractMemoriesFromConversationAsync(
-                messages,
-                participantMemories,
-                _options.MaxMemoriesPerExtraction,
-                _shutdownCts.Token);
+                _logger.LogInformation(
+                    "Processing conversation window for channel {ChannelId}: {MessageCount} messages, {ParticipantCount} participants",
+                    channelId, messages.Count, participantIds.Count);
 
-            // Filter out operations targeting user IDs not in the participant list
-            // (guards against LLM hallucinating user IDs)
-            var knownUserIds = participantMemories.Keys.ToHashSet();
-            operations = operations.Where(o => knownUserIds.Contains(o.UserId)).ToList();
+                var operations = await _orchestrator.ExtractMemoriesFromConversationAsync(
+                    messages,
+                    participantMemories,
+                    _options.MaxMemoriesPerExtraction,
+                    _shutdownCts.Token);
 
-            await ApplyMultiUserMemoryOperationsAsync(operations);
+                // Filter out operations targeting user IDs not in the participant list
+                // (guards against LLM hallucinating user IDs)
+                var knownUserIds = participantMemories.Keys.ToHashSet();
+                operations = operations.Where(o => knownUserIds.Contains(o.UserId)).ToList();
+
+                await ApplyMultiUserMemoryOperationsAsync(operations);
+            }
+            finally
+            {
+                foreach (var sem in locks)
+                {
+                    sem.Release();
+                }
+            }
         }
         catch (Exception ex)
         {

@@ -49,16 +49,17 @@ public class MemoryConsolidationTests
     }
 
     [Fact]
-    public void BuildConsolidationPrompt_IncludesReferenceCount()
+    public void BuildConsolidationPrompt_IncludesCreatedDate()
     {
+        var created = new DateTimeOffset(2025, 6, 15, 0, 0, 0, TimeSpan.Zero);
         var memories = new List<UserMemory>
         {
-            new("Frequently referenced", "ctx", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 42),
+            new("Frequently referenced", "ctx", created, DateTimeOffset.UtcNow, 42),
         };
 
         var prompt = CreativeOrchestrator.BuildConsolidationPrompt(memories, 1);
 
-        Assert.Contains("referenced: 42 times", prompt);
+        Assert.Contains("created: 2025-06-15", prompt);
     }
 
     [Fact]

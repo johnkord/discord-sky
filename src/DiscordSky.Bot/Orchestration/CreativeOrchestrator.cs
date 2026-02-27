@@ -735,7 +735,7 @@ public sealed class CreativeOrchestrator
         sb.AppendLine("- DROP truly redundant, trivial, or outdated information");
         sb.AppendLine("- PRESERVE specific details like names, places, and preferences — don't over-generalize");
         sb.AppendLine("- PRESERVE corrections (if a memory says \"actually from Canada, not Australia\", keep the corrected version)");
-        sb.AppendLine("- Memories referenced more frequently (higher reference_count) and more recently are generally more important");
+        sb.AppendLine("- More recently created or referenced memories are generally more important");
         sb.AppendLine("- Each consolidated memory should be a concise, standalone fact");
         sb.AppendLine();
         sb.AppendLine("Respond with a JSON object containing a single key \"memories\" with an array of objects.");
@@ -757,7 +757,7 @@ public sealed class CreativeOrchestrator
         for (int i = 0; i < existingMemories.Count; i++)
         {
             var m = existingMemories[i];
-            sb.AppendLine($"[{i}] \"{m.Content}\" (context: {m.Context}, referenced: {m.ReferenceCount} times, last referenced: {m.LastReferencedAt:yyyy-MM-dd})");
+            sb.AppendLine($"[{i}] \"{m.Content}\" (context: {m.Context}, created: {m.CreatedAt:yyyy-MM-dd}, last referenced: {m.LastReferencedAt:yyyy-MM-dd})");
         }
 
         return sb.ToString();

@@ -235,12 +235,19 @@ public sealed class ContextAggregator
         return chain;
     }
 
+    /// <summary>
+    /// Limits the number of concurrent HTTP unfurl operations to avoid
+    /// exhausting connection pools or triggering remote rate limits.
+    /// </summary>
+    private static readonly SemaphoreSlim _unfurlThrottle = new(4);
+
     private async Task<List<ChannelMessage>> UnfurlLinksInMessagesAsync(
         List<ChannelMessage> messages,
         CancellationToken cancellationToken)
     {
         var tasks = messages.Select(async msg =>
         {
+            await _unfurlThrottle.WaitAsync(cancellationToken);
             try
             {
                 var httpLinks = await _linkUnfurler.UnfurlAsync(msg.Content, msg.Timestamp, cancellationToken);
@@ -251,6 +258,10 @@ public sealed class ContextAggregator
             {
                 _logger.LogDebug(ex, "Failed to unfurl links in message {MessageId}", msg.MessageId);
                 return msg; // Keep any embed-derived links already on the message
+            }
+            finally
+            {
+                _unfurlThrottle.Release();
             }
         });
 
