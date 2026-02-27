@@ -29,18 +29,20 @@ public sealed class SafetyFilter
 
         lock (_rateLimitLock)
         {
-            _promptHistory.Enqueue(timestamp);
+            // Purge stale entries first
             while (_promptHistory.Count > 0 && timestamp - _promptHistory.Peek() > TimeSpan.FromHours(1))
             {
                 _promptHistory.Dequeue();
             }
 
-            if (_promptHistory.Count > _settings.MaxPromptsPerHour)
+            // Check limit before recording the current request
+            if (_promptHistory.Count >= _settings.MaxPromptsPerHour)
             {
                 _logger.LogInformation("Creative request throttled due to MaxPromptsPerHour limit {Limit}", _settings.MaxPromptsPerHour);
                 return true;
             }
 
+            _promptHistory.Enqueue(timestamp);
             return false;
         }
     }

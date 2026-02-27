@@ -540,6 +540,7 @@ public sealed class CreativeOrchestrator
                 return await _chatClient.GetResponseAsync(messages, chatOptions, cancellationToken);
             }
             catch (ClientResultException crEx) when (
+                attempt < maxAttempts &&
                 !cancellationToken.IsCancellationRequested &&
                 crEx.Message.Contains("invalid_image_url", StringComparison.OrdinalIgnoreCase))
             {

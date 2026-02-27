@@ -138,7 +138,7 @@ public class FileBackedUserMemoryStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task TouchMemories_IncreasesReferenceCount()
+    public async Task TouchMemories_IsNoOp_DoesNotChangeReferenceCount()
     {
         using var store = CreateStore();
         await store.SaveMemoryAsync(42, "fact", "ctx");
@@ -149,7 +149,7 @@ public class FileBackedUserMemoryStoreTests : IDisposable
         await store.TouchMemoriesAsync(42);
 
         var after = (await store.GetMemoriesAsync(42))[0];
-        Assert.Equal(1, after.ReferenceCount);
+        Assert.Equal(0, after.ReferenceCount);
     }
 
     [Fact]

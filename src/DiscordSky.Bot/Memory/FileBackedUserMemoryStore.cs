@@ -168,22 +168,10 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
 
     public async Task TouchMemoriesAsync(ulong userId, CancellationToken ct = default)
     {
-        var memories = await GetOrLoadAsync(userId, ct);
-        lock (_lock)
-        {
-            if (memories.Count == 0) return;
-
-            var now = DateTimeOffset.UtcNow;
-            for (int i = 0; i < memories.Count; i++)
-            {
-                memories[i] = memories[i] with
-                {
-                    LastReferencedAt = now,
-                    ReferenceCount = memories[i].ReferenceCount + 1
-                };
-            }
-            MarkDirty(userId);
-        }
+        // No-op: we no longer bulk-touch all memories on every invocation because
+        // doing so defeats LRU eviction (all memories end up with the same LastReferencedAt).
+        // Instead, individual memories should be touched when they are actually used in a response.
+        await Task.CompletedTask;
     }
 
     public async Task ReplaceAllMemoriesAsync(ulong userId, IReadOnlyList<UserMemory> newMemories, CancellationToken ct = default)

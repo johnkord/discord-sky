@@ -190,7 +190,7 @@ public class InMemoryUserMemoryStoreTests
     }
 
     [Fact]
-    public async Task TouchMemories_IncreasesReferenceCount()
+    public async Task TouchMemories_IsNoOp_DoesNotChangeReferenceCount()
     {
         var store = CreateStore();
         await store.SaveMemoryAsync(42, "fact", "ctx");
@@ -201,11 +201,11 @@ public class InMemoryUserMemoryStoreTests
         await store.TouchMemoriesAsync(42);
 
         var after = (await store.GetMemoriesAsync(42))[0];
-        Assert.Equal(1, after.ReferenceCount);
+        Assert.Equal(0, after.ReferenceCount);
     }
 
     [Fact]
-    public async Task TouchMemories_UpdatesLastReferencedAt()
+    public async Task TouchMemories_IsNoOp_DoesNotChangeLastReferencedAt()
     {
         var store = CreateStore();
         await store.SaveMemoryAsync(42, "fact", "ctx");
@@ -215,7 +215,7 @@ public class InMemoryUserMemoryStoreTests
         await store.TouchMemoriesAsync(42);
 
         var after = (await store.GetMemoriesAsync(42))[0].LastReferencedAt;
-        Assert.True(after > before);
+        Assert.Equal(before, after);
     }
 
     [Fact]

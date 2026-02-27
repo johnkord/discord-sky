@@ -127,16 +127,28 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "Unhandled exception processing message {MessageId}", rawMessage.Id);
-            try
+            // Only send error feedback for command-prefixed messages.
+            // Ambient/unsolicited failures should be silent to avoid confusing users.
+            var content = (rawMessage as SocketUserMessage)?.Content?.Trim() ?? string.Empty;
+            var isCommand = !string.IsNullOrWhiteSpace(_options.CommandPrefix)
+                && content.StartsWith(_options.CommandPrefix, StringComparison.OrdinalIgnoreCase);
+            var isReplyToBot = rawMessage is SocketUserMessage um
+                && um.Reference?.MessageId.IsSpecified == true
+                && um.ReferencedMessage?.Author.Id == _client.CurrentUser?.Id;
+
+            if (isCommand || isReplyToBot)
             {
-                if (rawMessage.Channel is not null)
+                try
                 {
-                    await rawMessage.Channel.SendMessageAsync("Something went wrong on my end—try again!");
+                    if (rawMessage.Channel is not null)
+                    {
+                        await rawMessage.Channel.SendMessageAsync("Something went wrong on my end—try again!");
+                    }
                 }
-            }
-            catch (Exception innerEx)
-            {
-                _logger.LogDebug(innerEx, "Failed to send error notification to channel");
+                catch (Exception innerEx)
+                {
+                    _logger.LogDebug(innerEx, "Failed to send error notification to channel");
+                }
             }
         }
     }
@@ -232,7 +244,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             if (roll < _chaosSettings.AmbientReplyChance)
             {
                 _logger.LogDebug("Ambient reply triggered (roll={Roll:F3} < chance={Chance:F3}) for message {MessageId} in channel {Channel}.", roll, _chaosSettings.AmbientReplyChance, message.Id, channelName);
-                await HandlePersonaAsync(context, _options.CommandPrefix, message, CreativeInvocationKind.Ambient);
+                // Pass prefix + message content so HandlePersonaAsync can extract the user's text as the topic
+                await HandlePersonaAsync(context, _options.CommandPrefix + " " + content, message, CreativeInvocationKind.Ambient);
             }
         }
     }
@@ -766,7 +779,14 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
             var userOps = group.ToList();
 
-            foreach (var op in userOps)
+            // Process forget operations in descending index order to prevent index shifting
+            // from corrupting subsequent operations. Updates and saves are unaffected.
+            var orderedOps = userOps
+                .OrderByDescending(o => o.Action == MemoryAction.Forget ? o.MemoryIndex ?? -1 : -1)
+                .ThenBy(o => o.Action) // Forget first (descending), then Update, then Save
+                .ToList();
+
+            foreach (var op in orderedOps)
             {
                 if (op.Content is not null && _chaosSettings.ContainsBanWord(op.Content))
                 {
@@ -776,6 +796,14 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
                 switch (op.Action)
                 {
+                    case MemoryAction.Forget when op.MemoryIndex.HasValue:
+                        await _memoryStore.ForgetMemoryAsync(
+                            userId, op.MemoryIndex.Value, _shutdownCts.Token);
+                        break;
+                    case MemoryAction.Update when op.MemoryIndex.HasValue:
+                        await _memoryStore.UpdateMemoryAsync(
+                            userId, op.MemoryIndex.Value, op.Content!, op.Context ?? string.Empty, _shutdownCts.Token);
+                        break;
                     case MemoryAction.Save:
                         if (existingMemories is not null && IsDuplicateMemory(op.Content!, existingMemories))
                         {
@@ -785,14 +813,6 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                         await _memoryStore.SaveMemoryAsync(
                             userId, op.Content!, op.Context ?? string.Empty, _shutdownCts.Token);
                         existingMemories = await _memoryStore.GetMemoriesAsync(userId, _shutdownCts.Token);
-                        break;
-                    case MemoryAction.Update when op.MemoryIndex.HasValue:
-                        await _memoryStore.UpdateMemoryAsync(
-                            userId, op.MemoryIndex.Value, op.Content!, op.Context ?? string.Empty, _shutdownCts.Token);
-                        break;
-                    case MemoryAction.Forget when op.MemoryIndex.HasValue:
-                        await _memoryStore.ForgetMemoryAsync(
-                            userId, op.MemoryIndex.Value, _shutdownCts.Token);
                         break;
                 }
             }

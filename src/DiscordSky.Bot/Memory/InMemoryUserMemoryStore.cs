@@ -138,22 +138,9 @@ public sealed class InMemoryUserMemoryStore : IUserMemoryStore
 
     public Task TouchMemoriesAsync(ulong userId, CancellationToken ct = default)
     {
-        lock (_lock)
-        {
-            if (_store.TryGetValue(userId, out var memories))
-            {
-                var now = DateTimeOffset.UtcNow;
-                for (int i = 0; i < memories.Count; i++)
-                {
-                    memories[i] = memories[i] with
-                    {
-                        LastReferencedAt = now,
-                        ReferenceCount = memories[i].ReferenceCount + 1
-                    };
-                }
-            }
-        }
-
+        // No-op: we no longer bulk-touch all memories on every invocation because
+        // doing so defeats LRU eviction (all memories end up with the same LastReferencedAt).
+        // Instead, individual memories should be touched when they are actually used in a response.
         return Task.CompletedTask;
     }
 
