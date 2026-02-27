@@ -305,6 +305,10 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             }
         }
 
+        // Collect images from the triggering message
+        var triggerImages = _contextAggregator.CollectImages(message);
+        IReadOnlyList<ChannelImage>? triggerImagesParam = triggerImages.Count > 0 ? triggerImages : null;
+
         // Unfurl links (e.g. tweets) from the triggering message
         IReadOnlyList<UnfurledLink>? unfurledLinks = null;
         if (_options.EnableLinkUnfurling && !string.IsNullOrWhiteSpace(topic))
@@ -324,7 +328,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             invocationKind,
             Channel: channelContext,
             UserMemories: userMemories,
-            UnfurledLinks: unfurledLinks);
+            UnfurledLinks: unfurledLinks,
+            TriggerImages: triggerImagesParam);
 
         var result = await _orchestrator.ExecuteAsync(request, context, _shutdownCts.Token);
         var reply = string.IsNullOrWhiteSpace(result.PrimaryMessage)
@@ -390,6 +395,10 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             }
         }
 
+        // Collect images from the reply message
+        var triggerImages = _contextAggregator.CollectImages(message);
+        IReadOnlyList<ChannelImage>? triggerImagesParam = triggerImages.Count > 0 ? triggerImages : null;
+
         // Unfurl links (e.g. tweets) from the reply message
         IReadOnlyList<UnfurledLink>? unfurledLinks = null;
         if (_options.EnableLinkUnfurling && !string.IsNullOrWhiteSpace(topic))
@@ -412,7 +421,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             message.Id,
             channelContext,
             userMemories,
-            unfurledLinks);
+            unfurledLinks,
+            triggerImagesParam);
 
         var result = await _orchestrator.ExecuteAsync(request, context, _shutdownCts.Token);
         var reply = string.IsNullOrWhiteSpace(result.PrimaryMessage)

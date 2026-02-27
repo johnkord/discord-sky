@@ -21,7 +21,8 @@ public sealed record CreativeRequest(
     ulong? TriggerMessageId = null,
     ChannelContext? Channel = null,
     IReadOnlyList<UserMemory>? UserMemories = null,
-    IReadOnlyList<UnfurledLink>? UnfurledLinks = null
+    IReadOnlyList<UnfurledLink>? UnfurledLinks = null,
+    IReadOnlyList<ChannelImage>? TriggerImages = null
 );
 
 /// <summary>

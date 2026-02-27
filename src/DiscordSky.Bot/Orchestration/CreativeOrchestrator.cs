@@ -441,6 +441,15 @@ public sealed class CreativeOrchestrator
             new TextContent(builder.ToString())
         };
 
+        // Include images from the triggering message itself (excluded from channel history)
+        if (request.TriggerImages is { Count: > 0 })
+        {
+            foreach (var image in request.TriggerImages)
+            {
+                content.Add(new UriContent(image.Url, "image/*"));
+            }
+        }
+
         // Include unfurled links from the triggering message (e.g. tweets)
         if (request.UnfurledLinks is { Count: > 0 })
         {

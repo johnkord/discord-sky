@@ -258,7 +258,7 @@ public sealed class ContextAggregator
         return results.ToList();
     }
 
-    private IReadOnlyList<ChannelImage> CollectImages(IMessage message)
+    internal IReadOnlyList<ChannelImage> CollectImages(IMessage message)
     {
         var results = new List<ChannelImage>();
         var dedupe = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
