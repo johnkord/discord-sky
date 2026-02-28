@@ -19,4 +19,5 @@ data:
   Bot__MaxMemoriesPerExtraction: "15"
   Bot__EnableMemoryConsolidation: "true"
   Bot__ConsolidationTargetPercent: "0.75"
+  LLM__Providers__xAI__ChatModel: "grok-4-0709"
   Chaos__MaxPromptsPerHour: "20"

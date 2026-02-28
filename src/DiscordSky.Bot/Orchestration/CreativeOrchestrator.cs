@@ -1,4 +1,5 @@
 using System.ClientModel;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using Discord.Commands;
@@ -194,7 +195,8 @@ public sealed class CreativeOrchestrator
                 _logger.LogWarning(
                     "LLM response missing send_discord_message tool call; falling back to broadcast text. Response text: {Text}",
                     response.Text ?? "(empty)");
-                var fallback = _safetyFilter.ScrubBannedContent(response.Text ?? string.Empty);
+                var fallback = _safetyFilter.ScrubBannedContent(
+                    WebUtility.HtmlDecode(response.Text ?? string.Empty));
                 if (string.IsNullOrWhiteSpace(fallback))
                 {
                     fallback = BuildEmptyResponsePlaceholder(request.Persona, request.InvocationKind);
@@ -286,7 +288,7 @@ public sealed class CreativeOrchestrator
         }
 
         mode = candidateMode;
-        text = candidateText;
+        text = WebUtility.HtmlDecode(candidateText);
         targetMessageId = parsedTarget;
         return true;
     }
