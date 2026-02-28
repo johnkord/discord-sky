@@ -135,7 +135,14 @@ public class PerUserMemoryLockTests : IAsyncDisposable
             EnableUserMemory = true,
         });
         var chaosSettings = new TestOptionsMonitor<ChaosSettings>(new ChaosSettings());
-        var openAiOptions = new TestOptionsMonitor<OpenAIOptions>(new OpenAIOptions { ChatModel = "test-model" });
+        var openAiOptions = new TestOptionsMonitor<LlmOptions>(new LlmOptions
+        {
+            ActiveProvider = "OpenAI",
+            Providers = new Dictionary<string, LlmProviderOptions>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["OpenAI"] = new LlmProviderOptions { ChatModel = "test-model" }
+            }
+        });
 
         var linkUnfurler = new StubLinkUnfurler();
         var contextAggregator = new ContextAggregator(

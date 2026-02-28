@@ -15,7 +15,7 @@ builder.WebHost.UseUrls("http://+:8080");
 
 builder.Services.Configure<BotOptions>(builder.Configuration.GetSection(BotOptions.SectionName));
 builder.Services.Configure<ChaosSettings>(builder.Configuration.GetSection("Chaos"));
-builder.Services.Configure<OpenAIOptions>(builder.Configuration.GetSection(OpenAIOptions.SectionName));
+builder.Services.Configure<LlmOptions>(builder.Configuration.GetSection(LlmOptions.SectionName));
 
 builder.Services.AddSingleton(_ => new DiscordSocketConfig
 {
@@ -27,14 +27,42 @@ builder.Services.AddSingleton(_ => new DiscordSocketConfig
 
 builder.Services.AddSingleton(sp => new DiscordSocketClient(sp.GetRequiredService<DiscordSocketConfig>()));
 
-// Note: The ChatClient is created with a default model, but CreativeOrchestrator can override
-// the model per-request via ChatOptions.ModelId (e.g. for per-persona model routing).
-// The M.E.AI OpenAI adapter correctly applies the per-request ModelId when set.
+// Creates an IChatClient using the active LLM provider from config.
+// The provider is selected by LLM:ActiveProvider ("OpenAI", "xAI", etc.).
+// Per-request model overrides via ChatOptions.ModelId continue to work.
 builder.Services.AddSingleton<IChatClient>(sp =>
 {
-	var options = sp.GetRequiredService<IOptions<OpenAIOptions>>().Value;
-	return new OpenAIClient(options.ApiKey)
-		.GetChatClient(options.ChatModel)
+	var llmOptions = sp.GetRequiredService<IOptions<LlmOptions>>().Value;
+	var provider = llmOptions.GetActiveProvider(); // throws if ActiveProvider key not found
+	var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("LlmProvider");
+
+	if (string.IsNullOrWhiteSpace(provider.ApiKey))
+	{
+		logger.LogCritical("LLM provider '{Provider}' has no API key configured. Set LLM:Providers:{Provider}:ApiKey.",
+			llmOptions.ActiveProvider, llmOptions.ActiveProvider);
+		throw new InvalidOperationException(
+			$"LLM provider '{llmOptions.ActiveProvider}' has no API key configured.");
+	}
+
+	OpenAIClientOptions? clientOptions = null;
+	if (!string.IsNullOrWhiteSpace(provider.Endpoint))
+	{
+		clientOptions = new OpenAIClientOptions { Endpoint = new Uri(provider.Endpoint) };
+		logger.LogInformation("LLM provider '{Provider}' configured: endpoint={Endpoint}, model={Model}",
+			llmOptions.ActiveProvider, provider.Endpoint, provider.ChatModel);
+	}
+	else
+	{
+		logger.LogInformation("LLM provider '{Provider}' configured: endpoint=OpenAI (default), model={Model}",
+			llmOptions.ActiveProvider, provider.ChatModel);
+	}
+
+	var openAiClient = clientOptions is not null
+		? new OpenAIClient(new System.ClientModel.ApiKeyCredential(provider.ApiKey), clientOptions)
+		: new OpenAIClient(provider.ApiKey);
+
+	return openAiClient
+		.GetChatClient(provider.ChatModel)
 		.AsIChatClient();
 });
 

@@ -15,7 +15,7 @@ public sealed class CreativeOrchestrator
     private readonly ContextAggregator _contextAggregator;
     private readonly IChatClient _chatClient;
     private readonly SafetyFilter _safetyFilter;
-    private readonly IOptionsMonitor<OpenAIOptions> _openAiOptionsMonitor;
+    private readonly IOptionsMonitor<LlmOptions> _llmOptionsMonitor;
     private readonly BotOptions _botOptions;
     private readonly ILogger<CreativeOrchestrator> _logger;
 
@@ -114,14 +114,14 @@ public sealed class CreativeOrchestrator
         ContextAggregator contextAggregator,
         IChatClient chatClient,
         SafetyFilter safetyFilter,
-        IOptionsMonitor<OpenAIOptions> openAiOptions,
+        IOptionsMonitor<LlmOptions> llmOptions,
         IOptions<BotOptions> botOptions,
         ILogger<CreativeOrchestrator> logger)
     {
         _contextAggregator = contextAggregator;
         _chatClient = chatClient;
         _safetyFilter = safetyFilter;
-        _openAiOptionsMonitor = openAiOptions;
+        _llmOptionsMonitor = llmOptions;
         _botOptions = botOptions.Value;
         _logger = logger;
     }
@@ -142,11 +142,11 @@ public sealed class CreativeOrchestrator
         var userContent = BuildUserContent(request, historySlice, hasTopic);
 
         // When reasoning is enabled, we need more output tokens to accommodate both reasoning AND the tool call
-        var openAiOpts = _openAiOptionsMonitor.CurrentValue;
-        var hasReasoning = !string.IsNullOrWhiteSpace(openAiOpts.ReasoningEffort) || !string.IsNullOrWhiteSpace(openAiOpts.ReasoningSummary);
+        var llmProvider = _llmOptionsMonitor.CurrentValue.GetActiveProvider();
+        var hasReasoning = !string.IsNullOrWhiteSpace(llmProvider.ReasoningEffort) || !string.IsNullOrWhiteSpace(llmProvider.ReasoningSummary);
         var maxOutputTokens = hasReasoning
-            ? Math.Clamp(openAiOpts.MaxTokens * 3, 1500, 4096)  // Triple tokens for reasoning models
-            : Math.Clamp(openAiOpts.MaxTokens, 300, 1024);
+            ? Math.Clamp(llmProvider.MaxTokens * 3, 1500, 4096)  // Triple tokens for reasoning models
+            : Math.Clamp(llmProvider.MaxTokens, 300, 1024);
 
         // Use a smaller token budget for ambient replies to reduce cost and response length
         if (request.InvocationKind == CreativeInvocationKind.Ambient)
@@ -156,7 +156,7 @@ public sealed class CreativeOrchestrator
 
         var chatOptions = new ChatOptions
         {
-            ModelId = ResolveModel(request.Persona),
+            ModelId = ResolveModel(request.Persona, llmProvider),
             Instructions = BuildSystemInstructions(request.Persona, hasTopic, request.InvocationKind, request.ReplyChain, request.IsInThread),
             MaxOutputTokens = maxOutputTokens,
             Tools = [SendDiscordMessageTool],
@@ -167,8 +167,8 @@ public sealed class CreativeOrchestrator
         {
             chatOptions.Reasoning = new ReasoningOptions
             {
-                Effort = string.IsNullOrWhiteSpace(openAiOpts.ReasoningEffort) ? null : Enum.Parse<ReasoningEffort>(openAiOpts.ReasoningEffort, ignoreCase: true),
-                Output = string.IsNullOrWhiteSpace(openAiOpts.ReasoningSummary) ? null : Enum.Parse<ReasoningOutput>(openAiOpts.ReasoningSummary, ignoreCase: true),
+                Effort = string.IsNullOrWhiteSpace(llmProvider.ReasoningEffort) ? null : Enum.Parse<ReasoningEffort>(llmProvider.ReasoningEffort, ignoreCase: true),
+                Output = string.IsNullOrWhiteSpace(llmProvider.ReasoningSummary) ? null : Enum.Parse<ReasoningOutput>(llmProvider.ReasoningSummary, ignoreCase: true),
             };
         }
 
@@ -192,7 +192,7 @@ public sealed class CreativeOrchestrator
             if (functionCall is null)
             {
                 _logger.LogWarning(
-                    "OpenAI response missing send_discord_message tool call; falling back to broadcast text. Response text: {Text}",
+                    "LLM response missing send_discord_message tool call; falling back to broadcast text. Response text: {Text}",
                     response.Text ?? "(empty)");
                 var fallback = _safetyFilter.ScrubBannedContent(response.Text ?? string.Empty);
                 if (string.IsNullOrWhiteSpace(fallback))
@@ -633,15 +633,27 @@ public sealed class CreativeOrchestrator
     private static bool IsTransient(Exception ex) =>
         ex is HttpRequestException or TaskCanceledException or TimeoutException;
 
-    private string ResolveModel(string persona)
+    private static string ResolveModel(string persona, LlmProviderOptions provider)
     {
-        var opts = _openAiOptionsMonitor.CurrentValue;
-        if (opts.IntentModelOverrides.TryGetValue(persona, out var overrideModel) && !string.IsNullOrWhiteSpace(overrideModel))
+        if (provider.IntentModelOverrides.TryGetValue(persona, out var overrideModel) && !string.IsNullOrWhiteSpace(overrideModel))
         {
             return overrideModel;
         }
 
-        return opts.ChatModel;
+        return provider.ChatModel;
+    }
+
+    /// <summary>
+    /// Returns the model to use for memory extraction/consolidation.
+    /// Prefers <see cref="LlmProviderOptions.MemoryExtractionModel"/> if set,
+    /// otherwise falls back to the provider's default <see cref="LlmProviderOptions.ChatModel"/>.
+    /// </summary>
+    private string ResolveMemoryExtractionModel()
+    {
+        var provider = _llmOptionsMonitor.CurrentValue.GetActiveProvider();
+        return !string.IsNullOrWhiteSpace(provider.MemoryExtractionModel)
+            ? provider.MemoryExtractionModel
+            : provider.ChatModel;
     }
 
     // ── Conversation-Window Memory Extraction ───────────────────────────
@@ -677,7 +689,7 @@ public sealed class CreativeOrchestrator
 
             var options = new ChatOptions
             {
-                ModelId = _botOptions.MemoryExtractionModel,
+                ModelId = ResolveMemoryExtractionModel(),
                 Instructions = systemPrompt,
                 MaxOutputTokens = 800,
                 Tools = [UpdateUserMemoryConversationTool],
@@ -740,7 +752,7 @@ public sealed class CreativeOrchestrator
 
             var options = new ChatOptions
             {
-                ModelId = _botOptions.MemoryExtractionModel,
+                ModelId = ResolveMemoryExtractionModel(),
                 Instructions = systemPrompt,
                 MaxOutputTokens = 1200,
                 ResponseFormat = ChatResponseFormat.Json,
