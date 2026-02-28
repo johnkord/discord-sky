@@ -17,7 +17,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 {
     private readonly DiscordSocketClient _client;
     private readonly ILogger<DiscordBotService> _logger;
-    private readonly ChaosSettings _chaosSettings;
+    private readonly IOptionsMonitor<ChaosSettings> _chaosSettingsMonitor;
     private readonly BotOptions _options;
     private readonly CreativeOrchestrator _orchestrator;
     private readonly ContextAggregator _contextAggregator;
@@ -28,13 +28,14 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly ConcurrentDictionary<ulong, ChannelMessageBuffer> _channelBuffers = new();
     private readonly ConcurrentDictionary<ulong, SemaphoreSlim> _userMemoryLocks = new();
     private readonly CancellationTokenSource _shutdownCts = new();
+    private readonly object _evictionLock = new();
     private const int MaxPersonaCacheSize = 500;
     internal const int DiscordMaxMessageLength = 2000;
 
     public DiscordBotService(
         DiscordSocketClient client,
         IOptions<BotOptions> options,
-        IOptions<ChaosSettings> chaosSettings,
+        IOptionsMonitor<ChaosSettings> chaosSettings,
         CreativeOrchestrator orchestrator,
         ContextAggregator contextAggregator,
         IUserMemoryStore memoryStore,
@@ -44,7 +45,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     {
         _client = client;
         _options = options.Value;
-        _chaosSettings = chaosSettings.Value;
+        _chaosSettingsMonitor = chaosSettings;
         _orchestrator = orchestrator;
         _contextAggregator = contextAggregator;
         _memoryStore = memoryStore;
@@ -166,7 +167,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             return;
         }
 
-        if (_chaosSettings.ContainsBanWord(message.Content))
+        if (_chaosSettingsMonitor.CurrentValue.ContainsBanWord(message.Content))
         {
             _logger.LogDebug("Skipping message containing ban words.");
             return;
@@ -239,12 +240,13 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         }
 
         // Ambient reply chance
-        if (_chaosSettings.AmbientReplyChance > 0)
+        var chaosSettings = _chaosSettingsMonitor.CurrentValue;
+        if (chaosSettings.AmbientReplyChance > 0)
         {
             var roll = _randomProvider.NextDouble();
-            if (roll < _chaosSettings.AmbientReplyChance)
+            if (roll < chaosSettings.AmbientReplyChance)
             {
-                _logger.LogDebug("Ambient reply triggered (roll={Roll:F3} < chance={Chance:F3}) for message {MessageId} in channel {Channel}.", roll, _chaosSettings.AmbientReplyChance, message.Id, channelName);
+                _logger.LogDebug("Ambient reply triggered (roll={Roll:F3} < chance={Chance:F3}) for message {MessageId} in channel {Channel}.", roll, chaosSettings.AmbientReplyChance, message.Id, channelName);
                 // Pass prefix + message content so HandlePersonaAsync can extract the user's text as the topic
                 await HandlePersonaAsync(context, _options.CommandPrefix + " " + content, message, CreativeInvocationKind.Ambient);
             }
@@ -265,7 +267,14 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         string persona;
         string remainder;
 
-        if (string.IsNullOrWhiteSpace(payload))
+        // For ambient replies, always use the default persona — the user doesn't know
+        // they triggered an ambient reply, so parsing persona syntax would be misleading.
+        if (invocationKind == CreativeInvocationKind.Ambient)
+        {
+            persona = defaultPersona;
+            remainder = payload;
+        }
+        else if (string.IsNullOrWhiteSpace(payload))
         {
             persona = defaultPersona;
             remainder = string.Empty;
@@ -315,7 +324,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             userMemories = await _memoryStore.GetMemoriesAsync(context.User.Id, _shutdownCts.Token);
             if (userMemories.Count > 0)
             {
-                _ = _memoryStore.TouchMemoriesAsync(context.User.Id, _shutdownCts.Token);
+                await _memoryStore.TouchMemoriesAsync(context.User.Id, _shutdownCts.Token);
             }
         }
 
@@ -405,7 +414,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             userMemories = await _memoryStore.GetMemoriesAsync(context.User.Id, _shutdownCts.Token);
             if (userMemories.Count > 0)
             {
-                _ = _memoryStore.TouchMemoriesAsync(context.User.Id, _shutdownCts.Token);
+                await _memoryStore.TouchMemoriesAsync(context.User.Id, _shutdownCts.Token);
             }
         }
 
@@ -490,29 +499,48 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             return;
         }
 
-        // First pass: remove entries older than 24 hours
-        var cutoff = DateTimeOffset.UtcNow.AddHours(-24);
-        foreach (var key in _personaCache.Keys)
+        // Use TryEnter so concurrent callers skip eviction instead of blocking
+        if (!Monitor.TryEnter(_evictionLock))
         {
-            if (_personaCache.TryGetValue(key, out var entry) && entry.CreatedAt < cutoff)
-            {
-                _personaCache.TryRemove(key, out _);
-            }
+            return;
         }
 
-        // Second pass: if still over cap, evict oldest entries until at the limit
-        if (_personaCache.Count > MaxPersonaCacheSize)
+        try
         {
-            var excess = _personaCache
-                .OrderBy(kvp => kvp.Value.CreatedAt)
-                .Take(_personaCache.Count - MaxPersonaCacheSize)
-                .Select(kvp => kvp.Key)
-                .ToList();
-
-            foreach (var key in excess)
+            // Double-check after acquiring lock
+            if (_personaCache.Count <= MaxPersonaCacheSize)
             {
-                _personaCache.TryRemove(key, out _);
+                return;
             }
+
+            // First pass: remove entries older than 24 hours
+            var cutoff = DateTimeOffset.UtcNow.AddHours(-24);
+            foreach (var key in _personaCache.Keys)
+            {
+                if (_personaCache.TryGetValue(key, out var entry) && entry.CreatedAt < cutoff)
+                {
+                    _personaCache.TryRemove(key, out _);
+                }
+            }
+
+            // Second pass: if still over cap, evict oldest entries until at the limit
+            if (_personaCache.Count > MaxPersonaCacheSize)
+            {
+                var excess = _personaCache
+                    .OrderBy(kvp => kvp.Value.CreatedAt)
+                    .Take(_personaCache.Count - MaxPersonaCacheSize)
+                    .Select(kvp => kvp.Key)
+                    .ToList();
+
+                foreach (var key in excess)
+                {
+                    _personaCache.TryRemove(key, out _);
+                }
+            }
+        }
+        finally
+        {
+            Monitor.Exit(_evictionLock);
         }
     }
 
@@ -817,42 +845,71 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
             var userOps = group.ToList();
 
-            // Process forget operations in descending index order to prevent index shifting
-            // from corrupting subsequent operations. Updates and saves are unaffected.
-            var orderedOps = userOps
-                .OrderByDescending(o => o.Action == MemoryAction.Forget ? o.MemoryIndex ?? -1 : -1)
-                .ThenBy(o => o.Action) // Forget first (descending), then Update, then Save
+            // Separate operations by type for correct index adjustment
+            var forgetOps = userOps
+                .Where(o => o.Action == MemoryAction.Forget && o.MemoryIndex.HasValue)
+                .OrderByDescending(o => o.MemoryIndex!.Value)
                 .ToList();
+            var updateOps = userOps.Where(o => o.Action == MemoryAction.Update).ToList();
+            var saveOps = userOps.Where(o => o.Action == MemoryAction.Save).ToList();
 
-            foreach (var op in orderedOps)
+            // Collect forget indices for re-indexing updates after forgets
+            var forgetIndices = new HashSet<int>(forgetOps.Select(o => o.MemoryIndex!.Value));
+            var sortedForgetIndices = forgetOps.Select(o => o.MemoryIndex!.Value).OrderBy(i => i).ToList();
+
+            // Phase 1: Process forgets in descending order (preserves stable indices)
+            foreach (var op in forgetOps)
             {
-                if (op.Content is not null && _chaosSettings.ContainsBanWord(op.Content))
+                if (op.Content is not null && _chaosSettingsMonitor.CurrentValue.ContainsBanWord(op.Content))
                 {
                     _logger.LogDebug("Memory content contains ban word; skipping");
                     continue;
                 }
+                await _memoryStore.ForgetMemoryAsync(
+                    userId, op.MemoryIndex!.Value, _shutdownCts.Token);
+            }
 
-                switch (op.Action)
+            // Phase 2: Process updates with adjusted indices (account for removed items)
+            foreach (var op in updateOps)
+            {
+                if (op.Content is not null && _chaosSettingsMonitor.CurrentValue.ContainsBanWord(op.Content))
                 {
-                    case MemoryAction.Forget when op.MemoryIndex.HasValue:
-                        await _memoryStore.ForgetMemoryAsync(
-                            userId, op.MemoryIndex.Value, _shutdownCts.Token);
-                        break;
-                    case MemoryAction.Update when op.MemoryIndex.HasValue:
-                        await _memoryStore.UpdateMemoryAsync(
-                            userId, op.MemoryIndex.Value, op.Content!, op.Context ?? string.Empty, _shutdownCts.Token);
-                        break;
-                    case MemoryAction.Save:
-                        if (existingMemories is not null && IsDuplicateMemory(op.Content!, existingMemories))
-                        {
-                            _logger.LogInformation("Skipping duplicate memory for user {UserId}: {Content}", userId, op.Content);
-                            continue;
-                        }
-                        await _memoryStore.SaveMemoryAsync(
-                            userId, op.Content!, op.Context ?? string.Empty, _shutdownCts.Token);
-                        existingMemories = await _memoryStore.GetMemoriesAsync(userId, _shutdownCts.Token);
-                        break;
+                    _logger.LogDebug("Memory content contains ban word; skipping");
+                    continue;
                 }
+                if (op.MemoryIndex.HasValue)
+                {
+                    if (forgetIndices.Contains(op.MemoryIndex.Value))
+                    {
+                        _logger.LogDebug(
+                            "Skipping update at index {Index} for user {UserId}: index was forgotten in the same batch",
+                            op.MemoryIndex.Value, userId);
+                        continue;
+                    }
+                    // Adjust index: subtract count of forgotten indices below this one
+                    var adjustment = sortedForgetIndices.Count(fi => fi < op.MemoryIndex.Value);
+                    var adjustedIndex = op.MemoryIndex.Value - adjustment;
+                    await _memoryStore.UpdateMemoryAsync(
+                        userId, adjustedIndex, op.Content!, op.Context ?? string.Empty, _shutdownCts.Token);
+                }
+            }
+
+            // Phase 3: Process saves last (dedup against current state)
+            foreach (var op in saveOps)
+            {
+                if (op.Content is not null && _chaosSettingsMonitor.CurrentValue.ContainsBanWord(op.Content))
+                {
+                    _logger.LogDebug("Memory content contains ban word; skipping");
+                    continue;
+                }
+                if (existingMemories is not null && IsDuplicateMemory(op.Content!, existingMemories))
+                {
+                    _logger.LogInformation("Skipping duplicate memory for user {UserId}: {Content}", userId, op.Content);
+                    continue;
+                }
+                await _memoryStore.SaveMemoryAsync(
+                    userId, op.Content!, op.Context ?? string.Empty, _shutdownCts.Token);
+                existingMemories = await _memoryStore.GetMemoriesAsync(userId, _shutdownCts.Token);
             }
 
             if (userOps.Count > 0)
@@ -961,6 +1018,15 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             }
         }
         _channelBuffers.Clear();
+
+        // Dispose per-user memory lock semaphores
+        // (_userMemoryLocks entries accumulate over time but each is ~80 bytes;
+        //  safe eviction during operation is impractical, so we clean up here)
+        foreach (var kvp in _userMemoryLocks)
+        {
+            kvp.Value.Dispose();
+        }
+        _userMemoryLocks.Clear();
 
         _shutdownCts.Dispose();
         await _client.DisposeAsync();

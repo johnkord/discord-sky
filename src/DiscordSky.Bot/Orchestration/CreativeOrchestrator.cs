@@ -15,9 +15,19 @@ public sealed class CreativeOrchestrator
     private readonly ContextAggregator _contextAggregator;
     private readonly IChatClient _chatClient;
     private readonly SafetyFilter _safetyFilter;
-    private readonly OpenAIOptions _openAiOptions;
+    private readonly IOptionsMonitor<OpenAIOptions> _openAiOptionsMonitor;
     private readonly BotOptions _botOptions;
     private readonly ILogger<CreativeOrchestrator> _logger;
+
+    // Circuit breaker: fast-fail when the API is persistently down
+    private int _consecutiveFailures;
+    private DateTimeOffset _circuitOpenUntil = DateTimeOffset.MinValue;
+    private readonly object _circuitLock = new();
+    private const int CircuitBreakerThreshold = 5;
+    private static readonly TimeSpan CircuitBreakerCooldown = TimeSpan.FromMinutes(1);
+
+    // Throttle concurrent LLM calls to avoid rate limits and runaway cost
+    private static readonly SemaphoreSlim _llmThrottle = new(3);
 
     internal const string SendDiscordMessageToolName = "send_discord_message";
 
@@ -104,21 +114,21 @@ public sealed class CreativeOrchestrator
         ContextAggregator contextAggregator,
         IChatClient chatClient,
         SafetyFilter safetyFilter,
-        IOptions<OpenAIOptions> openAiOptions,
+        IOptionsMonitor<OpenAIOptions> openAiOptions,
         IOptions<BotOptions> botOptions,
         ILogger<CreativeOrchestrator> logger)
     {
         _contextAggregator = contextAggregator;
         _chatClient = chatClient;
         _safetyFilter = safetyFilter;
-        _openAiOptions = openAiOptions.Value;
+        _openAiOptionsMonitor = openAiOptions;
         _botOptions = botOptions.Value;
         _logger = logger;
     }
 
     public async Task<CreativeResult> ExecuteAsync(CreativeRequest request, SocketCommandContext commandContext, CancellationToken cancellationToken)
     {
-        if (_safetyFilter.ShouldRateLimit(request.Timestamp))
+        if (_safetyFilter.ShouldRateLimit(request.Timestamp, request.ChannelId))
         {
             var rateLimited = request.InvocationKind == CreativeInvocationKind.Ambient
                 ? string.Empty
@@ -132,10 +142,11 @@ public sealed class CreativeOrchestrator
         var userContent = BuildUserContent(request, historySlice, hasTopic);
 
         // When reasoning is enabled, we need more output tokens to accommodate both reasoning AND the tool call
-        var hasReasoning = !string.IsNullOrWhiteSpace(_openAiOptions.ReasoningEffort) || !string.IsNullOrWhiteSpace(_openAiOptions.ReasoningSummary);
+        var openAiOpts = _openAiOptionsMonitor.CurrentValue;
+        var hasReasoning = !string.IsNullOrWhiteSpace(openAiOpts.ReasoningEffort) || !string.IsNullOrWhiteSpace(openAiOpts.ReasoningSummary);
         var maxOutputTokens = hasReasoning
-            ? Math.Clamp(_openAiOptions.MaxTokens * 3, 1500, 4096)  // Triple tokens for reasoning models
-            : Math.Clamp(_openAiOptions.MaxTokens, 300, 1024);
+            ? Math.Clamp(openAiOpts.MaxTokens * 3, 1500, 4096)  // Triple tokens for reasoning models
+            : Math.Clamp(openAiOpts.MaxTokens, 300, 1024);
 
         // Use a smaller token budget for ambient replies to reduce cost and response length
         if (request.InvocationKind == CreativeInvocationKind.Ambient)
@@ -156,8 +167,8 @@ public sealed class CreativeOrchestrator
         {
             chatOptions.Reasoning = new ReasoningOptions
             {
-                Effort = string.IsNullOrWhiteSpace(_openAiOptions.ReasoningEffort) ? null : Enum.Parse<ReasoningEffort>(_openAiOptions.ReasoningEffort, ignoreCase: true),
-                Output = string.IsNullOrWhiteSpace(_openAiOptions.ReasoningSummary) ? null : Enum.Parse<ReasoningOutput>(_openAiOptions.ReasoningSummary, ignoreCase: true),
+                Effort = string.IsNullOrWhiteSpace(openAiOpts.ReasoningEffort) ? null : Enum.Parse<ReasoningEffort>(openAiOpts.ReasoningEffort, ignoreCase: true),
+                Output = string.IsNullOrWhiteSpace(openAiOpts.ReasoningSummary) ? null : Enum.Parse<ReasoningOutput>(openAiOpts.ReasoningSummary, ignoreCase: true),
             };
         }
 
@@ -168,6 +179,7 @@ public sealed class CreativeOrchestrator
 
         var knownMessages = historySlice.ToDictionary(m => m.MessageId, m => m);
 
+        await _llmThrottle.WaitAsync(cancellationToken);
         try
         {
             var response = await GetResponseWithRetryAsync(messages, chatOptions, cancellationToken);
@@ -233,6 +245,10 @@ public sealed class CreativeOrchestrator
                 ? string.Empty
                 : $"My {request.Persona} impression short-circuited—try again!";
             return new CreativeResult(failure);
+        }
+        finally
+        {
+            _llmThrottle.Release();
         }
     }
 
@@ -532,33 +548,65 @@ public sealed class CreativeOrchestrator
     private async Task<ChatResponse> GetResponseWithRetryAsync(
         IList<ChatMessage> messages, ChatOptions chatOptions, CancellationToken cancellationToken)
     {
-        const int maxAttempts = 3;
-        for (int attempt = 1; ; attempt++)
+        // Circuit breaker: fail fast if the API is known to be down
+        lock (_circuitLock)
         {
-            try
+            if (_consecutiveFailures >= CircuitBreakerThreshold && DateTimeOffset.UtcNow < _circuitOpenUntil)
             {
-                return await _chatClient.GetResponseAsync(messages, chatOptions, cancellationToken);
+                _logger.LogWarning("Circuit breaker open; failing fast until {Until:HH:mm:ss}", _circuitOpenUntil);
+                throw new InvalidOperationException("Circuit breaker is open — API calls are temporarily disabled");
             }
-            catch (ClientResultException crEx) when (
-                attempt < maxAttempts &&
-                !cancellationToken.IsCancellationRequested &&
-                crEx.Message.Contains("invalid_image_url", StringComparison.OrdinalIgnoreCase))
+        }
+
+        const int maxAttempts = 3;
+        try
+        {
+            for (int attempt = 1; ; attempt++)
             {
-                // An image URL is inaccessible to OpenAI's servers.
-                // Strip all UriContent from the messages and retry once.
-                _logger.LogWarning(crEx,
-                    "Image URL rejected by API on attempt {Attempt}/{MaxAttempts}; stripping images and retrying",
-                    attempt, maxAttempts);
-                StripImageContent(messages);
-                // Fall through to retry immediately without the images
+                try
+                {
+                    var result = await _chatClient.GetResponseAsync(messages, chatOptions, cancellationToken);
+                    // Success: reset circuit breaker
+                    lock (_circuitLock) { _consecutiveFailures = 0; }
+                    return result;
+                }
+                catch (ClientResultException crEx) when (
+                    attempt < maxAttempts &&
+                    !cancellationToken.IsCancellationRequested &&
+                    crEx.Message.Contains("invalid_image_url", StringComparison.OrdinalIgnoreCase))
+                {
+                    // An image URL is inaccessible to OpenAI's servers.
+                    // Strip all UriContent from the messages and retry once.
+                    _logger.LogWarning(crEx,
+                        "Image URL rejected by API on attempt {Attempt}/{MaxAttempts}; stripping images and retrying",
+                        attempt, maxAttempts);
+                    StripImageContent(messages);
+                    // Fall through to retry immediately without the images
+                }
+                catch (Exception ex) when (attempt < maxAttempts && IsTransient(ex) && !cancellationToken.IsCancellationRequested)
+                {
+                    var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt));
+                    _logger.LogWarning(ex, "Transient error on attempt {Attempt}/{MaxAttempts}, retrying in {Delay}s",
+                        attempt, maxAttempts, delay.TotalSeconds);
+                    await Task.Delay(delay, cancellationToken);
+                }
             }
-            catch (Exception ex) when (attempt < maxAttempts && IsTransient(ex) && !cancellationToken.IsCancellationRequested)
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            // All retry attempts exhausted — record failure for circuit breaker
+            lock (_circuitLock)
             {
-                var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt));
-                _logger.LogWarning(ex, "Transient error on attempt {Attempt}/{MaxAttempts}, retrying in {Delay}s",
-                    attempt, maxAttempts, delay.TotalSeconds);
-                await Task.Delay(delay, cancellationToken);
+                _consecutiveFailures++;
+                if (_consecutiveFailures >= CircuitBreakerThreshold)
+                {
+                    _circuitOpenUntil = DateTimeOffset.UtcNow + CircuitBreakerCooldown;
+                    _logger.LogWarning(
+                        "Circuit breaker opened after {Count} consecutive failures; cooling down for {Duration}s",
+                        _consecutiveFailures, CircuitBreakerCooldown.TotalSeconds);
+                }
             }
+            throw;
         }
     }
 
@@ -587,12 +635,13 @@ public sealed class CreativeOrchestrator
 
     private string ResolveModel(string persona)
     {
-        if (_openAiOptions.IntentModelOverrides.TryGetValue(persona, out var overrideModel) && !string.IsNullOrWhiteSpace(overrideModel))
+        var opts = _openAiOptionsMonitor.CurrentValue;
+        if (opts.IntentModelOverrides.TryGetValue(persona, out var overrideModel) && !string.IsNullOrWhiteSpace(overrideModel))
         {
             return overrideModel;
         }
 
-        return _openAiOptions.ChatModel;
+        return opts.ChatModel;
     }
 
     // ── Conversation-Window Memory Extraction ───────────────────────────
@@ -635,7 +684,16 @@ public sealed class CreativeOrchestrator
                 ToolMode = ChatToolMode.Auto,
             };
 
-            var response = await _chatClient.GetResponseAsync(messages, options, cancellationToken);
+            await _llmThrottle.WaitAsync(cancellationToken);
+            ChatResponse response;
+            try
+            {
+                response = await _chatClient.GetResponseAsync(messages, options, cancellationToken);
+            }
+            finally
+            {
+                _llmThrottle.Release();
+            }
             var operations = ParseMultiUserMemoryOperations(response);
 
             // Enforce max memories per extraction
@@ -688,7 +746,16 @@ public sealed class CreativeOrchestrator
                 ResponseFormat = ChatResponseFormat.Json,
             };
 
-            var response = await _chatClient.GetResponseAsync(messages, options, cancellationToken);
+            await _llmThrottle.WaitAsync(cancellationToken);
+            ChatResponse response;
+            try
+            {
+                response = await _chatClient.GetResponseAsync(messages, options, cancellationToken);
+            }
+            finally
+            {
+                _llmThrottle.Release();
+            }
             var consolidated = ParseConsolidatedMemories(response);
 
             if (consolidated is null || consolidated.Count == 0)

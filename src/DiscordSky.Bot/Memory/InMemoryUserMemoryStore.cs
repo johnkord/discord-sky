@@ -9,13 +9,14 @@ namespace DiscordSky.Bot.Memory;
 /// <summary>
 /// In-memory implementation of <see cref="IUserMemoryStore"/>.
 /// Memories are lost on restart — suitable for Phase 1 / MVP.
+/// Thread-safe via per-user locking.
 /// </summary>
 public sealed class InMemoryUserMemoryStore : IUserMemoryStore
 {
     private readonly ConcurrentDictionary<ulong, List<UserMemory>> _store = new();
+    private readonly ConcurrentDictionary<ulong, object> _userLocks = new();
     private readonly ILogger<InMemoryUserMemoryStore> _logger;
     private readonly int _maxMemoriesPerUser;
-    private readonly object _lock = new();
 
     public InMemoryUserMemoryStore(IOptions<BotOptions> options, ILogger<InMemoryUserMemoryStore> logger)
     {
@@ -23,11 +24,14 @@ public sealed class InMemoryUserMemoryStore : IUserMemoryStore
         _maxMemoriesPerUser = options.Value.MaxMemoriesPerUser;
     }
 
+    private object GetUserLock(ulong userId) =>
+        _userLocks.GetOrAdd(userId, _ => new object());
+
     public Task<IReadOnlyList<UserMemory>> GetMemoriesAsync(ulong userId, CancellationToken ct = default)
     {
         if (_store.TryGetValue(userId, out var memories))
         {
-            lock (_lock)
+            lock (GetUserLock(userId))
             {
                 return Task.FromResult<IReadOnlyList<UserMemory>>(memories.ToList().AsReadOnly());
             }
@@ -38,7 +42,7 @@ public sealed class InMemoryUserMemoryStore : IUserMemoryStore
 
     public Task SaveMemoryAsync(ulong userId, string content, string context, CancellationToken ct = default)
     {
-        lock (_lock)
+        lock (GetUserLock(userId))
         {
             var memories = _store.GetOrAdd(userId, _ => new List<UserMemory>());
 
@@ -88,7 +92,7 @@ public sealed class InMemoryUserMemoryStore : IUserMemoryStore
 
     public Task UpdateMemoryAsync(ulong userId, int index, string content, string context, CancellationToken ct = default)
     {
-        lock (_lock)
+        lock (GetUserLock(userId))
         {
             if (!_store.TryGetValue(userId, out var memories) || index < 0 || index >= memories.Count)
             {
@@ -110,7 +114,7 @@ public sealed class InMemoryUserMemoryStore : IUserMemoryStore
 
     public Task ForgetMemoryAsync(ulong userId, int index, CancellationToken ct = default)
     {
-        lock (_lock)
+        lock (GetUserLock(userId))
         {
             if (!_store.TryGetValue(userId, out var memories) || index < 0 || index >= memories.Count)
             {
@@ -128,9 +132,12 @@ public sealed class InMemoryUserMemoryStore : IUserMemoryStore
 
     public Task ForgetAllAsync(ulong userId, CancellationToken ct = default)
     {
-        if (_store.TryRemove(userId, out _))
+        lock (GetUserLock(userId))
         {
-            _logger.LogInformation("Forgot all memories for user {UserId}", userId);
+            if (_store.TryRemove(userId, out _))
+            {
+                _logger.LogInformation("Forgot all memories for user {UserId}", userId);
+            }
         }
 
         return Task.CompletedTask;
@@ -146,7 +153,7 @@ public sealed class InMemoryUserMemoryStore : IUserMemoryStore
 
     public Task ReplaceAllMemoriesAsync(ulong userId, IReadOnlyList<UserMemory> memories, CancellationToken ct = default)
     {
-        lock (_lock)
+        lock (GetUserLock(userId))
         {
             var store = _store.GetOrAdd(userId, _ => new List<UserMemory>());
             store.Clear();

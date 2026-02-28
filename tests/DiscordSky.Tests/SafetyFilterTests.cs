@@ -9,8 +9,8 @@ public class SafetyFilterTests
 {
     private static SafetyFilter CreateFilter(ChaosSettings? settings = null)
     {
-        var opts = Options.Create(settings ?? new ChaosSettings());
-        return new SafetyFilter(opts, NullLogger<SafetyFilter>.Instance);
+        var monitor = new TestOptionsMonitor<ChaosSettings>(settings ?? new ChaosSettings());
+        return new SafetyFilter(monitor, NullLogger<SafetyFilter>.Instance);
     }
 
     // ── Rate limiting ──────────────────────────────────────────────
@@ -21,10 +21,10 @@ public class SafetyFilterTests
         var filter = CreateFilter(new ChaosSettings { MaxPromptsPerHour = 3 });
         var now = DateTimeOffset.UtcNow;
 
-        Assert.False(filter.ShouldRateLimit(now));
-        Assert.False(filter.ShouldRateLimit(now.AddSeconds(1)));
-        Assert.False(filter.ShouldRateLimit(now.AddSeconds(2)));
-        Assert.True(filter.ShouldRateLimit(now.AddSeconds(3)));
+        Assert.False(filter.ShouldRateLimit(now, 1ul));
+        Assert.False(filter.ShouldRateLimit(now.AddSeconds(1), 1ul));
+        Assert.False(filter.ShouldRateLimit(now.AddSeconds(2), 1ul));
+        Assert.True(filter.ShouldRateLimit(now.AddSeconds(3), 1ul));
     }
 
     [Fact]
@@ -33,16 +33,16 @@ public class SafetyFilterTests
         var filter = CreateFilter(new ChaosSettings { MaxPromptsPerHour = 2 });
         var baseTime = DateTimeOffset.UtcNow;
 
-        Assert.False(filter.ShouldRateLimit(baseTime));
-        Assert.False(filter.ShouldRateLimit(baseTime.AddSeconds(1)));
+        Assert.False(filter.ShouldRateLimit(baseTime, 1ul));
+        Assert.False(filter.ShouldRateLimit(baseTime.AddSeconds(1), 1ul));
         // 3rd call trips the limit (count > 2)
-        Assert.True(filter.ShouldRateLimit(baseTime.AddSeconds(2)));
+        Assert.True(filter.ShouldRateLimit(baseTime.AddSeconds(2), 1ul));
 
         // After 1+ hour, old entries are evicted; the window now has only the new call
-        Assert.False(filter.ShouldRateLimit(baseTime.AddHours(1).AddSeconds(10)));
-        Assert.False(filter.ShouldRateLimit(baseTime.AddHours(1).AddSeconds(11)));
+        Assert.False(filter.ShouldRateLimit(baseTime.AddHours(1).AddSeconds(10), 1ul));
+        Assert.False(filter.ShouldRateLimit(baseTime.AddHours(1).AddSeconds(11), 1ul));
         // 3rd call within the new window trips it again
-        Assert.True(filter.ShouldRateLimit(baseTime.AddHours(1).AddSeconds(12)));
+        Assert.True(filter.ShouldRateLimit(baseTime.AddHours(1).AddSeconds(12), 1ul));
     }
 
     [Fact]
@@ -53,7 +53,7 @@ public class SafetyFilterTests
 
         for (int i = 0; i < 100; i++)
         {
-            Assert.False(filter.ShouldRateLimit(now.AddSeconds(i)));
+            Assert.False(filter.ShouldRateLimit(now.AddSeconds(i), 1ul));
         }
     }
 
@@ -66,7 +66,7 @@ public class SafetyFilterTests
         // Hammer from multiple threads to verify no exceptions
         Parallel.For(0, 200, i =>
         {
-            filter.ShouldRateLimit(now.AddMilliseconds(i));
+            filter.ShouldRateLimit(now.AddMilliseconds(i), 1ul);
         });
     }
 

@@ -134,8 +134,8 @@ public class PerUserMemoryLockTests : IAsyncDisposable
             EnableMemoryConsolidation = false,
             EnableUserMemory = true,
         });
-        var chaosSettings = Options.Create(new ChaosSettings());
-        var openAiOptions = Options.Create(new OpenAIOptions { ChatModel = "test-model" });
+        var chaosSettings = new TestOptionsMonitor<ChaosSettings>(new ChaosSettings());
+        var openAiOptions = new TestOptionsMonitor<OpenAIOptions>(new OpenAIOptions { ChatModel = "test-model" });
 
         var linkUnfurler = new StubLinkUnfurler();
         var contextAggregator = new ContextAggregator(

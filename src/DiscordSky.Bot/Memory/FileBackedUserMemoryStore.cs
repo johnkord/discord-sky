@@ -11,16 +11,16 @@ namespace DiscordSky.Bot.Memory;
 /// File-backed implementation of <see cref="IUserMemoryStore"/>.
 /// Stores one JSON file per user in a configurable data directory.
 /// Mutations are write-through (debounced) so memories survive restarts.
-/// Thread-safe via per-user locking.
+/// Thread-safe via per-user async locking (SemaphoreSlim).
 /// </summary>
 public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
 {
     private readonly ConcurrentDictionary<ulong, List<UserMemory>> _cache = new();
     private readonly ConcurrentDictionary<ulong, bool> _dirty = new();
+    private readonly ConcurrentDictionary<ulong, SemaphoreSlim> _userLocks = new();
     private readonly ILogger<FileBackedUserMemoryStore> _logger;
     private readonly int _maxMemoriesPerUser;
     private readonly string _dataDirectory;
-    private readonly object _lock = new();
     private readonly Timer _flushTimer;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -43,20 +43,32 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
         _logger.LogInformation("File-backed memory store initialized at \"{Path}\"", _dataDirectory);
     }
 
+    private SemaphoreSlim GetUserLock(ulong userId) =>
+        _userLocks.GetOrAdd(userId, _ => new SemaphoreSlim(1, 1));
+
     public async Task<IReadOnlyList<UserMemory>> GetMemoriesAsync(ulong userId, CancellationToken ct = default)
     {
-        var memories = await GetOrLoadAsync(userId, ct);
-        lock (_lock)
+        var userLock = GetUserLock(userId);
+        await userLock.WaitAsync(ct);
+        try
         {
+            var memories = await GetOrLoadAsync(userId, ct);
             return memories.ToList().AsReadOnly();
+        }
+        finally
+        {
+            userLock.Release();
         }
     }
 
     public async Task SaveMemoryAsync(ulong userId, string content, string context, CancellationToken ct = default)
     {
-        var memories = await GetOrLoadAsync(userId, ct);
-        lock (_lock)
+        var userLock = GetUserLock(userId);
+        await userLock.WaitAsync(ct);
+        try
         {
+            var memories = await GetOrLoadAsync(userId, ct);
+
             // Check for near-duplicate content before saving
             var existing = memories.FindIndex(m =>
                 m.Content.Equals(content, StringComparison.OrdinalIgnoreCase));
@@ -99,13 +111,19 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
             MarkDirty(userId);
             _logger.LogInformation("Saved memory for user {UserId}: \"{Content}\"", userId, content);
         }
+        finally
+        {
+            userLock.Release();
+        }
     }
 
     public async Task UpdateMemoryAsync(ulong userId, int index, string content, string context, CancellationToken ct = default)
     {
-        var memories = await GetOrLoadAsync(userId, ct);
-        lock (_lock)
+        var userLock = GetUserLock(userId);
+        await userLock.WaitAsync(ct);
+        try
         {
+            var memories = await GetOrLoadAsync(userId, ct);
             if (index < 0 || index >= memories.Count)
             {
                 _logger.LogWarning("Cannot update memory at index {Index} for user {UserId}: out of range", index, userId);
@@ -121,13 +139,19 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
             MarkDirty(userId);
             _logger.LogInformation("Updated memory for user {UserId} at index {Index}: \"{Content}\"", userId, index, content);
         }
+        finally
+        {
+            userLock.Release();
+        }
     }
 
     public async Task ForgetMemoryAsync(ulong userId, int index, CancellationToken ct = default)
     {
-        var memories = await GetOrLoadAsync(userId, ct);
-        lock (_lock)
+        var userLock = GetUserLock(userId);
+        await userLock.WaitAsync(ct);
+        try
         {
+            var memories = await GetOrLoadAsync(userId, ct);
             if (index < 0 || index >= memories.Count)
             {
                 _logger.LogWarning("Cannot forget memory at index {Index} for user {UserId}: out of range", index, userId);
@@ -139,55 +163,72 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
             MarkDirty(userId);
             _logger.LogInformation("Forgot memory for user {UserId} at index {Index}: \"{Content}\"", userId, index, removed.Content);
         }
+        finally
+        {
+            userLock.Release();
+        }
     }
 
-    public Task ForgetAllAsync(ulong userId, CancellationToken ct = default)
+    public async Task ForgetAllAsync(ulong userId, CancellationToken ct = default)
     {
-        lock (_lock)
+        var userLock = GetUserLock(userId);
+        await userLock.WaitAsync(ct);
+        try
         {
             _cache.TryRemove(userId, out _);
             _dirty.TryRemove(userId, out _);
-        }
 
-        var filePath = GetFilePath(userId);
-        try
-        {
-            if (File.Exists(filePath))
+            var filePath = GetFilePath(userId);
+            try
             {
-                File.Delete(filePath);
-                _logger.LogInformation("Forgot all memories for user {UserId} (deleted {File})", userId, filePath);
+                if (File.Exists(filePath))
+                {
+                    File.Delete(filePath);
+                    _logger.LogInformation("Forgot all memories for user {UserId} (deleted {File})", userId, filePath);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to delete memory file for user {UserId}", userId);
             }
         }
-        catch (Exception ex)
+        finally
         {
-            _logger.LogWarning(ex, "Failed to delete memory file for user {UserId}", userId);
+            userLock.Release();
         }
-
-        return Task.CompletedTask;
     }
 
-    public async Task TouchMemoriesAsync(ulong userId, CancellationToken ct = default)
+    public Task TouchMemoriesAsync(ulong userId, CancellationToken ct = default)
     {
         // No-op: we no longer bulk-touch all memories on every invocation because
         // doing so defeats LRU eviction (all memories end up with the same LastReferencedAt).
         // Instead, individual memories should be touched when they are actually used in a response.
-        await Task.CompletedTask;
+        return Task.CompletedTask;
     }
 
     public async Task ReplaceAllMemoriesAsync(ulong userId, IReadOnlyList<UserMemory> newMemories, CancellationToken ct = default)
     {
-        var memories = await GetOrLoadAsync(userId, ct);
-        lock (_lock)
+        var userLock = GetUserLock(userId);
+        await userLock.WaitAsync(ct);
+        try
         {
+            var memories = await GetOrLoadAsync(userId, ct);
             memories.Clear();
             memories.AddRange(newMemories);
             MarkDirty(userId);
             _logger.LogInformation("Replaced all memories for user {UserId} with {Count} consolidated memories", userId, newMemories.Count);
         }
+        finally
+        {
+            userLock.Release();
+        }
     }
 
     // --- Internal helpers ---
 
+    /// <summary>
+    /// Loads a user's memories from cache or disk. Caller MUST hold the user lock.
+    /// </summary>
     private async Task<List<UserMemory>> GetOrLoadAsync(ulong userId, CancellationToken ct)
     {
         if (_cache.TryGetValue(userId, out var cached))
@@ -215,7 +256,8 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
             memories = [];
         }
 
-        // Use GetOrAdd to handle concurrent first-access races
+        // Use GetOrAdd to handle concurrent first-access races (should not happen under user lock,
+        // but is a safe fallback)
         return _cache.GetOrAdd(userId, memories);
     }
 
@@ -228,6 +270,7 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
     /// <summary>
     /// Flush all dirty user memory files to disk.
     /// Called periodically by the timer and on dispose.
+    /// Acquires per-user locks synchronously to get a consistent snapshot.
     /// </summary>
     internal void FlushAll()
     {
@@ -241,13 +284,11 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
             if (!_cache.TryGetValue(userId, out var memories))
                 continue;
 
+            var userLock = GetUserLock(userId);
+            userLock.Wait();
             try
             {
-                string json;
-                lock (_lock)
-                {
-                    json = JsonSerializer.Serialize(memories, JsonOptions);
-                }
+                var json = JsonSerializer.Serialize(memories, JsonOptions);
 
                 var filePath = GetFilePath(userId);
                 // Write to temp file first, then atomic rename for crash safety
@@ -263,13 +304,29 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
                 // Re-mark dirty so we retry on next flush cycle
                 MarkDirty(userId);
             }
+            finally
+            {
+                userLock.Release();
+            }
         }
     }
 
     public void Dispose()
     {
-        _flushTimer.Dispose();
+        // Wait for any in-flight timer callback to complete before final flush
+        using var waitHandle = new ManualResetEvent(false);
+        _flushTimer.Dispose(waitHandle);
+        waitHandle.WaitOne(TimeSpan.FromSeconds(10));
+
         FlushAll();
+
+        // Dispose per-user locks
+        foreach (var sem in _userLocks.Values)
+        {
+            sem.Dispose();
+        }
+        _userLocks.Clear();
+
         _logger.LogInformation("File-backed memory store disposed; final flush complete");
     }
 }

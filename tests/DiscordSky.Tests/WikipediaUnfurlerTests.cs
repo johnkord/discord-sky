@@ -86,7 +86,7 @@ public class WikipediaUnfurlerTests
         }
         """;
 
-        var result = WikipediaUnfurler.ParseSummaryResponse(json, "https://en.wikipedia.org/wiki/Artificial_intelligence", "en");
+        var result = WikipediaUnfurler.ParseSummaryResponse(json, "https://en.wikipedia.org/wiki/Artificial_intelligence", "en", DateTimeOffset.UtcNow);
 
         Assert.NotNull(result);
         Assert.Equal("wikipedia", result.SourceType);
@@ -107,7 +107,7 @@ public class WikipediaUnfurlerTests
         }
         """;
 
-        var result = WikipediaUnfurler.ParseSummaryResponse(json, "https://de.wikipedia.org/wiki/Berlin", "de");
+        var result = WikipediaUnfurler.ParseSummaryResponse(json, "https://de.wikipedia.org/wiki/Berlin", "de", DateTimeOffset.UtcNow);
 
         Assert.NotNull(result);
         Assert.Equal("wikipedia-de", result.SourceType);
@@ -129,7 +129,7 @@ public class WikipediaUnfurlerTests
         }
         """;
 
-        var result = WikipediaUnfurler.ParseSummaryResponse(json, "https://en.wikipedia.org/wiki/Cat", "en");
+        var result = WikipediaUnfurler.ParseSummaryResponse(json, "https://en.wikipedia.org/wiki/Cat", "en", DateTimeOffset.UtcNow);
 
         Assert.NotNull(result);
         Assert.Single(result.Images);
@@ -148,7 +148,7 @@ public class WikipediaUnfurlerTests
         }
         """;
 
-        var result = WikipediaUnfurler.ParseSummaryResponse(json, "https://en.wikipedia.org/wiki/Obscure_Topic", "en");
+        var result = WikipediaUnfurler.ParseSummaryResponse(json, "https://en.wikipedia.org/wiki/Obscure_Topic", "en", DateTimeOffset.UtcNow);
 
         Assert.NotNull(result);
         Assert.Empty(result.Images);
@@ -166,7 +166,7 @@ public class WikipediaUnfurlerTests
         }
         """;
 
-        var result = WikipediaUnfurler.ParseSummaryResponse(json, "https://en.wikipedia.org/wiki/Mercury", "en");
+        var result = WikipediaUnfurler.ParseSummaryResponse(json, "https://en.wikipedia.org/wiki/Mercury", "en", DateTimeOffset.UtcNow);
 
         Assert.NotNull(result);
         Assert.Contains("Mercury", result.Text);
@@ -181,7 +181,7 @@ public class WikipediaUnfurlerTests
         }
         """;
 
-        var result = WikipediaUnfurler.ParseSummaryResponse(json, "https://en.wikipedia.org/wiki/Empty", "en");
+        var result = WikipediaUnfurler.ParseSummaryResponse(json, "https://en.wikipedia.org/wiki/Empty", "en", DateTimeOffset.UtcNow);
 
         Assert.Null(result);
     }
@@ -189,7 +189,7 @@ public class WikipediaUnfurlerTests
     [Fact]
     public void ParseSummaryResponse_InvalidJson_ReturnsNull()
     {
-        var result = WikipediaUnfurler.ParseSummaryResponse("not json", "https://en.wikipedia.org/wiki/X", "en");
+        var result = WikipediaUnfurler.ParseSummaryResponse("not json", "https://en.wikipedia.org/wiki/X", "en", DateTimeOffset.UtcNow);
 
         Assert.Null(result);
     }
@@ -206,7 +206,7 @@ public class WikipediaUnfurlerTests
         }
         """;
 
-        var result = WikipediaUnfurler.ParseSummaryResponse(json, "https://en.wikipedia.org/wiki/Long_Article", "en");
+        var result = WikipediaUnfurler.ParseSummaryResponse(json, "https://en.wikipedia.org/wiki/Long_Article", "en", DateTimeOffset.UtcNow);
 
         Assert.NotNull(result);
         Assert.True(result.Text.Length <= WikipediaUnfurler.MaxContentLength + 10); // +10 for title and truncation marker
@@ -224,7 +224,7 @@ public class WikipediaUnfurlerTests
         """;
         var originalUrl = "https://en.wikipedia.org/wiki/Test";
 
-        var result = WikipediaUnfurler.ParseSummaryResponse(json, originalUrl, "en");
+        var result = WikipediaUnfurler.ParseSummaryResponse(json, originalUrl, "en", DateTimeOffset.UtcNow);
 
         Assert.NotNull(result);
         Assert.Equal(new Uri(originalUrl), result.OriginalUrl);

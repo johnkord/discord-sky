@@ -80,7 +80,7 @@ public sealed class WikipediaUnfurler : ILinkUnfurler
                 continue;
             }
 
-            tasks.Add((dedupeKey, match.Value, FetchSummaryAsync(lang, title, match.Value, cancellationToken)));
+            tasks.Add((dedupeKey, match.Value, FetchSummaryAsync(lang, title, match.Value, messageTimestamp, cancellationToken)));
         }
 
         var results = new List<UnfurledLink>();
@@ -110,6 +110,7 @@ public sealed class WikipediaUnfurler : ILinkUnfurler
         string lang,
         string title,
         string originalUrl,
+        DateTimeOffset messageTimestamp,
         CancellationToken cancellationToken)
     {
         var apiUrl = BuildApiUrl(lang, title);
@@ -136,7 +137,7 @@ public sealed class WikipediaUnfurler : ILinkUnfurler
             }
 
             var json = await response.Content.ReadAsStringAsync(cts.Token);
-            return ParseSummaryResponse(json, originalUrl, lang);
+            return ParseSummaryResponse(json, originalUrl, lang, messageTimestamp);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -159,7 +160,7 @@ public sealed class WikipediaUnfurler : ILinkUnfurler
     /// Response fields: title, extract (plain text summary), description,
     /// thumbnail (source, width, height), originalimage (source, width, height).
     /// </summary>
-    internal static UnfurledLink? ParseSummaryResponse(string json, string originalUrl, string lang)
+    internal static UnfurledLink? ParseSummaryResponse(string json, string originalUrl, string lang, DateTimeOffset messageTimestamp)
     {
         try
         {
@@ -232,7 +233,8 @@ public sealed class WikipediaUnfurler : ILinkUnfurler
                     {
                         Url = thumbUri,
                         Filename = System.IO.Path.GetFileName(thumbUri.LocalPath),
-                        Source = "wikipedia-thumbnail"
+                        Source = "wikipedia-thumbnail",
+                        Timestamp = messageTimestamp
                     });
                 }
             }

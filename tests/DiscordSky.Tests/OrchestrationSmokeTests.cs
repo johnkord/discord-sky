@@ -11,12 +11,12 @@ public class OrchestrationSmokeTests
     public void SafetyFilter_RateLimitsBeyondConfiguredCap()
     {
         var settings = new ChaosSettings { MaxPromptsPerHour = 2 };
-        var filter = new SafetyFilter(Options.Create(settings), NullLogger<SafetyFilter>.Instance);
+        var filter = new SafetyFilter(new TestOptionsMonitor<ChaosSettings>(settings), NullLogger<SafetyFilter>.Instance);
 
         var now = DateTimeOffset.UtcNow;
-        Assert.False(filter.ShouldRateLimit(now));
-        Assert.False(filter.ShouldRateLimit(now.AddSeconds(1)));
-        Assert.True(filter.ShouldRateLimit(now.AddSeconds(2)));
+        Assert.False(filter.ShouldRateLimit(now, 1ul));
+        Assert.False(filter.ShouldRateLimit(now.AddSeconds(1), 1ul));
+        Assert.True(filter.ShouldRateLimit(now.AddSeconds(2), 1ul));
     }
 
     [Fact]
