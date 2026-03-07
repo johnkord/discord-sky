@@ -47,7 +47,7 @@ public sealed class BotOptions
     /// <summary>
     /// Model to use for memory extraction (should be cheap/fast).
     /// </summary>
-    public string MemoryExtractionModel { get; init; } = "gpt-5.2";
+    public string MemoryExtractionModel { get; init; } = "gpt-5.4";
 
     /// <summary>
     /// Probability (0.0–1.0) of running memory extraction on a given invocation.

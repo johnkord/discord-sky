@@ -55,7 +55,7 @@ public sealed class LlmProviderOptions
     /// <summary>
     /// Default chat model name (e.g. "gpt-5.2", "grok-4-1-fast-reasoning").
     /// </summary>
-    public string ChatModel { get; init; } = "gpt-4.1-mini";
+    public string ChatModel { get; init; } = "gpt-5.4";
 
     /// <summary>
     /// Maximum output tokens per response.
@@ -71,7 +71,7 @@ public sealed class LlmProviderOptions
     /// <summary>
     /// Model to use for memory extraction and consolidation.
     /// Defaults to <see cref="ChatModel"/> when null/empty.
-    /// Should be a cheap/fast model on this provider (e.g. "gpt-5.2" for OpenAI, "grok-4-1-fast-non-reasoning" for xAI).
+    /// Should be a cheap/fast model on this provider (e.g. "gpt-5.4" for OpenAI, "grok-4-1-fast-non-reasoning" for xAI).
     /// </summary>
     public string? MemoryExtractionModel { get; init; }
 
