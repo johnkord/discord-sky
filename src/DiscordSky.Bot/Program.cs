@@ -8,6 +8,7 @@ using DiscordSky.Bot.Orchestration;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
 using OpenAI;
+using OpenAI.Responses;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -60,6 +61,14 @@ builder.Services.AddSingleton<IChatClient>(sp =>
 	var openAiClient = clientOptions is not null
 		? new OpenAIClient(new System.ClientModel.ApiKeyCredential(provider.ApiKey), clientOptions)
 		: new OpenAIClient(provider.ApiKey);
+
+	if (provider.UseResponsesApi)
+	{
+		logger.LogInformation("Using Responses API for provider '{Provider}'", llmOptions.ActiveProvider);
+		return openAiClient
+			.GetResponsesClient(provider.ChatModel)
+			.AsIChatClient();
+	}
 
 	return openAiClient
 		.GetChatClient(provider.ChatModel)

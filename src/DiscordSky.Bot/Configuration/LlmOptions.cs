@@ -85,4 +85,11 @@ public sealed class LlmProviderOptions
     /// Reasoning summary output mode.
     /// </summary>
     public string? ReasoningSummary { get; init; }
+
+    /// <summary>
+    /// Whether to use OpenAI's Responses API (<c>/v1/responses</c>) instead of Chat Completions (<c>/v1/chat/completions</c>).
+    /// Required for newer OpenAI models (e.g. gpt-5.4) that need reasoning + tool calling together.
+    /// Should be <c>false</c> for non-OpenAI providers (xAI, etc.) that don't fully support the Responses API.
+    /// </summary>
+    public bool UseResponsesApi { get; init; }
 }
