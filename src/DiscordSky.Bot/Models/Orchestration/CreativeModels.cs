@@ -48,12 +48,33 @@ public sealed record CreativeResult(
     ulong? ReplyToMessageId = null
 );
 
+/// <summary>
+/// Classifies a memory by how it should influence the bot's behaviour.
+/// See docs/memory_relevance_design.md §6.5.
+/// </summary>
+public enum MemoryKind
+{
+    /// <summary>Durable, propositional facts about the user ("has a cat named Whiskers").</summary>
+    Factual,
+    /// <summary>Specific past episodes / shared moments. Rarely admissible ambiently.</summary>
+    Experiential,
+    /// <summary>Running gags and in-character bits. Never injected ambiently — the bot should recall them on cue, not constantly re-play them.</summary>
+    Running,
+    /// <summary>Notes about how the user wants to be addressed (e.g. "prefers short replies"). Shapes tone, never cited.</summary>
+    Meta,
+    /// <summary>An anti-memory: "don't bring this up". Topics/tokens here block matching memories from admission.</summary>
+    Suppressed,
+}
+
 public sealed record UserMemory(
     string Content,
     string Context,
     DateTimeOffset CreatedAt,
     DateTimeOffset LastReferencedAt,
-    int ReferenceCount
+    int ReferenceCount,
+    MemoryKind Kind = MemoryKind.Factual,
+    IReadOnlyList<string>? Topics = null,
+    bool Superseded = false
 );
 
 /// <summary>
@@ -64,10 +85,12 @@ public sealed record MultiUserMemoryOperation(
     MemoryAction Action,
     int? MemoryIndex,
     string? Content,
-    string? Context
+    string? Context,
+    MemoryKind? Kind = null,
+    IReadOnlyList<string>? Topics = null
 );
 
-public enum MemoryAction { Save, Update, Forget }
+public enum MemoryAction { Save, Update, Forget, Suppress }
 
 /// <summary>
 /// A single message buffered for conversation-window memory extraction.

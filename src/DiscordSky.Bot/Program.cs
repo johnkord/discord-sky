@@ -4,6 +4,7 @@ using DiscordSky.Bot.Bot;
 using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Integrations.LinkUnfurling;
 using DiscordSky.Bot.Memory;
+using DiscordSky.Bot.Memory.Scoring;
 using DiscordSky.Bot.Orchestration;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
@@ -17,6 +18,7 @@ builder.WebHost.UseUrls("http://+:8080");
 builder.Services.Configure<BotOptions>(builder.Configuration.GetSection(BotOptions.SectionName));
 builder.Services.Configure<ChaosSettings>(builder.Configuration.GetSection("Chaos"));
 builder.Services.Configure<LlmOptions>(builder.Configuration.GetSection(LlmOptions.SectionName));
+builder.Services.Configure<MemoryRelevanceOptions>(builder.Configuration.GetSection(MemoryRelevanceOptions.SectionName));
 
 builder.Services.AddSingleton(_ => new DiscordSocketConfig
 {
@@ -94,6 +96,7 @@ builder.Services.AddSingleton<ILinkUnfurler>(sp =>
 });
 builder.Services.AddSingleton<SafetyFilter>();
 builder.Services.AddSingleton<ContextAggregator>();
+builder.Services.AddSingleton<IMemoryScorer, LexicalMemoryScorer>();
 builder.Services.AddSingleton<CreativeOrchestrator>();
 builder.Services.AddSingleton<IUserMemoryStore, FileBackedUserMemoryStore>();
 builder.Services.AddHostedService<DiscordBotService>();

@@ -66,6 +66,27 @@ Example JSON snippet:
 }
 ```
 
+### Memory Commands
+The bot remembers things about regulars across sessions (topic preferences, running bits, shared context). Memory behaviour is user-controllable:
+
+- `!sky what-do-you-know` — show everything the bot currently remembers about you, grouped by **Facts / Shared moments / Running bits / Preferences**, plus any topics you've asked it to stay quiet about.
+- `!sky forget <topic>` — tell the bot to stop bringing up a topic (e.g. `!sky forget cats`, `!sky forget my job`). Related existing memories get suppressed automatically; new ones won't be saved if they overlap.
+- `!sky forget-me` — nuke everything the bot knows about you.
+
+### Memory Recall (LLM-invoked tool)
+Instead of injecting all stored notes into every reply (which made the bot bring up unrelated callbacks), the bot now decides for itself when to fetch memory. Each turn the user prompt carries a one-line `notes_available_about: <name> (user_id=...)` hint, and the model can call the `recall_about_user` tool to retrieve stored notes when the conversation calls for it. Replies always end with `send_discord_message`. See [docs/recall_tool_design.md](docs/recall_tool_design.md) for the full design.
+
+The `MemoryRelevance` config section controls recall-loop bounds and ranking:
+
+| Key | Default | Notes |
+|---|---|---|
+| `RecallTopK` | `10` | Maximum notes returned per recall call (truncated by recency or query-rank). |
+| `MaxRecallsPerReply` | `3` | Hard cap on recall round-trips per direct/command reply. |
+| `MaxRecallsPerAmbientReply` | `1` | Tighter cap for low-stakes ambient replies. |
+| `SuppressionOverlapThreshold` | `0.3` | Token overlap above which a `Suppressed` memory blocks an admissible one. |
+
+Legacy keys (`Mode`, `HardFloor`, `AdmissionThreshold`, etc.) are unread but kept temporarily for option-binding compatibility. They will be removed in a follow-up.
+
 ## Testing
 Run the smoke tests to validate configuration helpers and safety rails:
 ```bash

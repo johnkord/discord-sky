@@ -148,9 +148,13 @@ public class PerUserMemoryLockTests : IAsyncDisposable
         var contextAggregator = new ContextAggregator(
             botOptions, linkUnfurler, NullLogger<ContextAggregator>.Instance);
         var safetyFilter = new SafetyFilter(chaosSettings, NullLogger<SafetyFilter>.Instance);
+        var memoryRelevanceMonitor = new TestOptionsMonitor<MemoryRelevanceOptions>(new MemoryRelevanceOptions());
+        var memoryScorer = new DiscordSky.Bot.Memory.Scoring.LexicalMemoryScorer(memoryRelevanceMonitor);
         var orchestrator = new CreativeOrchestrator(
             contextAggregator, chatClient, safetyFilter,
-            openAiOptions, botOptions, NullLogger<CreativeOrchestrator>.Instance);
+            openAiOptions, botOptions, memoryScorer, memoryRelevanceMonitor,
+            memoryStore,
+            NullLogger<CreativeOrchestrator>.Instance);
 
         var socketConfig = new DiscordSocketConfig { GatewayIntents = GatewayIntents.Guilds };
         var client = new DiscordSocketClient(socketConfig);
@@ -158,6 +162,7 @@ public class PerUserMemoryLockTests : IAsyncDisposable
         _service = new DiscordBotService(
             client, botOptions, chaosSettings,
             orchestrator, contextAggregator, memoryStore,
+            memoryRelevanceMonitor,
             linkUnfurler, NullLogger<DiscordBotService>.Instance,
             new FixedRandomProvider());
 

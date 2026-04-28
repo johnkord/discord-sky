@@ -22,6 +22,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly CreativeOrchestrator _orchestrator;
     private readonly ContextAggregator _contextAggregator;
     private readonly IUserMemoryStore _memoryStore;
+    private readonly IOptionsMonitor<MemoryRelevanceOptions> _memoryRelevanceMonitor;
     private readonly ILinkUnfurler _linkUnfurler;
     private readonly IRandomProvider _randomProvider;
     private readonly ConcurrentDictionary<ulong, (string Persona, DateTimeOffset CreatedAt)> _personaCache = new();
@@ -39,6 +40,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         CreativeOrchestrator orchestrator,
         ContextAggregator contextAggregator,
         IUserMemoryStore memoryStore,
+        IOptionsMonitor<MemoryRelevanceOptions> memoryRelevanceMonitor,
         ILinkUnfurler linkUnfurler,
         ILogger<DiscordBotService> logger,
         IRandomProvider? randomProvider = null)
@@ -49,6 +51,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _orchestrator = orchestrator;
         _contextAggregator = contextAggregator;
         _memoryStore = memoryStore;
+        _memoryRelevanceMonitor = memoryRelevanceMonitor;
         _linkUnfurler = linkUnfurler;
         _logger = logger;
         _randomProvider = randomProvider ?? DefaultRandomProvider.Instance;
@@ -234,6 +237,15 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 await HandleWhatDoYouKnowAsync(context);
                 return;
             }
+            if (payload.StartsWith("forget ", StringComparison.OrdinalIgnoreCase)
+                || payload.Equals("forget", StringComparison.OrdinalIgnoreCase))
+            {
+                var topic = payload.Length > "forget".Length
+                    ? payload["forget".Length..].Trim()
+                    : string.Empty;
+                await HandleForgetTopicAsync(context, topic);
+                return;
+            }
 
             await HandlePersonaAsync(context, content, message, CreativeInvocationKind.Command);
             return;
@@ -321,11 +333,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         IReadOnlyList<UserMemory>? userMemories = null;
         if (_options.EnableUserMemory)
         {
-            userMemories = await _memoryStore.GetMemoriesAsync(context.User.Id, _shutdownCts.Token);
-            if (userMemories.Count > 0)
-            {
-                await _memoryStore.TouchMemoriesAsync(context.User.Id, _shutdownCts.Token);
-            }
+            userMemories = await _memoryStore.GetAdmissibleMemoriesAsync(
+                context.User.Id, _memoryRelevanceMonitor, _shutdownCts.Token);
         }
 
         // Collect images from the triggering message
@@ -411,11 +420,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         IReadOnlyList<UserMemory>? userMemories = null;
         if (_options.EnableUserMemory)
         {
-            userMemories = await _memoryStore.GetMemoriesAsync(context.User.Id, _shutdownCts.Token);
-            if (userMemories.Count > 0)
-            {
-                await _memoryStore.TouchMemoriesAsync(context.User.Id, _shutdownCts.Token);
-            }
+            userMemories = await _memoryStore.GetAdmissibleMemoriesAsync(
+                context.User.Id, _memoryRelevanceMonitor, _shutdownCts.Token);
         }
 
         // Collect images from the reply message
@@ -641,22 +647,68 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private async Task HandleWhatDoYouKnowAsync(SocketCommandContext context)
     {
         var memories = await _memoryStore.GetMemoriesAsync(context.User.Id, _shutdownCts.Token);
-        if (memories.Count == 0)
+        var visible = memories.Where(m => m.Kind != MemoryKind.Suppressed && !m.Superseded).ToList();
+
+        if (visible.Count == 0)
         {
             await context.Channel.SendMessageAsync("I don't have any memories about you yet.");
             return;
         }
 
         var sb = new System.Text.StringBuilder();
-        sb.AppendLine($"**What I remember about you** ({memories.Count} memories):");
-        for (int i = 0; i < memories.Count; i++)
-        {
-            sb.AppendLine($"`[{i}]` {memories[i].Content}");
-        }
+        sb.AppendLine($"**What I remember about you** ({visible.Count} entries):");
         sb.AppendLine();
-        sb.AppendLine($"_Use `{_options.CommandPrefix} forget-me` to clear all memories._");
+
+        foreach (var kind in new[] { MemoryKind.Factual, MemoryKind.Experiential, MemoryKind.Running, MemoryKind.Meta })
+        {
+            var group = visible.Where(m => m.Kind == kind).ToList();
+            if (group.Count == 0) continue;
+            var heading = kind switch
+            {
+                MemoryKind.Factual => "Facts",
+                MemoryKind.Experiential => "Shared moments",
+                MemoryKind.Running => "Running bits",
+                MemoryKind.Meta => "Preferences",
+                _ => kind.ToString()
+            };
+            sb.AppendLine($"**{heading}**");
+            foreach (var m in group)
+            {
+                var age = Memory.HumanizedAge.Format(DateTimeOffset.UtcNow - m.LastReferencedAt);
+                var ctx = string.IsNullOrWhiteSpace(m.Context) ? "" : $" (from {m.Context}, {age})";
+                sb.AppendLine($"\u2022 {m.Content}{ctx}");
+            }
+            sb.AppendLine();
+        }
+
+        // Note suppressions separately so the user knows what they've asked the bot to drop.
+        var suppressions = memories.Where(m => m.Kind == MemoryKind.Suppressed).ToList();
+        if (suppressions.Count > 0)
+        {
+            sb.AppendLine($"**Topics I'm keeping quiet about**: {string.Join(", ", suppressions.Select(m => m.Content))}");
+            sb.AppendLine();
+        }
+
+        sb.AppendLine($"_`{_options.CommandPrefix} forget <topic>` to suppress a topic \u00b7 `{_options.CommandPrefix} forget-me` to wipe everything._");
 
         await SendChunkedAsync(context.Channel, sb.ToString(), null, GetDefaultPersona());
+    }
+
+    private async Task HandleForgetTopicAsync(SocketCommandContext context, string topic)
+    {
+        if (string.IsNullOrWhiteSpace(topic) || topic.Length < 2)
+        {
+            await context.Channel.SendMessageAsync(
+                $"Usage: `{_options.CommandPrefix} forget <topic>` \u2014 give me a short topic to stop bringing up (e.g. `cats`, `my ex`).");
+            return;
+        }
+
+        await _memoryStore.SuppressTopicAsync(context.User.Id, topic, _memoryRelevanceMonitor, _shutdownCts.Token);
+        _logger.LogInformation(
+            "memory_command action=suppress user={UserHash} topic_len={Len}",
+            Memory.Logging.UserIdHash.Hash(context.User.Id), topic.Length);
+        await context.Channel.SendMessageAsync(
+            $"Got it \u2014 I'll stop bringing up **{topic}**. Use `{_options.CommandPrefix} what-do-you-know` to see what else I've got.");
     }
 
     // ── Conversation-window memory extraction ──────────────────────────
@@ -852,6 +904,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 .ToList();
             var updateOps = userOps.Where(o => o.Action == MemoryAction.Update).ToList();
             var saveOps = userOps.Where(o => o.Action == MemoryAction.Save).ToList();
+            var suppressOps = userOps.Where(o => o.Action == MemoryAction.Suppress).ToList();
 
             // Collect forget indices for re-indexing updates after forgets
             var forgetIndices = new HashSet<int>(forgetOps.Select(o => o.MemoryIndex!.Value));
@@ -902,14 +955,37 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                     _logger.LogDebug("Memory content contains ban word; skipping");
                     continue;
                 }
+                if (Memory.InstructionShapePolicy.IsInstructionShaped(op.Content))
+                {
+                    _logger.LogWarning(
+                        "memory_extract_reject instruction_shape user={UserHash}",
+                        Memory.Logging.UserIdHash.Hash(userId));
+                    continue;
+                }
                 if (existingMemories is not null && IsDuplicateMemory(op.Content!, existingMemories))
                 {
                     _logger.LogInformation("Skipping duplicate memory for user {UserId}: {Content}", userId, op.Content);
                     continue;
                 }
                 await _memoryStore.SaveMemoryAsync(
-                    userId, op.Content!, op.Context ?? string.Empty, _shutdownCts.Token);
+                    userId,
+                    op.Content!,
+                    op.Context ?? string.Empty,
+                    op.Kind ?? MemoryKind.Factual,
+                    op.Topics,
+                    _shutdownCts.Token);
                 existingMemories = await _memoryStore.GetMemoriesAsync(userId, _shutdownCts.Token);
+            }
+
+            // Phase 4: Suppressions — the model asked us to stop mentioning specific topics.
+            foreach (var op in suppressOps)
+            {
+                if (string.IsNullOrWhiteSpace(op.Content)) continue;
+                await _memoryStore.SuppressTopicAsync(
+                    userId, op.Content!, _memoryRelevanceMonitor, _shutdownCts.Token);
+                _logger.LogInformation(
+                    "memory_extract action=suppress user={UserHash}",
+                    Memory.Logging.UserIdHash.Hash(userId));
             }
 
             if (userOps.Count > 0)

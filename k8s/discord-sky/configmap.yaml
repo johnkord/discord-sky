@@ -24,3 +24,22 @@ data:
   LLM__Providers__OpenAI__ReasoningEffort: "medium"
   LLM__Providers__OpenAI__UseResponsesApi: "true"
   Chaos__MaxPromptsPerHour: "20"
+  # Recall-tool config (replaces implicit memory relevance gating).
+  # See docs/recall_tool_design.md §3 and §4.2.
+  MemoryRelevance__RecallTopK: "10"
+  MemoryRelevance__MaxRecallsPerReply: "3"
+  MemoryRelevance__MaxRecallsPerAmbientReply: "1"
+  MemoryRelevance__SuppressionOverlapThreshold: "0.3"
+  # Legacy keys below are unused under the recall-tool design but kept to avoid
+  # breaking option binding during rollout. Remove after one stable release.
+  MemoryRelevance__Mode: "ShadowOnly"
+  MemoryRelevance__HardFloor: "0.15"
+  MemoryRelevance__AdmissionThreshold: "0.35"
+  MemoryRelevance__ConfidenceGap: "2.0"
+  MemoryRelevance__MaxInjectedMemories: "2"
+  MemoryRelevance__LateralInhibition: "0.5"
+  MemoryRelevance__RecentMessageWindow: "3"
+  MemoryRelevance__KindAmbientThreshold__Factual: "0.35"
+  MemoryRelevance__KindAmbientThreshold__Experiential: "0.85"
+  MemoryRelevance__KindAmbientThreshold__Running: "999999"
+  MemoryRelevance__KindAmbientThreshold__Meta: "999999"

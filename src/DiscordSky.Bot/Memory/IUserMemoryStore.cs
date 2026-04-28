@@ -10,6 +10,21 @@ public interface IUserMemoryStore
 {
     Task<IReadOnlyList<UserMemory>> GetMemoriesAsync(ulong userId, CancellationToken ct = default);
     Task SaveMemoryAsync(ulong userId, string content, string context, CancellationToken ct = default);
+
+    /// <summary>
+    /// Save with a <see cref="MemoryKind"/> classification and optional topic tags.
+    /// Default implementation falls back to the 3-arg overload (dropping kind/topics), which keeps
+    /// existing test doubles functional. Real stores override to persist the full shape.
+    /// </summary>
+    Task SaveMemoryAsync(
+        ulong userId,
+        string content,
+        string context,
+        MemoryKind kind,
+        IReadOnlyList<string>? topics,
+        CancellationToken ct = default)
+        => SaveMemoryAsync(userId, content, context, ct);
+
     Task UpdateMemoryAsync(ulong userId, int index, string content, string context, CancellationToken ct = default);
     Task ForgetMemoryAsync(ulong userId, int index, CancellationToken ct = default);
     Task ForgetAllAsync(ulong userId, CancellationToken ct = default);

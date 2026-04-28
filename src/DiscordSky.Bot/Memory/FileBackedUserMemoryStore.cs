@@ -61,7 +61,16 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
         }
     }
 
-    public async Task SaveMemoryAsync(ulong userId, string content, string context, CancellationToken ct = default)
+    public Task SaveMemoryAsync(ulong userId, string content, string context, CancellationToken ct = default)
+        => SaveMemoryAsync(userId, content, context, MemoryKind.Factual, null, ct);
+
+    public async Task SaveMemoryAsync(
+        ulong userId,
+        string content,
+        string context,
+        MemoryKind kind,
+        IReadOnlyList<string>? topics,
+        CancellationToken ct = default)
     {
         var userLock = GetUserLock(userId);
         await userLock.WaitAsync(ct);
@@ -80,36 +89,47 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
                     Content = content,
                     Context = context,
                     LastReferencedAt = DateTimeOffset.UtcNow,
-                    ReferenceCount = memories[existing].ReferenceCount + 1
+                    ReferenceCount = memories[existing].ReferenceCount + 1,
+                    Kind = kind,
+                    Topics = topics,
                 };
                 MarkDirty(userId);
                 return;
             }
 
-            // Enforce cap — evict LRU memory if at limit
-            if (memories.Count >= _maxMemoriesPerUser)
+            // Enforce cap — evict LRU memory if at limit. Suppressed memories don't count toward the cap
+            // (otherwise heavy use of !sky forget would silently evict factual memories).
+            if (kind != MemoryKind.Suppressed)
             {
-                var lruIndex = 0;
-                var lruTime = DateTimeOffset.MaxValue;
-                for (int i = 0; i < memories.Count; i++)
+                var nonSuppressedCount = memories.Count(m => m.Kind != MemoryKind.Suppressed);
+                if (nonSuppressedCount >= _maxMemoriesPerUser)
                 {
-                    if (memories[i].LastReferencedAt < lruTime)
+                    var lruIndex = -1;
+                    var lruTime = DateTimeOffset.MaxValue;
+                    for (int i = 0; i < memories.Count; i++)
                     {
-                        lruTime = memories[i].LastReferencedAt;
-                        lruIndex = i;
+                        if (memories[i].Kind == MemoryKind.Suppressed) continue;
+                        if (memories[i].LastReferencedAt < lruTime)
+                        {
+                            lruTime = memories[i].LastReferencedAt;
+                            lruIndex = i;
+                        }
+                    }
+
+                    if (lruIndex >= 0)
+                    {
+                        _logger.LogDebug(
+                            "User {UserId} at memory cap ({Cap}), evicting LRU memory at index {Index}: \"{Content}\"",
+                            userId, _maxMemoriesPerUser, lruIndex, memories[lruIndex].Content);
+                        memories.RemoveAt(lruIndex);
                     }
                 }
-
-                _logger.LogDebug(
-                    "User {UserId} at memory cap ({Cap}), evicting LRU memory at index {Index}: \"{Content}\"",
-                    userId, _maxMemoriesPerUser, lruIndex, memories[lruIndex].Content);
-                memories.RemoveAt(lruIndex);
             }
 
             var now = DateTimeOffset.UtcNow;
-            memories.Add(new UserMemory(content, context, now, now, 0));
+            memories.Add(new UserMemory(content, context, now, now, 0, kind, topics));
             MarkDirty(userId);
-            _logger.LogInformation("Saved memory for user {UserId}: \"{Content}\"", userId, content);
+            _logger.LogInformation("Saved {Kind} memory for user {UserId}: \"{Content}\"", kind, userId, content);
         }
         finally
         {
