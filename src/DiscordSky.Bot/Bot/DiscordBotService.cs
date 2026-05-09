@@ -258,7 +258,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             var roll = _randomProvider.NextDouble();
             if (roll < chaosSettings.AmbientReplyChance)
             {
-                _logger.LogDebug("Ambient reply triggered (roll={Roll:F3} < chance={Chance:F3}) for message {MessageId} in channel {Channel}.", roll, chaosSettings.AmbientReplyChance, message.Id, channelName);
+                _logger.LogInformation("Ambient reply triggered (roll={Roll:F3} < chance={Chance:F3}) for message {MessageId} in channel {Channel}.", roll, chaosSettings.AmbientReplyChance, message.Id, channelName);
                 // Pass prefix + message content so HandlePersonaAsync can extract the user's text as the topic
                 await HandlePersonaAsync(context, _options.CommandPrefix + " " + content, message, CreativeInvocationKind.Ambient);
             }
@@ -272,6 +272,12 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         {
             return;
         }
+
+        // Traffic visibility: invocation_kind + author + channel. One log line per orchestrated reply,
+        // makes "is the bot getting any traffic at all" answerable from logs alone.
+        _logger.LogInformation(
+            "persona_invoked kind={Kind} author={Author} channel={Channel} message_id={MessageId}",
+            invocationKind, message.Author.Id, context.Channel.Name, message.Id);
 
         var payload = content[prefix.Length..].TrimStart();
         var defaultPersona = GetDefaultPersona();

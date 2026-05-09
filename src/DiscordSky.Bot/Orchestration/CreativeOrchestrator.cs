@@ -332,7 +332,16 @@ public sealed class CreativeOrchestrator
     {
         if (!TryParseToolCallArguments(functionCall, out var mode, out var text, out var targetMessageId))
         {
-            _logger.LogWarning("Failed to parse send_discord_message arguments from tool call.");
+            // Make this diagnosable next time. Log the arg shape (keys + value-type fingerprints, no values)
+            // so we can correlate with provider-specific tool-call quirks without leaking user content.
+            var argShape = functionCall.Arguments is null
+                ? "<null>"
+                : string.Join(", ", functionCall.Arguments.Select(kv =>
+                    $"{kv.Key}:{(kv.Value is null ? "null" : kv.Value.GetType().Name)}"));
+            _logger.LogWarning(
+                "Failed to parse send_discord_message arguments. arg_shape=[{ArgShape}] arg_count={ArgCount}",
+                argShape,
+                functionCall.Arguments?.Count ?? 0);
             var fallback = BuildEmptyResponsePlaceholder(request.Persona, request.InvocationKind);
             return new CreativeResult(fallback.Trim());
         }
@@ -648,6 +657,12 @@ public sealed class CreativeOrchestrator
         // Names-only — do NOT include counts. Counts leak into outputs ("I remember 5 things about you").
         builder.AppendLine($"notes_available_about: {request.UserDisplayName} (user_id={request.UserId}). Use recall_about_user when relevant.");
         builder.AppendLine();
+
+        // Telemetry: lets us correlate "hint emitted" vs "recall_tool ok" rate. The denominator for
+        // recall adoption — without this we can't tell "model ignored the hint" from "hint never appeared".
+        _logger.LogInformation(
+            "recall_hint emitted user={UserHash} admissible_count={Count} invocation={Kind}",
+            UserIdHash.Hash(request.UserId), admissible.Count, request.InvocationKind);
     }
 
     private static string BuildMessageLine(ChannelMessage message, DateTimeOffset reference)
@@ -892,7 +907,7 @@ public sealed class CreativeOrchestrator
 
             var messages = new List<ChatMessage>
             {
-                new(ChatRole.User, $"Consolidate the {existingMemories.Count} memories above into at most {targetCount} memories.")
+                new(ChatRole.User, BuildConsolidationUserMessage(existingMemories.Count, targetCount))
             };
 
             var options = new ChatOptions
@@ -941,6 +956,15 @@ public sealed class CreativeOrchestrator
             return null;
         }
     }
+
+    /// <summary>
+    /// User-role message for memory consolidation. Must contain the literal word "json" —
+    /// the OpenAI Responses API rejects `text.format=json_object` requests if no user-role
+    /// message mentions JSON, even when the system prompt does. Caused 100% consolidation
+    /// failure rate in production until this fix landed.
+    /// </summary>
+    internal static string BuildConsolidationUserMessage(int existingCount, int targetCount) =>
+        $"Consolidate the {existingCount} memories above into at most {targetCount} memories. Respond with JSON in the format described.";
 
     internal static string BuildConsolidationPrompt(
         IReadOnlyList<UserMemory> existingMemories,

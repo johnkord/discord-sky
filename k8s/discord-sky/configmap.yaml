@@ -19,10 +19,11 @@ data:
   Bot__MaxMemoriesPerExtraction: "15"
   Bot__EnableMemoryConsolidation: "true"
   Bot__ConsolidationTargetPercent: "0.75"
-  LLM__Providers__OpenAI__ChatModel: "gpt-5.4"
+  LLM__Providers__OpenAI__ChatModel: "gpt-5.5"
   LLM__Providers__OpenAI__MaxTokens: "1200"
   LLM__Providers__OpenAI__ReasoningEffort: "medium"
   LLM__Providers__OpenAI__UseResponsesApi: "true"
+  Chaos__AmbientReplyChance: "0.25"
   Chaos__MaxPromptsPerHour: "20"
   # Recall-tool config (replaces implicit memory relevance gating).
   # See docs/recall_tool_design.md §3 and §4.2.

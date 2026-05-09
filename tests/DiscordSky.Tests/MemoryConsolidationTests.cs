@@ -78,6 +78,26 @@ public class MemoryConsolidationTests
         Assert.Contains("PRESERVE", prompt);
     }
 
+    // ── BuildConsolidationUserMessage ─────────────────────────────────
+    // Regression: OpenAI Responses API rejects `text.format=json_object` if no
+    // user-role message mentions "json". This caused 100% consolidation failure
+    // in production for ~12 days. Don't let it regress.
+
+    [Fact]
+    public void BuildConsolidationUserMessage_ContainsJsonLiteral()
+    {
+        var msg = CreativeOrchestrator.BuildConsolidationUserMessage(20, 15);
+        Assert.Contains("JSON", msg, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildConsolidationUserMessage_IncludesCounts()
+    {
+        var msg = CreativeOrchestrator.BuildConsolidationUserMessage(20, 15);
+        Assert.Contains("20", msg);
+        Assert.Contains("15", msg);
+    }
+
     // ── ParseConsolidatedMemories ─────────────────────────────────────
 
     [Fact]
