@@ -27,7 +27,7 @@ data:
   Chaos__MaxPromptsPerHour: "20"
   # Recall-tool config (replaces implicit memory relevance gating).
   # See docs/recall_tool_design.md §3 and §4.2.
-  MemoryRelevance__RecallTopK: "10"
+  MemoryRelevance__RecallTopK: "20"
   MemoryRelevance__MaxRecallsPerReply: "3"
   MemoryRelevance__MaxRecallsPerAmbientReply: "1"
   MemoryRelevance__SuppressionOverlapThreshold: "0.3"

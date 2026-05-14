@@ -31,7 +31,7 @@ public sealed class MemoryRelevanceOptions
     public int MaxInjectedMemories { get; init; } = 2;
 
     /// <summary>Maximum recall-tool results returned to the LLM per call. See docs/recall_tool_design.md §3.2.</summary>
-    public int RecallTopK { get; init; } = 10;
+    public int RecallTopK { get; init; } = 20;
 
     /// <summary>Maximum number of recall-tool calls the LLM is allowed in a single direct/command reply.
     /// On the (n+1)-th call, the orchestrator forces ToolMode=RequireSpecific(send_discord_message).</summary>
