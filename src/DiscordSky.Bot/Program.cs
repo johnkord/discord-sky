@@ -106,6 +106,10 @@ builder.Services.AddSingleton<IUserMemoryStore, FileBackedUserMemoryStore>();
 builder.Services.AddSingleton<FileBackedTelemetrySink>();
 builder.Services.AddSingleton<IRecallTelemetrySink>(sp => sp.GetRequiredService<FileBackedTelemetrySink>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<FileBackedTelemetrySink>());
+// LLM auth self-test: surfaces silent 401 incidents as pod crashes instead of healthy-but-broken state.
+// See docs/recall_feature_review_2026-05-26.md §7.2.
+builder.Services.AddHttpClient();
+builder.Services.AddHostedService<LlmAuthCheckHostedService>();
 builder.Services.AddHostedService<DiscordBotService>();
 
 var app = builder.Build();
