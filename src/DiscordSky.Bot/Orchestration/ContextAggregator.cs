@@ -293,6 +293,12 @@ public sealed class ContextAggregator
                     continue;
                 }
 
+                if (IsExpiredDiscordCdnUrl(uri, DateTimeOffset.UtcNow))
+                {
+                    _logger.LogDebug("Skipping expired Discord CDN attachment {Url}", uri);
+                    continue;
+                }
+
                 var filename = string.IsNullOrWhiteSpace(attachment.Filename)
                     ? Path.GetFileName(uri.LocalPath)
                     : attachment.Filename;
@@ -328,6 +334,12 @@ public sealed class ContextAggregator
 
                     if (!HasImageExtension(uri))
                     {
+                        continue;
+                    }
+
+                    if (IsExpiredDiscordCdnUrl(uri, DateTimeOffset.UtcNow))
+                    {
+                        _logger.LogDebug("Skipping expired Discord CDN inline image {Url}", uri);
                         continue;
                     }
 
@@ -398,6 +410,44 @@ public sealed class ContextAggregator
     }
 
     private static bool HasImageExtension(Uri uri) => HasImageExtension(uri.AbsolutePath);
+
+    /// <summary>
+    /// Discord CDN URLs (cdn.discordapp.com, media.discordapp.net) include a signed
+    /// expiration in the <c>ex</c> query parameter (hex-encoded Unix seconds). Once
+    /// past that timestamp the URL returns 404, which makes OpenAI reject our request
+    /// with <c>invalid_value</c> / "Error while downloading file". This filter drops
+    /// already-expired URLs before they reach the model.
+    /// </summary>
+    internal static bool IsExpiredDiscordCdnUrl(Uri uri, DateTimeOffset now)
+    {
+        if (!uri.Host.EndsWith("discordapp.com", StringComparison.OrdinalIgnoreCase)
+            && !uri.Host.EndsWith("discordapp.net", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var query = uri.Query;
+        if (string.IsNullOrEmpty(query))
+        {
+            return false;
+        }
+
+        var parsed = System.Web.HttpUtility.ParseQueryString(query);
+        var ex = parsed["ex"];
+        if (string.IsNullOrEmpty(ex))
+        {
+            return false;
+        }
+
+        if (!long.TryParse(ex, System.Globalization.NumberStyles.HexNumber,
+                System.Globalization.CultureInfo.InvariantCulture, out var unixSeconds))
+        {
+            return false;
+        }
+
+        var expiresAt = DateTimeOffset.FromUnixTimeSeconds(unixSeconds);
+        return expiresAt <= now;
+    }
 
     private static string TrimTrailingPunctuation(string value)
     {

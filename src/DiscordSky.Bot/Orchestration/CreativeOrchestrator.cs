@@ -733,10 +733,10 @@ public sealed class CreativeOrchestrator
                 catch (ClientResultException crEx) when (
                     attempt < maxAttempts &&
                     !cancellationToken.IsCancellationRequested &&
-                    crEx.Message.Contains("invalid_image_url", StringComparison.OrdinalIgnoreCase))
+                    IsImageDataError(crEx))
                 {
-                    // An image URL is inaccessible to OpenAI's servers.
-                    // Strip all UriContent from the messages and retry once.
+                    // An image URL is inaccessible to OpenAI's servers (404, 403,
+                    // or explicitly rejected). Strip all UriContent and retry once.
                     _logger.LogWarning(crEx,
                         "Image URL rejected by API on attempt {Attempt}/{MaxAttempts}; stripping images and retrying",
                         attempt, maxAttempts);
@@ -752,23 +752,38 @@ public sealed class CreativeOrchestrator
                 }
             }
         }
-        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
-            // All retry attempts exhausted — record failure for circuit breaker
-            lock (_circuitLock)
+            // All retry attempts exhausted. Image-data errors are request-side problems
+            // (bad/expired URL the user posted), not API outages — don't count them
+            // toward the circuit breaker.
+            if (!IsImageDataError(ex))
             {
-                _consecutiveFailures++;
-                if (_consecutiveFailures >= CircuitBreakerThreshold)
+                lock (_circuitLock)
                 {
-                    _circuitOpenUntil = DateTimeOffset.UtcNow + CircuitBreakerCooldown;
-                    _logger.LogWarning(
-                        "Circuit breaker opened after {Count} consecutive failures; cooling down for {Duration}s",
-                        _consecutiveFailures, CircuitBreakerCooldown.TotalSeconds);
+                    _consecutiveFailures++;
+                    if (_consecutiveFailures >= CircuitBreakerThreshold)
+                    {
+                        _circuitOpenUntil = DateTimeOffset.UtcNow + CircuitBreakerCooldown;
+                        _logger.LogWarning(
+                            "Circuit breaker opened after {Count} consecutive failures; cooling down for {Duration}s",
+                            _consecutiveFailures, CircuitBreakerCooldown.TotalSeconds);
+                    }
                 }
             }
             throw;
         }
     }
+
+    /// <summary>
+    /// Identifies exceptions caused by the model provider being unable to fetch
+    /// an image URL we supplied (404, 403, or explicit <c>invalid_image_url</c>).
+    /// These are request-data failures, not provider-availability failures.
+    /// </summary>
+    internal static bool IsImageDataError(Exception ex) =>
+        ex is ClientResultException crEx &&
+        (crEx.Message.Contains("invalid_image_url", StringComparison.OrdinalIgnoreCase) ||
+         crEx.Message.Contains("Error while downloading file", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// Removes all <see cref="UriContent"/> items from every message so the request

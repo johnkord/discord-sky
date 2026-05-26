@@ -77,11 +77,7 @@ Run the Discord Sky bot as a continuously available workload inside Azure Kubern
 ## Kubernetes Configuration
 The repository now includes Kubernetes manifests in `k8s/discord-sky/`:
 
-1. Copy `secret.template.yaml` to `secret.yaml` (gitignored) and populate the required values, then add it to `kustomization.yaml` or apply it separately:
-  ```bash
-  cp k8s/discord-sky/secret.template.yaml k8s/discord-sky/secret.yaml
-  # edit k8s/discord-sky/secret.yaml with real secrets
-  ```
+1. Create the `discord-sky-secrets` Secret directly in the cluster (no file on disk). The Secret is intentionally not part of `kustomization.yaml`, so `scripts/deploy.sh` cannot overwrite it. See [k8s/discord-sky/README.md](../k8s/discord-sky/README.md) for the `kubectl create secret` / `kubectl patch secret` commands.
 2. Apply the base manifests (namespace, config map, deployment) via kustomize:
   ```bash
   kubectl apply -k k8s/discord-sky/

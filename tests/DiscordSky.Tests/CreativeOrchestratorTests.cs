@@ -1,6 +1,7 @@
 using DiscordSky.Bot.Models.Orchestration;
 using DiscordSky.Bot.Orchestration;
 using Microsoft.Extensions.AI;
+using System.ClientModel;
 
 namespace DiscordSky.Tests;
 
@@ -82,5 +83,31 @@ public class CreativeOrchestratorTests
         Assert.IsType<TextContent>(messages[0].Contents[0]);
         Assert.Single(messages[1].Contents);
         Assert.IsType<TextContent>(messages[1].Contents[0]);
+    }
+
+    // ── IsImageDataError ──────────────────────────────────────────────
+
+    [Fact]
+    public void IsImageDataError_InvalidImageUrl_Matches()
+    {
+        var ex = new ClientResultException("HTTP 400 (invalid_request_error: invalid_image_url) Parameter: url");
+        Assert.True(CreativeOrchestrator.IsImageDataError(ex));
+    }
+
+    [Fact]
+    public void IsImageDataError_DownloadFailure_Matches()
+    {
+        // The shape we observed in production: 404 from upstream image fetch.
+        var ex = new ClientResultException(
+            "HTTP 400 (invalid_request_error: invalid_value) Parameter: url\nError while downloading file. Upstream status code: 404.");
+        Assert.True(CreativeOrchestrator.IsImageDataError(ex));
+    }
+
+    [Fact]
+    public void IsImageDataError_GenericException_DoesNotMatch()
+    {
+        Assert.False(CreativeOrchestrator.IsImageDataError(new HttpRequestException("boom")));
+        Assert.False(CreativeOrchestrator.IsImageDataError(
+            new ClientResultException("HTTP 500 (server_error) something else")));
     }
 }

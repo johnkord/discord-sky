@@ -96,7 +96,7 @@ dotnet test
 ## AKS Deployment
 Use the helper script in `scripts/deploy.sh` to build, publish, and roll out a new container to your AKS cluster.
 
-1. Ensure `k8s/discord-sky/secret.yaml` exists locally with real secrets (it stays untracked).
+1. Ensure the `discord-sky-secrets` Secret exists in the `discord-sky` namespace. It is managed out-of-band via `kubectl create secret` / `kubectl patch secret`; see [k8s/discord-sky/README.md](k8s/discord-sky/README.md). Deploys never touch it.
 2. Log in with `az login` and make sure you have `az`, `docker`, `kubectl`, and `dotnet` on your PATH.
 3. Run the script, substituting values from your private ops note:
    ```bash

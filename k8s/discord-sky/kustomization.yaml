@@ -6,8 +6,9 @@ namespace: discord-sky
 resources:
   - namespace.yaml
   - configmap.yaml
-  - secret.yaml
   - pvc.yaml
   - deployment.yaml
 
-# Update secret.yaml with real values before applying.
+# Secrets are managed out-of-band (Azure Key Vault + CSI driver, or one-shot
+# `kubectl create secret`). They are intentionally not part of this kustomization
+# so that running deploy.sh never clobbers them. See k8s/discord-sky/README.md.

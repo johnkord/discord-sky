@@ -28,7 +28,9 @@ Optional:
 Environment prerequisites:
   - az CLI, docker, dotnet, kubectl must be installed.
   - You must be logged into Azure (az login).
-  - A prepared secret.yaml must exist in the Kubernetes directory.
+  - The discord-sky-secrets Secret must already exist in the discord-sky namespace.
+    It is managed out-of-band via `kubectl patch secret` / `kubectl create secret`
+    and is intentionally not part of this deploy.
 EOF
 }
 
@@ -119,12 +121,6 @@ fi
 K8S_PATH="$REPO_ROOT/${K8S_DIR#./}"
 if [[ ! -d "$K8S_PATH" ]]; then
   echo "Kubernetes directory not found at $K8S_PATH" >&2
-  exit 1
-fi
-
-SECRET_FILE="$K8S_PATH/secret.yaml"
-if [[ ! -f "$SECRET_FILE" ]]; then
-  echo "Missing $SECRET_FILE. Create it from secret.template.yaml before deploying." >&2
   exit 1
 fi
 

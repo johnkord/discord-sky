@@ -8,18 +8,31 @@ This directory contains the Kubernetes resources required to run the Discord Sky
 
 - `namespace.yaml` – creates the `discord-sky` namespace.
 - `configmap.yaml` – non-secret configuration overrides for the bot.
-- `secret.template.yaml` – template for required secrets; copy to `secret.yaml` and replace placeholder values before applying.
+- `secret.template.yaml` – reference of the secret keys the bot expects. The live `discord-sky-secrets` Secret is managed imperatively in the cluster (see below) and is intentionally not part of `kustomization.yaml`, so `scripts/deploy.sh` can never overwrite it.
 - `deployment.yaml` – deploys the bot container image from `<ACR_LOGIN_SERVER>`.
 - `kustomization.yaml` – allows quick deployment via `kubectl apply -k`.
 
 ## Usage
 
-1. Copy the secret template and fill in secrets (the generated `secret.yaml` is gitignored so it stays local):
+1. Create the cluster Secret once (no file on disk). Example for all three keys:
    ```bash
-   cp secret.template.yaml secret.yaml
-   # edit secret.yaml with real values
+   kubectl create secret generic discord-sky-secrets \
+     --namespace discord-sky \
+     --from-literal=Bot__Token='...' \
+     --from-literal=LLM__ActiveProvider='OpenAI' \
+     --from-literal=LLM__Providers__OpenAI__ApiKey='...' \
+     --from-literal=LLM__Providers__xAI__ApiKey='...' \
+     --dry-run=client -o yaml | kubectl apply -f -
    ```
-   Add `secret.yaml` to `kustomization.yaml` or apply it separately with `kubectl apply -f secret.yaml`.
+   To rotate a single value later without touching the others:
+   ```bash
+   read -s OPENAI_KEY
+   kubectl patch secret discord-sky-secrets -n discord-sky --type merge \
+     -p "{\"stringData\":{\"LLM__Providers__OpenAI__ApiKey\":\"$OPENAI_KEY\"}}"
+   unset OPENAI_KEY
+   kubectl rollout restart deploy/discord-sky-bot -n discord-sky
+   ```
+
 2. Deploy the stack:
    ```bash
    kubectl apply -k .
