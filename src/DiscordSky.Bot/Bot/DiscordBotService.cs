@@ -5,6 +5,7 @@ using Discord.WebSocket;
 using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Integrations.LinkUnfurling;
 using DiscordSky.Bot.Memory;
+using DiscordSky.Bot.Memory.Logging;
 using DiscordSky.Bot.Models.Orchestration;
 using DiscordSky.Bot.Orchestration;
 using Microsoft.Extensions.Hosting;
@@ -17,6 +18,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 {
     private readonly DiscordSocketClient _client;
     private readonly ILogger<DiscordBotService> _logger;
+    private readonly IRecallTelemetrySink _telemetry;
     private readonly IOptionsMonitor<ChaosSettings> _chaosSettingsMonitor;
     private readonly BotOptions _options;
     private readonly CreativeOrchestrator _orchestrator;
@@ -43,6 +45,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         IOptionsMonitor<MemoryRelevanceOptions> memoryRelevanceMonitor,
         ILinkUnfurler linkUnfurler,
         ILogger<DiscordBotService> logger,
+        IRecallTelemetrySink telemetry,
         IRandomProvider? randomProvider = null)
     {
         _client = client;
@@ -54,6 +57,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _memoryRelevanceMonitor = memoryRelevanceMonitor;
         _linkUnfurler = linkUnfurler;
         _logger = logger;
+        _telemetry = telemetry;
         _randomProvider = randomProvider ?? DefaultRandomProvider.Instance;
     }
 
@@ -278,6 +282,13 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _logger.LogInformation(
             "persona_invoked kind={Kind} author={Author} channel={Channel} message_id={MessageId}",
             invocationKind, message.Author.Id, context.Channel.Name, message.Id);
+        _telemetry.Emit(new TelemetryEvent(
+            Timestamp: DateTimeOffset.UtcNow,
+            EventType: TelemetryEventTypes.PersonaInvoked,
+            UserHash: UserIdHash.Hash(message.Author.Id),
+            Channel: context.Channel.Name,
+            Kind: invocationKind.ToString(),
+            MessageId: message.Id));
 
         var payload = content[prefix.Length..].TrimStart();
         var defaultPersona = GetDefaultPersona();

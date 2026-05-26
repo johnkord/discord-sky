@@ -37,7 +37,8 @@ public class MemoryAvailabilityHintTests
         return new CreativeOrchestrator(
             contextAgg, new StubChatClient(), safety,
             llmOptions, botOptions, scorer, relevanceMonitor, memoryStore,
-            NullLogger<CreativeOrchestrator>.Instance);
+            NullLogger<CreativeOrchestrator>.Instance,
+            new NoOpTelemetrySink());
     }
 
     private static UserMemory Mem(string content, MemoryKind kind = MemoryKind.Factual) =>

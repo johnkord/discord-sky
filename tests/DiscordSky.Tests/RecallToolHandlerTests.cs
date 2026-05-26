@@ -24,7 +24,8 @@ public class RecallToolHandlerTests
         return new RecallToolHandler(
             store, scorer, options,
             allowedUserIds: new HashSet<ulong> { AliceId },
-            logger: NullLogger.Instance);
+            logger: NullLogger.Instance,
+            telemetry: new NoOpTelemetrySink());
     }
 
     [Fact]
@@ -136,6 +137,7 @@ public class RecallToolHandlerTests
             store, scorer, new MemoryRelevanceOptions(),
             new HashSet<ulong> { AliceId },
             NullLogger.Instance,
+            new NoOpTelemetrySink(),
             prefetched);
         var result = await handler.RecallAsync(AliceId, null);
         Assert.Equal(1, result.Total);

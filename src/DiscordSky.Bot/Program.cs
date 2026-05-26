@@ -4,6 +4,7 @@ using DiscordSky.Bot.Bot;
 using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Integrations.LinkUnfurling;
 using DiscordSky.Bot.Memory;
+using DiscordSky.Bot.Memory.Logging;
 using DiscordSky.Bot.Memory.Scoring;
 using DiscordSky.Bot.Orchestration;
 using Microsoft.Extensions.AI;
@@ -19,6 +20,7 @@ builder.Services.Configure<BotOptions>(builder.Configuration.GetSection(BotOptio
 builder.Services.Configure<ChaosSettings>(builder.Configuration.GetSection("Chaos"));
 builder.Services.Configure<LlmOptions>(builder.Configuration.GetSection(LlmOptions.SectionName));
 builder.Services.Configure<MemoryRelevanceOptions>(builder.Configuration.GetSection(MemoryRelevanceOptions.SectionName));
+builder.Services.Configure<TelemetryOptions>(builder.Configuration.GetSection(TelemetryOptions.SectionName));
 
 builder.Services.AddSingleton(_ => new DiscordSocketConfig
 {
@@ -99,6 +101,11 @@ builder.Services.AddSingleton<ContextAggregator>();
 builder.Services.AddSingleton<IMemoryScorer, LexicalMemoryScorer>();
 builder.Services.AddSingleton<CreativeOrchestrator>();
 builder.Services.AddSingleton<IUserMemoryStore, FileBackedUserMemoryStore>();
+// Telemetry sink: singleton (for emit) and hosted (for daily-file lifecycle + 30-day retention sweep).
+// See docs/recall_feature_review_2026-05-26.md §7.1.
+builder.Services.AddSingleton<FileBackedTelemetrySink>();
+builder.Services.AddSingleton<IRecallTelemetrySink>(sp => sp.GetRequiredService<FileBackedTelemetrySink>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<FileBackedTelemetrySink>());
 builder.Services.AddHostedService<DiscordBotService>();
 
 var app = builder.Build();

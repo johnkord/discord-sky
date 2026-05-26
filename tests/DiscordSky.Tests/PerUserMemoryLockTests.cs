@@ -154,7 +154,8 @@ public class PerUserMemoryLockTests : IAsyncDisposable
             contextAggregator, chatClient, safetyFilter,
             openAiOptions, botOptions, memoryScorer, memoryRelevanceMonitor,
             memoryStore,
-            NullLogger<CreativeOrchestrator>.Instance);
+            NullLogger<CreativeOrchestrator>.Instance,
+            new NoOpTelemetrySink());
 
         var socketConfig = new DiscordSocketConfig { GatewayIntents = GatewayIntents.Guilds };
         var client = new DiscordSocketClient(socketConfig);
@@ -164,6 +165,7 @@ public class PerUserMemoryLockTests : IAsyncDisposable
             orchestrator, contextAggregator, memoryStore,
             memoryRelevanceMonitor,
             linkUnfurler, NullLogger<DiscordBotService>.Instance,
+            new NoOpTelemetrySink(),
             new FixedRandomProvider());
 
         return _service;

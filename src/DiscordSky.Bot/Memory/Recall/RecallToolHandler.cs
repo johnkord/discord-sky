@@ -1,4 +1,5 @@
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Memory.Logging;
 using DiscordSky.Bot.Memory.Scoring;
 using DiscordSky.Bot.Models.Orchestration;
 using Microsoft.Extensions.Logging;
@@ -20,6 +21,7 @@ public sealed class RecallToolHandler
     private readonly MemoryRelevanceOptions _options;
     private readonly IReadOnlySet<ulong> _allowedUserIds;
     private readonly ILogger _logger;
+    private readonly IRecallTelemetrySink _telemetry;
     private readonly Dictionary<ulong, IReadOnlyList<UserMemory>> _cache = new();
 
     public RecallToolHandler(
@@ -28,6 +30,7 @@ public sealed class RecallToolHandler
         MemoryRelevanceOptions options,
         IReadOnlySet<ulong> allowedUserIds,
         ILogger logger,
+        IRecallTelemetrySink telemetry,
         IReadOnlyDictionary<ulong, IReadOnlyList<UserMemory>>? prefetched = null)
     {
         _store = store;
@@ -35,6 +38,7 @@ public sealed class RecallToolHandler
         _options = options;
         _allowedUserIds = allowedUserIds;
         _logger = logger;
+        _telemetry = telemetry;
 
         if (prefetched is not null)
         {
@@ -65,6 +69,11 @@ public sealed class RecallToolHandler
             _logger.LogInformation(
                 "recall_tool unknown_user_id requested_user={RequestedUser} allowed_count={AllowedCount}",
                 userId, _allowedUserIds.Count);
+            _telemetry.Emit(new TelemetryEvent(
+                Timestamp: asOf,
+                EventType: TelemetryEventTypes.RecallToolUnknownUser,
+                UserHash: UserIdHash.Hash(userId),
+                CallIndex: RecallsPerformed));
             return RecallToolResult.UnknownUser;
         }
 
@@ -76,6 +85,13 @@ public sealed class RecallToolHandler
             _logger.LogInformation(
                 "recall_tool no_notes user={UserId} total_stored={TotalStored} query_present={QueryPresent}",
                 userId, memories.Count, !string.IsNullOrWhiteSpace(query));
+            _telemetry.Emit(new TelemetryEvent(
+                Timestamp: asOf,
+                EventType: TelemetryEventTypes.RecallToolNoNotes,
+                UserHash: UserIdHash.Hash(userId),
+                Total: memories.Count,
+                QueryPresent: !string.IsNullOrWhiteSpace(query),
+                CallIndex: RecallsPerformed));
             return RecallToolResult.NoNotes;
         }
 
@@ -122,6 +138,16 @@ public sealed class RecallToolHandler
         _logger.LogInformation(
             "recall_tool ok user={UserId} returned={Returned} total={Total} truncated={Truncated} query_present={QueryPresent} top_score={TopScore:F3} call_index={CallIndex}",
             userId, notes.Count, ranked.Count, truncated, !string.IsNullOrWhiteSpace(query), topScore, RecallsPerformed);
+        _telemetry.Emit(new TelemetryEvent(
+            Timestamp: asOf,
+            EventType: TelemetryEventTypes.RecallToolOk,
+            UserHash: UserIdHash.Hash(userId),
+            Count: notes.Count,
+            Total: ranked.Count,
+            Truncated: truncated,
+            QueryPresent: !string.IsNullOrWhiteSpace(query),
+            TopScore: topScore,
+            CallIndex: RecallsPerformed));
 
         return new RecallToolResult(notes, ranked.Count, truncated, Note: null);
     }

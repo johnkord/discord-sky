@@ -26,6 +26,7 @@ public sealed class CreativeOrchestrator
     private readonly IOptionsMonitor<MemoryRelevanceOptions> _memoryRelevanceMonitor;
     private readonly IUserMemoryStore _userMemoryStore;
     private readonly ILogger<CreativeOrchestrator> _logger;
+    private readonly IRecallTelemetrySink _telemetry;
 
     // Circuit breaker: fast-fail when the API is persistently down
     private int _consecutiveFailures;
@@ -165,7 +166,8 @@ public sealed class CreativeOrchestrator
         IMemoryScorer memoryScorer,
         IOptionsMonitor<MemoryRelevanceOptions> memoryRelevanceMonitor,
         IUserMemoryStore userMemoryStore,
-        ILogger<CreativeOrchestrator> logger)
+        ILogger<CreativeOrchestrator> logger,
+        IRecallTelemetrySink telemetry)
     {
         _contextAggregator = contextAggregator;
         _chatClient = chatClient;
@@ -176,6 +178,7 @@ public sealed class CreativeOrchestrator
         _memoryRelevanceMonitor = memoryRelevanceMonitor;
         _userMemoryStore = userMemoryStore;
         _logger = logger;
+        _telemetry = telemetry;
     }
 
     public async Task<CreativeResult> ExecuteAsync(CreativeRequest request, SocketCommandContext commandContext, CancellationToken cancellationToken)
@@ -241,7 +244,7 @@ public sealed class CreativeOrchestrator
             prefetched = new Dictionary<ulong, IReadOnlyList<UserMemory>> { [request.UserId] = request.UserMemories };
         }
         var recallHandler = new RecallToolHandler(
-            _userMemoryStore, _memoryScorer, relevanceOptions, allowedUserIds, _logger, prefetched);
+            _userMemoryStore, _memoryScorer, relevanceOptions, allowedUserIds, _logger, _telemetry, prefetched);
 
         var maxRecalls = request.InvocationKind == CreativeInvocationKind.Ambient
             ? relevanceOptions.MaxRecallsPerAmbientReply
@@ -660,9 +663,16 @@ public sealed class CreativeOrchestrator
 
         // Telemetry: lets us correlate "hint emitted" vs "recall_tool ok" rate. The denominator for
         // recall adoption — without this we can't tell "model ignored the hint" from "hint never appeared".
+        var userHash = UserIdHash.Hash(request.UserId);
         _logger.LogInformation(
             "recall_hint emitted user={UserHash} admissible_count={Count} invocation={Kind}",
-            UserIdHash.Hash(request.UserId), admissible.Count, request.InvocationKind);
+            userHash, admissible.Count, request.InvocationKind);
+        _telemetry.Emit(new TelemetryEvent(
+            Timestamp: request.Timestamp,
+            EventType: TelemetryEventTypes.RecallHintEmitted,
+            UserHash: userHash,
+            Kind: request.InvocationKind.ToString(),
+            Count: admissible.Count));
     }
 
     private static string BuildMessageLine(ChannelMessage message, DateTimeOffset reference)
@@ -714,6 +724,10 @@ public sealed class CreativeOrchestrator
             if (_consecutiveFailures >= CircuitBreakerThreshold && DateTimeOffset.UtcNow < _circuitOpenUntil)
             {
                 _logger.LogWarning("Circuit breaker open; failing fast until {Until:HH:mm:ss}", _circuitOpenUntil);
+                _telemetry.Emit(new TelemetryEvent(
+                    Timestamp: DateTimeOffset.UtcNow,
+                    EventType: TelemetryEventTypes.CircuitBreakerOpened,
+                    Outcome: "failing_fast"));
                 throw new InvalidOperationException("Circuit breaker is open — API calls are temporarily disabled");
             }
         }
