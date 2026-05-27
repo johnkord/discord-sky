@@ -22,14 +22,14 @@ public sealed class RecallTelemetryTests : IDisposable
 
     private FileBackedTelemetrySink BuildSink(int retentionDays = 30)
     {
-        var opts = new TelemetryOptions { BaseDirectory = _tempDir, RetentionDays = retentionDays, BufferCapacity = 64 };
+        var opts = new TelemetryOptions { BaseDirectory = _tempDir, RetentionDays = retentionDays };
         return new FileBackedTelemetrySink(Options.Create(opts), NullLogger<FileBackedTelemetrySink>.Instance);
     }
 
     [Fact]
     public async Task Emit_WritesJsonLineToDailyFile()
     {
-        await using var sink = BuildSink();
+        var sink = BuildSink();
         await sink.StartAsync(CancellationToken.None);
 
         var ts = new DateTimeOffset(2026, 5, 26, 7, 0, 0, TimeSpan.Zero);
@@ -59,7 +59,7 @@ public sealed class RecallTelemetryTests : IDisposable
     [Fact]
     public async Task Emit_OmitsNullFieldsFromJson()
     {
-        await using var sink = BuildSink();
+        var sink = BuildSink();
         await sink.StartAsync(CancellationToken.None);
 
         sink.Emit(new TelemetryEvent(
@@ -88,7 +88,7 @@ public sealed class RecallTelemetryTests : IDisposable
         await File.WriteAllTextAsync(oldPath, "stale\n");
         await File.WriteAllTextAsync(freshPath, "fresh\n");
 
-        await using var sink = BuildSink(retentionDays: 30);
+        var sink = BuildSink(retentionDays: 30);
         await sink.StartAsync(CancellationToken.None);
         await sink.StopAsync(CancellationToken.None);
 
@@ -97,21 +97,36 @@ public sealed class RecallTelemetryTests : IDisposable
     }
 
     [Fact]
-    public async Task Emit_IsNonBlocking_WhenBufferFull()
+    public async Task Emit_IsThreadSafe_UnderConcurrentWrites()
     {
-        // Tiny buffer; flood it before the drain loop starts to catch up. Just asserts that emit
-        // doesn't throw and doesn't block; we don't care which events survive.
-        var opts = new TelemetryOptions { BaseDirectory = _tempDir, RetentionDays = 30, BufferCapacity = 4 };
-        await using var sink = new FileBackedTelemetrySink(Options.Create(opts), NullLogger<FileBackedTelemetrySink>.Instance);
+        // Replaces the prior "non-blocking under buffer pressure" test. Synchronous fsync'd writes
+        // are serialized via lock; many threads should produce a clean, line-delimited file with no
+        // interleaved or truncated lines.
+        var sink = BuildSink();
         await sink.StartAsync(CancellationToken.None);
 
-        for (int i = 0; i < 1000; i++)
+        const int writers = 8;
+        const int perWriter = 50;
+        var ts = new DateTimeOffset(2026, 5, 26, 7, 0, 0, TimeSpan.Zero);
+        var tasks = Enumerable.Range(0, writers).Select(w => Task.Run(() =>
         {
-            sink.Emit(new TelemetryEvent(DateTimeOffset.UtcNow, TelemetryEventTypes.RecallHintEmitted, UserHash: $"u{i}"));
-        }
-
+            for (int i = 0; i < perWriter; i++)
+            {
+                sink.Emit(new TelemetryEvent(ts, TelemetryEventTypes.RecallToolOk, UserHash: $"w{w}-{i}"));
+            }
+        })).ToArray();
+        await Task.WhenAll(tasks);
         await sink.StopAsync(CancellationToken.None);
-        // Test passes if we got here without hanging or throwing.
+
+        var path = Path.Combine(_tempDir, "recall-2026-05-26.jsonl");
+        var lines = await File.ReadAllLinesAsync(path);
+        Assert.Equal(writers * perWriter, lines.Length);
+        // Each line must parse as valid JSON with a 'user' field — confirms no interleaving.
+        foreach (var line in lines)
+        {
+            using var doc = JsonDocument.Parse(line);
+            Assert.True(doc.RootElement.TryGetProperty("user", out _));
+        }
     }
 
     [Fact]

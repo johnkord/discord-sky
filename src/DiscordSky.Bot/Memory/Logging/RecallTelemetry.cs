@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Threading.Channels;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -76,11 +75,14 @@ public sealed class InMemoryTelemetrySink : IRecallTelemetrySink
 
 /// <summary>
 /// File-backed implementation. Writes daily JSONL files to <c>{BaseDirectory}/recall-YYYY-MM-DD.jsonl</c>.
-/// Buffered via an in-memory channel; a single background loop drains to disk. Non-blocking emit.
+///
+/// Writes are <b>synchronous</b> and <b>fsynced</b> per event. The earlier channel-buffered design
+/// lost events when the pod was terminated mid-drain (observed on the 2026-05-26 rollover). At our
+/// volume (~10 events/day) the per-write disk cost is invisible; durability matters more than throughput.
 ///
 /// Retention: on startup, deletes any <c>recall-*.jsonl</c> older than <see cref="TelemetryOptions.RetentionDays"/>.
 /// </summary>
-public sealed class FileBackedTelemetrySink : IRecallTelemetrySink, IHostedService, IAsyncDisposable
+public sealed class FileBackedTelemetrySink : IRecallTelemetrySink, IHostedService
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -89,26 +91,35 @@ public sealed class FileBackedTelemetrySink : IRecallTelemetrySink, IHostedServi
 
     private readonly TelemetryOptions _options;
     private readonly ILogger<FileBackedTelemetrySink> _logger;
-    private readonly Channel<TelemetryEvent> _channel;
-    private Task? _drainTask;
-    private CancellationTokenSource? _stopCts;
+    private readonly object _writeLock = new();
 
     public FileBackedTelemetrySink(IOptions<TelemetryOptions> options, ILogger<FileBackedTelemetrySink> logger)
     {
         _options = options.Value;
         _logger = logger;
-        _channel = Channel.CreateBounded<TelemetryEvent>(new BoundedChannelOptions(_options.BufferCapacity)
-        {
-            FullMode = BoundedChannelFullMode.DropOldest,
-            SingleReader = true,
-            SingleWriter = false,
-        });
     }
 
     public void Emit(TelemetryEvent evt)
     {
-        // Non-blocking; if the channel is full DropOldest fires.
-        _channel.Writer.TryWrite(evt);
+        try
+        {
+            var path = PathForDate(evt.Timestamp);
+            var line = JsonSerializer.Serialize(evt, JsonOptions) + "\n";
+            var bytes = System.Text.Encoding.UTF8.GetBytes(line);
+            lock (_writeLock)
+            {
+                using var stream = new FileStream(
+                    path, FileMode.Append, FileAccess.Write, FileShare.Read,
+                    bufferSize: 4096, FileOptions.WriteThrough);
+                stream.Write(bytes, 0, bytes.Length);
+                stream.Flush(flushToDisk: true);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Telemetry must never break the request path. Log and drop.
+            _logger.LogWarning(ex, "Telemetry write failed for event {EventType}; dropping.", evt.EventType);
+        }
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -122,60 +133,10 @@ public sealed class FileBackedTelemetrySink : IRecallTelemetrySink, IHostedServi
         {
             _logger.LogWarning(ex, "Telemetry startup: failed to prepare directory {Dir} or prune; sink will still attempt to write.", _options.BaseDirectory);
         }
-
-        _stopCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        _drainTask = Task.Run(() => DrainLoopAsync(_stopCts.Token), CancellationToken.None);
         return Task.CompletedTask;
     }
 
-    public async Task StopAsync(CancellationToken cancellationToken)
-    {
-        // Complete the writer; drain loop exits naturally when WaitToReadAsync returns false.
-        // Only cancel the inner CTS if shutdown is taking too long — otherwise we'd abandon
-        // events still in the channel.
-        _channel.Writer.TryComplete();
-        if (_drainTask is not null)
-        {
-            try
-            {
-                await _drainTask.WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                // Caller-provided cancellation fired: force the drain loop down.
-                _stopCts?.Cancel();
-            }
-        }
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        await StopAsync(CancellationToken.None).ConfigureAwait(false);
-        _stopCts?.Dispose();
-    }
-
-    private async Task DrainLoopAsync(CancellationToken ct)
-    {
-        var reader = _channel.Reader;
-        while (await reader.WaitToReadAsync(ct).ConfigureAwait(false))
-        {
-            while (reader.TryRead(out var evt))
-            {
-                try
-                {
-                    var path = PathForDate(evt.Timestamp);
-                    var line = JsonSerializer.Serialize(evt, JsonOptions);
-                    await File.AppendAllTextAsync(path, line + "\n", ct).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception ex)
-                {
-                    // Never let a write failure crash the drain loop. Log once per error and continue.
-                    _logger.LogWarning(ex, "Telemetry write failed for event {EventType}; dropping.", evt.EventType);
-                }
-            }
-        }
-    }
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
     private string PathForDate(DateTimeOffset ts)
     {
@@ -221,7 +182,4 @@ public sealed class TelemetryOptions
 
     /// <summary>Days to retain files. Older files are deleted on startup.</summary>
     public int RetentionDays { get; set; } = 30;
-
-    /// <summary>In-memory buffer size. Events beyond this are dropped (oldest first) under load.</summary>
-    public int BufferCapacity { get; set; } = 1024;
 }
