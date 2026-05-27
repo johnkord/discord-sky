@@ -25,6 +25,12 @@ data:
   LLM__Providers__OpenAI__UseResponsesApi: "true"
   Chaos__AmbientReplyChance: "0.25"
   Chaos__MaxPromptsPerHour: "20"
+  # Telemetry sink path. MUST live inside the PVC mount; the PVC is mounted at
+  # /app/data/user_memories so we nest telemetry there. Without this override the
+  # default would resolve to /app/data/telemetry which is on ephemeral storage and
+  # would be wiped on every pod restart. See docs/recall_feature_review_2026-05-26.md §7.1.
+  Telemetry__BaseDirectory: "/app/data/user_memories/telemetry"
+  Telemetry__RetentionDays: "30"
   # Recall-tool config (replaces implicit memory relevance gating).
   # See docs/recall_tool_design.md §3 and §4.2.
   MemoryRelevance__RecallTopK: "20"
