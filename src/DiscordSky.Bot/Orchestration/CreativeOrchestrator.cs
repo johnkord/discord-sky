@@ -304,9 +304,26 @@ public sealed class CreativeOrchestrator
                         continue;
                     }
                     var (recallUserId, recallQuery) = ParseRecallArgs(rc);
-                    var recallResult = recallUserId.HasValue
-                        ? await recallHandler.RecallAsync(recallUserId.Value, recallQuery, request.Timestamp, cancellationToken)
-                        : RecallToolResult.UnknownUser;
+                    RecallToolResult recallResult;
+                    if (recallUserId.HasValue)
+                    {
+                        recallResult = await recallHandler.RecallAsync(recallUserId.Value, recallQuery, request.Timestamp, cancellationToken);
+                    }
+                    else
+                    {
+                        // Model produced a malformed user_id (non-numeric, missing, etc.). Emit telemetry so
+                        // we can see how often the model fumbles tool args; route the same UnknownUser
+                        // sentinel back to the model. Note: this branch deliberately does NOT consume the
+                        // recall budget — the model should be able to retry with valid args.
+                        _logger.LogInformation(
+                            "recall_tool unknown_user parse_failure call_id={CallId}", rc.CallId);
+                        _telemetry.Emit(new TelemetryEvent(
+                            Timestamp: request.Timestamp,
+                            EventType: TelemetryEventTypes.RecallToolUnknownUser,
+                            Reason: "parse_failure",
+                            CallIndex: recallHandler.RecallsPerformed));
+                        recallResult = RecallToolResult.UnknownUser;
+                    }
                     messages.Add(new ChatMessage(ChatRole.Tool,
                         [new FunctionResultContent(rc.CallId, recallResult)]));
                 }

@@ -43,7 +43,10 @@ public sealed record TelemetryEvent(
     [property: JsonPropertyName("top_score")] double? TopScore = null,
     [property: JsonPropertyName("query_present")] bool? QueryPresent = null,
     [property: JsonPropertyName("message_id")] ulong? MessageId = null,
-    [property: JsonPropertyName("note")] string? Note = null
+    [property: JsonPropertyName("note")] string? Note = null,
+    [property: JsonPropertyName("reason")] string? Reason = null,
+    [property: JsonPropertyName("before")] int? Before = null,
+    [property: JsonPropertyName("after")] int? After = null
 );
 
 /// <summary>Canonical event-type string constants. Use these instead of string literals at call sites.</summary>
@@ -57,6 +60,7 @@ public static class TelemetryEventTypes
     public const string ConsolidationOk = "consolidation_ok";
     public const string ConsolidationFail = "consolidation_fail";
     public const string CircuitBreakerOpened = "circuit_breaker_opened";
+    public const string GatewayDisconnect = "gateway_disconnect";
 }
 
 /// <summary>Test/CI default. Discards events.</summary>

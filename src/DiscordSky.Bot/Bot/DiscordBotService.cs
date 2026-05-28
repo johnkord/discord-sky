@@ -114,6 +114,23 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private Task OnLogAsync(LogMessage message)
     {
         _logger.Log(MapLogSeverity(message.Severity), message.Exception, message.Message ?? "<no message>");
+
+        // Emit telemetry for gateway disconnects so we can distinguish normal reconnects (~10/day, Discord
+        // proactively rotates) from a real problem (auth revoked, network partition). Without this signal
+        // a real outage looks identical to housekeeping in kubectl logs.
+        if (message.Exception is not null)
+        {
+            var exType = message.Exception.GetType().Name;
+            if (exType.Contains("Reconnect", StringComparison.OrdinalIgnoreCase)
+                || exType.Contains("WebSocket", StringComparison.OrdinalIgnoreCase)
+                || message.Exception.Message?.Contains("WebSocket", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                _telemetry.Emit(new TelemetryEvent(
+                    Timestamp: DateTimeOffset.UtcNow,
+                    EventType: TelemetryEventTypes.GatewayDisconnect,
+                    Reason: exType));
+            }
+        }
         return Task.CompletedTask;
     }
 
@@ -469,6 +486,19 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             userMemories,
             unfurledLinks,
             triggerImagesParam);
+
+        // Traffic visibility — see HandlePersonaAsync. DirectReply was previously silent in telemetry,
+        // which underclamped the adoption-rate denominator (recall_feature_review §6.7 footnote).
+        _logger.LogInformation(
+            "persona_invoked kind={Kind} author={Author} channel={Channel} message_id={MessageId}",
+            CreativeInvocationKind.DirectReply, message.Author.Id, context.Channel.Name, message.Id);
+        _telemetry.Emit(new TelemetryEvent(
+            Timestamp: DateTimeOffset.UtcNow,
+            EventType: TelemetryEventTypes.PersonaInvoked,
+            UserHash: UserIdHash.Hash(message.Author.Id),
+            Channel: context.Channel.Name,
+            Kind: CreativeInvocationKind.DirectReply.ToString(),
+            MessageId: message.Id));
 
         var result = await _orchestrator.ExecuteAsync(request, context, _shutdownCts.Token);
         var reply = string.IsNullOrWhiteSpace(result.PrimaryMessage)
@@ -1047,17 +1077,34 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 _logger.LogInformation(
                     "Successfully consolidated memories for user {UserId}: {OldCount} → {NewCount}",
                     userId, memories.Count, consolidated.Count);
+                _telemetry.Emit(new TelemetryEvent(
+                    Timestamp: DateTimeOffset.UtcNow,
+                    EventType: TelemetryEventTypes.ConsolidationOk,
+                    UserHash: UserIdHash.Hash(userId),
+                    Before: memories.Count,
+                    After: consolidated.Count));
             }
             else
             {
                 _logger.LogDebug(
                     "Consolidation returned no results for user {UserId}; LRU eviction will handle overflow",
                     userId);
+                _telemetry.Emit(new TelemetryEvent(
+                    Timestamp: DateTimeOffset.UtcNow,
+                    EventType: TelemetryEventTypes.ConsolidationFail,
+                    UserHash: UserIdHash.Hash(userId),
+                    Before: memories.Count,
+                    Reason: "empty_result"));
             }
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Memory consolidation failed for user {UserId}; LRU eviction will handle overflow", userId);
+            _telemetry.Emit(new TelemetryEvent(
+                Timestamp: DateTimeOffset.UtcNow,
+                EventType: TelemetryEventTypes.ConsolidationFail,
+                UserHash: UserIdHash.Hash(userId),
+                Reason: ex.GetType().Name));
         }
     }
 
