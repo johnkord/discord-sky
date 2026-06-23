@@ -144,7 +144,20 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _ => LogLevel.Trace
     };
 
-    private async Task OnMessageReceivedAsync(SocketMessage rawMessage)
+    private Task OnMessageReceivedAsync(SocketMessage rawMessage)
+    {
+        // Discord.Net executes event handlers synchronously on the gateway task. Orchestrating a reply
+        // (LLM calls with retries/backoff + HTTP link unfurls) routinely exceeds Discord's heartbeat
+        // window, which starves the gateway and triggers reconnects/disconnects. Production telemetry
+        // showed ~13 gateway disconnects/day plus repeated "A MessageReceived handler is blocking the
+        // gateway task" warnings. Offload all processing to a background task so the gateway thread stays
+        // responsive; concurrent LLM cost is already bounded by the orchestrator's _llmThrottle.
+        // See docs/improvement_opportunities_2026-06-10.md F1 and the Discord.Net events guide.
+        _ = Task.Run(() => ProcessMessageSafelyAsync(rawMessage));
+        return Task.CompletedTask;
+    }
+
+    private async Task ProcessMessageSafelyAsync(SocketMessage rawMessage)
     {
         try
         {
@@ -272,18 +285,87 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             return;
         }
 
-        // Ambient reply chance
+        // Ambient reply chance — modulated by context so the bot interjects at better moments and
+        // does not dominate a channel. See docs/improvement_opportunities_2026-06-10.md F7.
         var chaosSettings = _chaosSettingsMonitor.CurrentValue;
         if (chaosSettings.AmbientReplyChance > 0)
         {
+            var botSpokeRecently = DidBotSpeakRecently(context.Channel, TimeSpan.FromMinutes(2));
+            var botId = _client.CurrentUser?.Id;
+            var mentionsBot = (botId.HasValue && message.MentionedUsers.Any(u => u.Id == botId.Value))
+                || MentionsBotName(content);
+            var effectiveChance = ComputeEffectiveAmbientChance(
+                chaosSettings.AmbientReplyChance, content, botSpokeRecently, mentionsBot);
+
             var roll = _randomProvider.NextDouble();
-            if (roll < chaosSettings.AmbientReplyChance)
+            if (roll < effectiveChance)
             {
-                _logger.LogInformation("Ambient reply triggered (roll={Roll:F3} < chance={Chance:F3}) for message {MessageId} in channel {Channel}.", roll, chaosSettings.AmbientReplyChance, message.Id, channelName);
+                _logger.LogInformation(
+                    "Ambient reply triggered (roll={Roll:F3} < effective={Eff:F3}, base={Base:F3}, botSpokeRecently={Recent}, mentionsBot={Mention}) for message {MessageId} in channel {Channel}.",
+                    roll, effectiveChance, chaosSettings.AmbientReplyChance, botSpokeRecently, mentionsBot, message.Id, channelName);
                 // Pass prefix + message content so HandlePersonaAsync can extract the user's text as the topic
                 await HandlePersonaAsync(context, _options.CommandPrefix + " " + content, message, CreativeInvocationKind.Ambient);
             }
         }
+    }
+
+    /// <summary>
+    /// Adjusts the base ambient-reply probability using cheap conversational signals so the bot
+    /// chimes in at better moments and does not dominate a channel. Pure function for testability.
+    /// </summary>
+    internal static double ComputeEffectiveAmbientChance(
+        double baseChance,
+        string? messageContent,
+        bool botSpokeRecently,
+        bool mentionsBot)
+    {
+        if (baseChance <= 0) return 0.0;
+
+        var content = (messageContent ?? string.Empty).Trim();
+        var factor = 1.0;
+
+        // Don't dominate: if the bot just spoke here, back off hard.
+        if (botSpokeRecently) factor *= 0.35;
+
+        // Someone naming the bot (without a formal reply) is a strong cue to engage.
+        if (mentionsBot) factor *= 2.5;
+
+        // A question in the air is a better moment to chime in.
+        if (content.EndsWith("?", StringComparison.Ordinal)) factor *= 1.6;
+
+        // Throwaway messages ("lol", "k", "nice") are poor interjection material; substantive ones are better.
+        if (content.Length < 4) factor *= 0.3;
+        else if (content.Length < 12) factor *= 0.7;
+        else if (content.Length > 80) factor *= 1.3;
+
+        return Math.Clamp(baseChance * factor, 0.0, 0.9);
+    }
+
+    private bool DidBotSpeakRecently(ISocketMessageChannel channel, TimeSpan window)
+    {
+        var botId = _client.CurrentUser?.Id;
+        if (botId is null) return false;
+        var cutoff = DateTimeOffset.UtcNow - window;
+        try
+        {
+            foreach (var msg in channel.GetCachedMessages(20))
+            {
+                if (msg.Author.Id == botId.Value && msg.Timestamp >= cutoff) return true;
+            }
+        }
+        catch
+        {
+            // Cache may be unavailable (e.g. just reconnected); treat as "not recently".
+        }
+        return false;
+    }
+
+    private bool MentionsBotName(string? content)
+    {
+        if (string.IsNullOrWhiteSpace(content)) return false;
+        var name = _client.CurrentUser?.Username;
+        return !string.IsNullOrWhiteSpace(name)
+            && content.Contains(name, StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task HandlePersonaAsync(SocketCommandContext context, string content, SocketUserMessage message, CreativeInvocationKind invocationKind)
@@ -1020,6 +1102,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                     op.Context ?? string.Empty,
                     op.Kind ?? MemoryKind.Factual,
                     op.Topics,
+                    op.Importance,
                     _shutdownCts.Token);
                 existingMemories = await _memoryStore.GetMemoriesAsync(userId, _shutdownCts.Token);
             }

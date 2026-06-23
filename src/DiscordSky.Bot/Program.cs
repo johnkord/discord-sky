@@ -21,6 +21,7 @@ builder.Services.Configure<ChaosSettings>(builder.Configuration.GetSection("Chao
 builder.Services.Configure<LlmOptions>(builder.Configuration.GetSection(LlmOptions.SectionName));
 builder.Services.Configure<MemoryRelevanceOptions>(builder.Configuration.GetSection(MemoryRelevanceOptions.SectionName));
 builder.Services.Configure<TelemetryOptions>(builder.Configuration.GetSection(TelemetryOptions.SectionName));
+builder.Services.Configure<TranscriptOptions>(builder.Configuration.GetSection(TranscriptOptions.SectionName));
 
 builder.Services.AddSingleton(_ => new DiscordSocketConfig
 {
@@ -106,6 +107,11 @@ builder.Services.AddSingleton<IUserMemoryStore, FileBackedUserMemoryStore>();
 builder.Services.AddSingleton<FileBackedTelemetrySink>();
 builder.Services.AddSingleton<IRecallTelemetrySink>(sp => sp.GetRequiredService<FileBackedTelemetrySink>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<FileBackedTelemetrySink>());
+// Conversation transcript sink: captures full prompt + reply for quality evaluation. Off by default
+// (Transcript:Enabled); writes raw content to the PVC when enabled. See docs/improvement_opportunities_2026-06-10.md H2.
+builder.Services.AddSingleton<FileBackedTranscriptSink>();
+builder.Services.AddSingleton<ITranscriptSink>(sp => sp.GetRequiredService<FileBackedTranscriptSink>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<FileBackedTranscriptSink>());
 // LLM auth self-test: surfaces silent 401 incidents as pod crashes instead of healthy-but-broken state.
 // See docs/recall_feature_review_2026-05-26.md §7.2.
 builder.Services.AddHttpClient();

@@ -1,0 +1,27 @@
+# Keep the Docker build context small and free of secrets/dev-only files.
+
+# Build artifacts (the image does its own restore/publish)
+**/bin/
+**/obj/
+
+# Local/dev config and secrets MUST NOT ship in the image.
+# appsettings.Development.json is gitignored but still present in the working tree,
+# and a plain `COPY . .` would otherwise bake it (with its real keys) into image layers.
+**/appsettings.Development.json
+**/appsettings.*.local.json
+**/*.user
+
+# Not needed in the runtime image
+tests/
+tools/
+docs/
+scripts/
+k8s/
+.git/
+.github/
+.vs/
+.vscode/
+*.md
+.gitignore
+.dockerignore
+Dockerfile

@@ -74,7 +74,8 @@ public sealed record UserMemory(
     int ReferenceCount,
     MemoryKind Kind = MemoryKind.Factual,
     IReadOnlyList<string>? Topics = null,
-    bool Superseded = false
+    bool Superseded = false,
+    int? Importance = null
 );
 
 /// <summary>
@@ -87,7 +88,8 @@ public sealed record MultiUserMemoryOperation(
     string? Content,
     string? Context,
     MemoryKind? Kind = null,
-    IReadOnlyList<string>? Topics = null
+    IReadOnlyList<string>? Topics = null,
+    int? Importance = null
 );
 
 public enum MemoryAction { Save, Update, Forget, Suppress }

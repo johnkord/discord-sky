@@ -3,12 +3,10 @@
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
-# Copy solution and project files for restore
-COPY DiscordSky.sln ./
+# Copy the bot project file and restore. The runtime image needs only the bot, so we restore it
+# directly rather than the whole solution (which also references the test and tools projects).
 COPY src/DiscordSky.Bot/DiscordSky.Bot.csproj src/DiscordSky.Bot/
-COPY tests/DiscordSky.Tests/DiscordSky.Tests.csproj tests/DiscordSky.Tests/
-
-RUN dotnet restore DiscordSky.sln
+RUN dotnet restore src/DiscordSky.Bot/DiscordSky.Bot.csproj
 
 # Copy the remaining source and publish the bot
 COPY . .

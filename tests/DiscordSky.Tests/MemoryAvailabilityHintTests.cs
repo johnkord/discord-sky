@@ -60,6 +60,7 @@ public class MemoryAvailabilityHintTests
         var orch = BuildOrchestrator();
         var request = new CreativeRequest(
             "Weird Al", "cats are great", "Alice Jones", 42UL, 2UL, null, DateTimeOffset.UtcNow,
+            CreativeInvocationKind.Ambient,
             UserMemories: new[] { Mem("has a cat named whiskers"), Mem("likes vancouver") });
         var content = orch.BuildUserContent(request, Array.Empty<ChannelMessage>(), hasTopic: true);
         var text = string.Concat(content.OfType<TextContent>().Select(t => t.Text));
@@ -68,13 +69,32 @@ public class MemoryAvailabilityHintTests
     }
 
     [Fact]
+    public void HighIntent_InlinesRankedMemories()
+    {
+        // Command / DirectReply are high-intent: the model gets relevant notes inlined so it doesn't
+        // need a recall tool round-trip when directly engaging someone. Ambient stays names-only.
+        // See docs/improvement_opportunities_2026-06-10.md F3.
+        var orch = BuildOrchestrator();
+        var request = new CreativeRequest(
+            "Weird Al", "my cat is being weird", "Alice Jones", 42UL, 2UL, null, DateTimeOffset.UtcNow,
+            CreativeInvocationKind.Command,
+            UserMemories: new[] { Mem("has a cat named whiskers"), Mem("likes vancouver") });
+        var content = orch.BuildUserContent(request, Array.Empty<ChannelMessage>(), hasTopic: true);
+        var text = string.Concat(content.OfType<TextContent>().Select(t => t.Text));
+        Assert.Contains("What you remember about Alice Jones", text);
+        Assert.Contains("whiskers", text);
+        Assert.Contains("recall_about_user", text);
+    }
+
+    [Fact]
     public void HintDoesNotLeakCounts()
     {
-        // Critical privacy property: the hint says *whose* notes are available, never *how many*.
+        // Critical privacy property (ambient path): the hint says *whose* notes are available, never *how many*.
         // See docs/recall_tool_design.md §2.3.
         var orch = BuildOrchestrator();
         var request = new CreativeRequest(
             "Weird Al", "ok", "alice", 1UL, 2UL, null, DateTimeOffset.UtcNow,
+            CreativeInvocationKind.Ambient,
             UserMemories: new[] { Mem("a"), Mem("b"), Mem("c"), Mem("d"), Mem("e") });
         var content = orch.BuildUserContent(request, Array.Empty<ChannelMessage>(), hasTopic: true);
         var text = string.Concat(content.OfType<TextContent>().Select(t => t.Text));
@@ -87,10 +107,11 @@ public class MemoryAvailabilityHintTests
     [Fact]
     public void HintDoesNotEmitNoteContent()
     {
-        // Implicit injection is gone. The note text must not appear in the prompt.
+        // Ambient implicit injection is gone. The note text must not appear in an ambient prompt.
         var orch = BuildOrchestrator();
         var request = new CreativeRequest(
             "Weird Al", "ok", "alice", 1UL, 2UL, null, DateTimeOffset.UtcNow,
+            CreativeInvocationKind.Ambient,
             UserMemories: new[] { Mem("has a cat named whiskers") });
         var content = orch.BuildUserContent(request, Array.Empty<ChannelMessage>(), hasTopic: true);
         var text = string.Concat(content.OfType<TextContent>().Select(t => t.Text));
@@ -113,6 +134,18 @@ public class MemoryAvailabilityHintTests
         var content = orch.BuildUserContent(request, Array.Empty<ChannelMessage>(), hasTopic: true);
         var text = string.Concat(content.OfType<TextContent>().Select(t => t.Text));
         Assert.DoesNotContain("notes_available_about", text);
+    }
+
+    [Fact]
+    public void EndReminder_AppendedAsFinalContent_WhenProvided()
+    {
+        // 3.4: the persona re-assertion must be the LAST content item, after the channel history,
+        // to counter instruction drift over long context.
+        var orch = BuildOrchestrator();
+        var request = new CreativeRequest("Robotnik from AOSTH", "hello", "alice", 1UL, 2UL, null, DateTimeOffset.UtcNow);
+        var content = orch.BuildUserContent(request, Array.Empty<ChannelMessage>(), hasTopic: true, endReminder: "REMEMBER_ROBOTNIK_X");
+        var lastText = content.OfType<TextContent>().Last().Text;
+        Assert.Equal("REMEMBER_ROBOTNIK_X", lastText);
     }
 
     private sealed class StubLinkUnfurler2 : DiscordSky.Bot.Integrations.LinkUnfurling.ILinkUnfurler

@@ -21,4 +21,16 @@ public interface IMemoryScorer
     MemoryScoringResult Score(
         IReadOnlyList<UserMemory> memories,
         IReadOnlyList<string> recentMessages);
+
+    /// <summary>
+    /// Rank memories for the recall tool. Unlike <see cref="Score"/> (which gates ambient injection),
+    /// this never excludes anything: it returns every input memory ordered best-first by a blend of
+    /// relevance (BM25 against <paramref name="query"/>), recency (decay on LastReferencedAt vs
+    /// <paramref name="asOf"/>), and importance. When <paramref name="query"/> is null/empty, ordering
+    /// falls back to recency + importance. See docs/improvement_opportunities_2026-06-10.md F2.
+    /// </summary>
+    IReadOnlyList<ScoredMemory> RankForRecall(
+        IReadOnlyList<UserMemory> memories,
+        string? query,
+        DateTimeOffset asOf);
 }

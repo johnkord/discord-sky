@@ -95,39 +95,48 @@ public sealed class RecallToolHandler
             return RecallToolResult.NoNotes;
         }
 
-        // Optional ranking. If query is empty, preserve store ordering (most-recent-touched first per the
-        // store contract). If non-empty, score and sort by score descending — but never *exclude* anything,
-        // so a query that happens to share no tokens with any memory still returns the full set.
+        // Rank by relevance (BM25) blended with recency + importance. Never excludes anything: a
+        // query that shares no tokens still returns the full set, just ordered by recency/importance.
+        // See docs/improvement_opportunities_2026-06-10.md F2.
         IReadOnlyList<UserMemory> ranked;
         double topScore = 0.0;
-        if (!string.IsNullOrWhiteSpace(query))
+        try
         {
-            try
-            {
-                var scoring = _scorer.Score(admissible, new[] { query });
-                // Combine admitted+rejected, preserving each memory's score, then order desc.
-                var scored = scoring.Admitted
-                    .Concat(scoring.Rejected)
-                    .OrderByDescending(s => s.Score)
-                    .Select(s => s.Memory)
-                    .ToList();
-                ranked = scored;
-                topScore = scoring.TopScore;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "recall_tool scorer_threw — returning unranked");
-                ranked = admissible;
-            }
+            var rankedScored = _scorer.RankForRecall(admissible, query, asOf);
+            ranked = rankedScored.Select(s => s.Memory).ToList();
+            topScore = rankedScored.Count > 0 ? rankedScored[0].Score : 0.0;
         }
-        else
+        catch (Exception ex)
         {
+            _logger.LogWarning(ex, "recall_tool ranker_threw — returning unranked");
             ranked = admissible;
         }
 
         var topK = _options.RecallTopK;
         var truncated = ranked.Count > topK;
         var slice = truncated ? ranked.Take(topK).ToList() : ranked;
+
+        // F4: record that these notes were actually surfaced for a specific query, so recency and
+        // frequency signals become real (historically dead: 96/99 notes had ReferenceCount 0). Only
+        // touch when a query is present and the note shares a term with it, capped to the few best, so
+        // we never re-flatten LastReferencedAt across the whole set (the reason bulk-touch was removed).
+        if (!string.IsNullOrWhiteSpace(query))
+        {
+            var queryTokens = TokenUtilities.ExtractContentTokens(query);
+            if (queryTokens.Count > 0)
+            {
+                var toTouch = slice
+                    .Where(m => TokenUtilities.ExtractContentTokens(m.Content).Overlaps(queryTokens))
+                    .Take(3)
+                    .Select(m => m.Content)
+                    .ToList();
+                if (toTouch.Count > 0)
+                {
+                    try { await _store.TouchMemoriesAsync(userId, toTouch, ct); }
+                    catch (Exception ex) { _logger.LogWarning(ex, "recall_tool touch_failed"); }
+                }
+            }
+        }
 
         var notes = slice.Select(m => new RecalledNote(
             Content: m.Content,

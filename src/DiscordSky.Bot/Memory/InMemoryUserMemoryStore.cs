@@ -41,7 +41,7 @@ public sealed class InMemoryUserMemoryStore : IUserMemoryStore
     }
 
     public Task SaveMemoryAsync(ulong userId, string content, string context, CancellationToken ct = default)
-        => SaveMemoryAsync(userId, content, context, MemoryKind.Factual, null, ct);
+        => SaveMemoryAsync(userId, content, context, MemoryKind.Factual, null, null, ct);
 
     public Task SaveMemoryAsync(
         ulong userId,
@@ -49,6 +49,7 @@ public sealed class InMemoryUserMemoryStore : IUserMemoryStore
         string context,
         MemoryKind kind,
         IReadOnlyList<string>? topics,
+        int? importance = null,
         CancellationToken ct = default)
     {
         lock (GetUserLock(userId))
@@ -69,6 +70,7 @@ public sealed class InMemoryUserMemoryStore : IUserMemoryStore
                     ReferenceCount = memories[existing].ReferenceCount + 1,
                     Kind = kind,
                     Topics = topics,
+                    Importance = importance ?? memories[existing].Importance,
                 };
                 return Task.CompletedTask;
             }
@@ -102,7 +104,7 @@ public sealed class InMemoryUserMemoryStore : IUserMemoryStore
             }
 
             var now = DateTimeOffset.UtcNow;
-            memories.Add(new UserMemory(content, context, now, now, 0, kind, topics));
+            memories.Add(new UserMemory(content, context, now, now, 0, kind, topics, Importance: importance));
             _logger.LogInformation("Saved {Kind} memory for user {UserId}: \"{Content}\"", kind, userId, content);
         }
 
@@ -167,6 +169,29 @@ public sealed class InMemoryUserMemoryStore : IUserMemoryStore
         // No-op: we no longer bulk-touch all memories on every invocation because
         // doing so defeats LRU eviction (all memories end up with the same LastReferencedAt).
         // Instead, individual memories should be touched when they are actually used in a response.
+        return Task.CompletedTask;
+    }
+
+    public Task TouchMemoriesAsync(ulong userId, IReadOnlyList<string> contents, CancellationToken ct = default)
+    {
+        if (contents is null || contents.Count == 0) return Task.CompletedTask;
+
+        lock (GetUserLock(userId))
+        {
+            if (!_store.TryGetValue(userId, out var memories)) return Task.CompletedTask;
+            var now = DateTimeOffset.UtcNow;
+            foreach (var content in contents)
+            {
+                var idx = memories.FindIndex(m => m.Content.Equals(content, StringComparison.OrdinalIgnoreCase));
+                if (idx < 0) continue;
+                memories[idx] = memories[idx] with
+                {
+                    LastReferencedAt = now,
+                    ReferenceCount = memories[idx].ReferenceCount + 1,
+                };
+            }
+        }
+
         return Task.CompletedTask;
     }
 

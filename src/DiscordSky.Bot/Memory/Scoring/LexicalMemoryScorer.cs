@@ -133,4 +133,56 @@ public sealed class LexicalMemoryScorer : IMemoryScorer
             ConfidenceRatio: confidenceRatio,
             Considered: memories.Count);
     }
+
+    // Weights for the recall ranking blend. Relevance dominates when a query is present;
+    // otherwise recency + importance decide. See docs/improvement_opportunities_2026-06-10.md F2.
+    private const double RelevanceWeight = 0.60;
+    private const double RecencyWeightWithQuery = 0.25;
+    private const double ImportanceWeightWithQuery = 0.15;
+    private const double RecencyWeightNoQuery = 0.60;
+    private const double ImportanceWeightNoQuery = 0.40;
+    private const double RecencyHalfLifeDays = 30.0;
+
+    public IReadOnlyList<ScoredMemory> RankForRecall(
+        IReadOnlyList<UserMemory> memories,
+        string? query,
+        DateTimeOffset asOf)
+    {
+        if (memories.Count == 0) return Array.Empty<ScoredMemory>();
+
+        var hasQuery = !string.IsNullOrWhiteSpace(query);
+
+        // Relevance: BM25 over this user's notes as the corpus, then max-normalized to [0,1].
+        var relevance = hasQuery
+            ? Bm25.ScoreAll(memories.Select(m => m.Content).ToList(), query!)
+            : new double[memories.Count];
+        var maxRel = 0.0;
+        for (int i = 0; i < relevance.Length; i++) maxRel = Math.Max(maxRel, relevance[i]);
+        if (maxRel > 0)
+        {
+            for (int i = 0; i < relevance.Length; i++) relevance[i] /= maxRel;
+        }
+
+        var scored = new List<ScoredMemory>(memories.Count);
+        for (int i = 0; i < memories.Count; i++)
+        {
+            var m = memories[i];
+            var recency = RecencyScore(asOf - m.LastReferencedAt);
+            var importance = Math.Clamp((m.Importance ?? 5) / 10.0, 0.0, 1.0);
+
+            double score = hasQuery
+                ? RelevanceWeight * relevance[i] + RecencyWeightWithQuery * recency + ImportanceWeightWithQuery * importance
+                : RecencyWeightNoQuery * recency + ImportanceWeightNoQuery * importance;
+
+            scored.Add(new ScoredMemory(i, m, score));
+        }
+
+        return scored.OrderByDescending(s => s.Score).ToList();
+    }
+
+    private static double RecencyScore(TimeSpan age)
+    {
+        var days = Math.Max(0.0, age.TotalDays);
+        return Math.Pow(0.5, days / RecencyHalfLifeDays);
+    }
 }

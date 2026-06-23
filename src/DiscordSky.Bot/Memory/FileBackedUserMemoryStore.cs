@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Models.Orchestration;
 using Microsoft.Extensions.Logging;
@@ -27,6 +28,9 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
     {
         WriteIndented = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        // Omit null optional fields (topics, importance) so existing files stay clean and new
+        // optional fields are backward compatible: older files simply lack them and deserialize to null.
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
     public FileBackedUserMemoryStore(IOptions<BotOptions> options, ILogger<FileBackedUserMemoryStore> logger)
@@ -62,7 +66,7 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
     }
 
     public Task SaveMemoryAsync(ulong userId, string content, string context, CancellationToken ct = default)
-        => SaveMemoryAsync(userId, content, context, MemoryKind.Factual, null, ct);
+        => SaveMemoryAsync(userId, content, context, MemoryKind.Factual, null, null, ct);
 
     public async Task SaveMemoryAsync(
         ulong userId,
@@ -70,6 +74,7 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
         string context,
         MemoryKind kind,
         IReadOnlyList<string>? topics,
+        int? importance = null,
         CancellationToken ct = default)
     {
         var userLock = GetUserLock(userId);
@@ -92,6 +97,7 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
                     ReferenceCount = memories[existing].ReferenceCount + 1,
                     Kind = kind,
                     Topics = topics,
+                    Importance = importance ?? memories[existing].Importance,
                 };
                 MarkDirty(userId);
                 return;
@@ -127,7 +133,7 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
             }
 
             var now = DateTimeOffset.UtcNow;
-            memories.Add(new UserMemory(content, context, now, now, 0, kind, topics));
+            memories.Add(new UserMemory(content, context, now, now, 0, kind, topics, Importance: importance));
             MarkDirty(userId);
             _logger.LogInformation("Saved {Kind} memory for user {UserId}: \"{Content}\"", kind, userId, content);
         }
@@ -224,6 +230,40 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
         // doing so defeats LRU eviction (all memories end up with the same LastReferencedAt).
         // Instead, individual memories should be touched when they are actually used in a response.
         return Task.CompletedTask;
+    }
+
+    public async Task TouchMemoriesAsync(ulong userId, IReadOnlyList<string> contents, CancellationToken ct = default)
+    {
+        if (contents is null || contents.Count == 0) return;
+
+        var userLock = GetUserLock(userId);
+        await userLock.WaitAsync(ct);
+        try
+        {
+            var memories = await GetOrLoadAsync(userId, ct);
+            var now = DateTimeOffset.UtcNow;
+            var touched = 0;
+            foreach (var content in contents)
+            {
+                var idx = memories.FindIndex(m => m.Content.Equals(content, StringComparison.OrdinalIgnoreCase));
+                if (idx < 0) continue;
+                memories[idx] = memories[idx] with
+                {
+                    LastReferencedAt = now,
+                    ReferenceCount = memories[idx].ReferenceCount + 1,
+                };
+                touched++;
+            }
+            if (touched > 0)
+            {
+                MarkDirty(userId);
+                _logger.LogDebug("Touched {Count} memories for user {UserId} via recall", touched, userId);
+            }
+        }
+        finally
+        {
+            userLock.Release();
+        }
     }
 
     public async Task ReplaceAllMemoriesAsync(ulong userId, IReadOnlyList<UserMemory> newMemories, CancellationToken ct = default)

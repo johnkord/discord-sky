@@ -19,10 +19,24 @@ data:
   Bot__MaxMemoriesPerExtraction: "15"
   Bot__EnableMemoryConsolidation: "true"
   Bot__ConsolidationTargetPercent: "0.75"
+  # gpt-5.5 (OpenAI) is the primary provider for everything. This ConfigMap value overrides the
+  # Secret (the Deployment lists configMapRef after secretRef in envFrom, so the ConfigMap wins),
+  # keeping production on OpenAI even if the out-of-band Secret still names another provider.
+  LLM__ActiveProvider: "OpenAI"
   LLM__Providers__OpenAI__ChatModel: "gpt-5.5"
   LLM__Providers__OpenAI__MaxTokens: "1200"
   LLM__Providers__OpenAI__ReasoningEffort: "medium"
   LLM__Providers__OpenAI__UseResponsesApi: "true"
+  # xAI/Grok, wired for background A/B experimentation only (fun_assessment 3.10). NOT active.
+  # To run the experiment: set LLM__ActiveProvider=xAI (and put the key in the Secret as
+  # LLM__Providers__xAI__ApiKey), redeploy, then score transcripts with tools/DiscordSky.FunScore.
+  # grok-4.20-0309-reasoning is the most advanced model available; the non-reasoning sibling is the
+  # cheaper choice for background memory extraction.
+  LLM__Providers__xAI__Endpoint: "https://api.x.ai/v1"
+  LLM__Providers__xAI__ChatModel: "grok-4.20-0309-reasoning"
+  LLM__Providers__xAI__MemoryExtractionModel: "grok-4.20-0309-non-reasoning"
+  LLM__Providers__xAI__MaxTokens: "1200"
+  LLM__Providers__xAI__UseResponsesApi: "false"
   Chaos__AmbientReplyChance: "0.25"
   Chaos__MaxPromptsPerHour: "20"
   # Telemetry sink path. MUST live inside the PVC mount; the PVC is mounted at
@@ -31,6 +45,12 @@ data:
   # would be wiped on every pod restart. See docs/recall_feature_review_2026-05-26.md §7.1.
   Telemetry__BaseDirectory: "/app/data/user_memories/telemetry"
   Telemetry__RetentionDays: "30"
+  # Conversation transcript logging (full prompt + reply) for quality evaluation. Nested inside the
+  # PVC mount so it survives pod rotation. Contains raw user content and IDs by design; retention is
+  # shorter than telemetry because content is larger. See docs/improvement_opportunities_2026-06-10.md H2.
+  Transcript__Enabled: "true"
+  Transcript__BaseDirectory: "/app/data/user_memories/transcripts"
+  Transcript__RetentionDays: "14"
   # Recall-tool config (replaces implicit memory relevance gating).
   # See docs/recall_tool_design.md §3 and §4.2.
   MemoryRelevance__RecallTopK: "20"
