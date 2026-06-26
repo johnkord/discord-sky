@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>DiscordSky.ImageSmoke</RootNamespace>
+    <AssemblyName>DiscordSky.ImageSmoke</AssemblyName>
+    <NoWarn>$(NoWarn);OPENAI001</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The bot is a Web SDK project; this lets a console app reference its image-generation code + the OpenAI SDK. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="..\..\src\DiscordSky.Bot\DiscordSky.Bot.csproj" />
+  </ItemGroup>
+
+</Project>

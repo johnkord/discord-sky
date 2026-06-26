@@ -45,7 +45,9 @@ public sealed record CreativeContext(
 
 public sealed record CreativeResult(
     string PrimaryMessage,
-    ulong? ReplyToMessageId = null
+    ulong? ReplyToMessageId = null,
+    byte[]? AttachmentBytes = null,
+    string? AttachmentFileName = null
 );
 
 /// <summary>

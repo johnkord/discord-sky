@@ -3,6 +3,7 @@ using Discord;
 using Discord.Commands;
 using Discord.WebSocket;
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Integrations.Images;
 using DiscordSky.Bot.Integrations.LinkUnfurling;
 using DiscordSky.Bot.Memory;
 using DiscordSky.Bot.Memory.Logging;
@@ -27,6 +28,10 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly IOptionsMonitor<MemoryRelevanceOptions> _memoryRelevanceMonitor;
     private readonly ILinkUnfurler _linkUnfurler;
     private readonly IRandomProvider _randomProvider;
+    private readonly IReactionSink _reactionSink;
+    private readonly int _reactionExcerptLength;
+    private readonly ImageToolService? _imageToolService;
+    private readonly ImageRewriter? _imageRewriter;
     private readonly ConcurrentDictionary<ulong, (string Persona, DateTimeOffset CreatedAt)> _personaCache = new();
     private readonly ConcurrentDictionary<ulong, ChannelMessageBuffer> _channelBuffers = new();
     private readonly ConcurrentDictionary<ulong, SemaphoreSlim> _userMemoryLocks = new();
@@ -46,7 +51,11 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         ILinkUnfurler linkUnfurler,
         ILogger<DiscordBotService> logger,
         IRecallTelemetrySink telemetry,
-        IRandomProvider? randomProvider = null)
+        IRandomProvider? randomProvider = null,
+        IReactionSink? reactionSink = null,
+        IOptions<ReactionOptions>? reactionOptions = null,
+        ImageToolService? imageToolService = null,
+        ImageRewriter? imageRewriter = null)
     {
         _client = client;
         _options = options.Value;
@@ -59,12 +68,18 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _logger = logger;
         _telemetry = telemetry;
         _randomProvider = randomProvider ?? DefaultRandomProvider.Instance;
+        _reactionSink = reactionSink ?? new NoOpReactionSink();
+        _reactionExcerptLength = reactionOptions?.Value.ReplyExcerptLength ?? 200;
+        _imageToolService = imageToolService;
+        _imageRewriter = imageRewriter;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         _client.Log += OnLogAsync;
         _client.MessageReceived += OnMessageReceivedAsync;
+        _client.ReactionAdded += OnReactionAddedAsync;
+        _client.ReactionRemoved += OnReactionRemovedAsync;
         _client.Ready += OnReadyAsync;
 
         if (string.IsNullOrWhiteSpace(_options.Token))
@@ -91,6 +106,63 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         return Task.CompletedTask;
     }
 
+    private Task OnReactionAddedAsync(
+        Cacheable<IUserMessage, ulong> message,
+        Cacheable<IMessageChannel, ulong> channel,
+        SocketReaction reaction)
+    {
+        RecordReaction(message, channel, reaction, "add");
+        return Task.CompletedTask;
+    }
+
+    private Task OnReactionRemovedAsync(
+        Cacheable<IUserMessage, ulong> message,
+        Cacheable<IMessageChannel, ulong> channel,
+        SocketReaction reaction)
+    {
+        RecordReaction(message, channel, reaction, "remove");
+        return Task.CompletedTask;
+    }
+
+    // Reception signal (fun_assessment_2026-06-25 P1): record reactions on the bot's OWN messages only.
+    // Bot-message detection is O(1) via the persona cache, which already indexes every message we send.
+    private void RecordReaction(
+        Cacheable<IUserMessage, ulong> message,
+        Cacheable<IMessageChannel, ulong> channel,
+        SocketReaction reaction,
+        string action)
+    {
+        try
+        {
+            if (!_personaCache.TryGetValue(reaction.MessageId, out var cached)) return; // not our message
+            if (_client.CurrentUser is not null && reaction.UserId == _client.CurrentUser.Id) return; // self-react
+
+            string? excerpt = null;
+            if (message.HasValue && !string.IsNullOrWhiteSpace(message.Value.Content))
+            {
+                var content = message.Value.Content;
+                excerpt = content.Length > _reactionExcerptLength ? content[.._reactionExcerptLength] : content;
+            }
+
+            var guildId = (channel.HasValue ? channel.Value as SocketGuildChannel : null)?.Guild.Id;
+
+            _reactionSink.Record(new ReactionEvent(
+                Timestamp: DateTimeOffset.UtcNow,
+                Action: action,
+                Emote: reaction.Emote.Name,
+                ReactorUserId: reaction.UserId,
+                ChannelId: channel.Id,
+                GuildId: guildId,
+                MessageId: reaction.MessageId,
+                Persona: cached.Persona,
+                ReplyExcerpt: excerpt));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to record reaction on message {MessageId}", reaction.MessageId);
+        }
+    }
+
     public async Task StopAsync(CancellationToken cancellationToken)
     {
         // Flush any pending conversation buffers before shutdown
@@ -100,6 +172,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
         _client.Log -= OnLogAsync;
         _client.MessageReceived -= OnMessageReceivedAsync;
+        _client.ReactionAdded -= OnReactionAddedAsync;
+        _client.ReactionRemoved -= OnReactionRemovedAsync;
         _client.Ready -= OnReadyAsync;
 
         if (string.IsNullOrWhiteSpace(_options.Token))
@@ -278,6 +352,15 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                     ? payload["forget".Length..].Trim()
                     : string.Empty;
                 await HandleForgetTopicAsync(context, topic);
+                return;
+            }
+
+            // Image command (docs/image_generation_design.md). Intercept before persona parsing so the
+            // "(image)" prefix is not mistaken for a "(persona)" selector.
+            if (payload.StartsWith("(image)", StringComparison.OrdinalIgnoreCase))
+            {
+                var imageRequest = payload["(image)".Length..].Trim();
+                await HandleImageAsync(context, message, imageRequest);
                 return;
             }
 
@@ -495,7 +578,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             reference = new MessageReference(result.ReplyToMessageId.Value);
         }
 
-        await SendChunkedAsync(context.Channel, reply, reference, persona);
+        await SendChunkedAsync(context.Channel, reply, reference, persona, result.AttachmentBytes, result.AttachmentFileName);
     }
 
     private async Task HandleDirectReplyAsync(SocketCommandContext context, SocketUserMessage message)
@@ -599,20 +682,34 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             ? new MessageReference(result.ReplyToMessageId.Value)
             : new MessageReference(message.Id);
 
-        await SendChunkedAsync(context.Channel, reply, reference, persona);
+        await SendChunkedAsync(context.Channel, reply, reference, persona, result.AttachmentBytes, result.AttachmentFileName);
     }
 
-    private async Task SendChunkedAsync(ISocketMessageChannel channel, string text, MessageReference? reference, string persona)
+    private async Task SendChunkedAsync(
+        ISocketMessageChannel channel, string text, MessageReference? reference, string persona,
+        byte[]? attachmentBytes = null, string? attachmentFileName = null)
     {
-        if (text.Length <= DiscordMaxMessageLength)
+        var hasAttachment = attachmentBytes is { Length: > 0 } && !string.IsNullOrWhiteSpace(attachmentFileName);
+
+        // The reply text becomes the image caption (first chunk); any overflow follows as plain messages.
+        var chunks = text.Length <= DiscordMaxMessageLength
+            ? new List<string> { text }
+            : ChunkMessage(text, DiscordMaxMessageLength);
+
+        if (hasAttachment)
         {
-            var sent = await channel.SendMessageAsync(text, messageReference: reference);
-            CachePersona(sent.Id, persona);
+            using var stream = new MemoryStream(attachmentBytes!);
+            var sentFile = await channel.SendFileAsync(stream, attachmentFileName, text: chunks[0], messageReference: reference);
+            CachePersona(sentFile.Id, persona);
+            for (int i = 1; i < chunks.Count; i++)
+            {
+                var more = await channel.SendMessageAsync(chunks[i]);
+                CachePersona(more.Id, persona);
+            }
             return;
         }
 
         // Split into chunks; first chunk gets the reply reference
-        var chunks = ChunkMessage(text, DiscordMaxMessageLength);
         for (int i = 0; i < chunks.Count; i++)
         {
             var sent = await channel.SendMessageAsync(chunks[i], messageReference: i == 0 ? reference : null);
@@ -1253,6 +1350,65 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
         _shutdownCts.Dispose();
         await _client.DisposeAsync();
+    }
+
+    // Image command handler (docs/image_generation_design.md). Rewrite-in-character, then hand the vetted
+    // prompt to the shared ImageToolService (budget + style suffix + generate + log), then send the file.
+    // Refuses in character on every non-drawing outcome.
+    private async Task HandleImageAsync(SocketCommandContext context, SocketUserMessage message, string request)
+    {
+        var persona = GetDefaultPersona();
+        var reference = new MessageReference(message.Id);
+
+        if (string.IsNullOrWhiteSpace(request))
+        {
+            await context.Channel.SendMessageAsync(
+                $"Usage: {_options.CommandPrefix}(image) <what you want me to draw>",
+                messageReference: reference);
+            return;
+        }
+
+        // Feature off or not wired (disabled, no API key, or constructed without image deps in tests):
+        // refuse in character rather than falling through to a generic persona reply.
+        if (_imageToolService is null || !_imageToolService.IsEnabled || _imageRewriter is null)
+        {
+            await SendChunkedAsync(context.Channel, ImageRefusals.Disabled, reference, persona);
+            return;
+        }
+
+        _logger.LogInformation(
+            "image_requested author={Author} channel={Channel} message_id={MessageId}",
+            message.Author.Id, context.Channel.Name, message.Id);
+
+        // EnterTypingState keeps the typing indicator alive for the whole rewrite + generation, which can
+        // run many seconds. Disposed when the using block exits.
+        using (context.Channel.EnterTypingState())
+        {
+            var rewrite = await _imageRewriter.RewriteAsync(
+                persona, request, GetDisplayName(context.User), _shutdownCts.Token);
+
+            if (rewrite.Refuse || string.IsNullOrWhiteSpace(rewrite.ImagePrompt))
+            {
+                var refusal = string.IsNullOrWhiteSpace(rewrite.RefusalText)
+                    ? ImageRefusals.GenericRefusal
+                    : rewrite.RefusalText!;
+                await SendChunkedAsync(context.Channel, refusal, reference, persona);
+                return;
+            }
+
+            var outcome = await _imageToolService.GenerateAsync(
+                context.User.Id, context.Channel.Name, rewrite.ImagePrompt!, _shutdownCts.Token);
+
+            if (!outcome.Generated || outcome.Bytes is null || outcome.FileName is null)
+            {
+                await SendChunkedAsync(
+                    context.Channel, outcome.RefusalText ?? ImageRefusals.GenericRefusal, reference, persona);
+                return;
+            }
+
+            var caption = string.IsNullOrWhiteSpace(rewrite.Caption) ? "Behold." : rewrite.Caption;
+            await SendChunkedAsync(context.Channel, caption, reference, persona, outcome.Bytes, outcome.FileName);
+        }
     }
 
     private string GetDefaultPersona()

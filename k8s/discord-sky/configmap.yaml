@@ -51,6 +51,28 @@ data:
   Transcript__Enabled: "true"
   Transcript__BaseDirectory: "/app/data/user_memories/transcripts"
   Transcript__RetentionDays: "14"
+  # Reaction logging (the reception signal): which reactions land on the bot's own messages. Nested in
+  # the PVC mount so it survives pod rotation. Low-sensitivity (emoji + IDs + a short reply excerpt).
+  Reactions__Enabled: "true"
+  Reactions__BaseDirectory: "/app/data/user_memories/reactions"
+  Reactions__RetentionDays: "30"
+  # Image generation (docs/image_generation_design.md). OFF by default: enabling spends real money and
+  # requires the OpenAI org to pass API Organization Verification first, plus an OpenAI image API key in
+  # the Secret (LLM__Providers__OpenAI__ApiKey is reused). The log lives inside the PVC mount so the
+  # durable daily cap and monthly guard survive pod rotation (a crash loop must not blow the budget).
+  Image__Enabled: "true"
+  Image__Model: "gpt-image-1-mini"
+  Image__Size: "1024x1024"
+  Image__Quality: "low"
+  Image__OutputFormat: "jpeg"
+  Image__Moderation: "auto"
+  Image__PerUserPerHour: "2"
+  Image__GlobalPerDay: "25"
+  Image__MaxConcurrent: "2"
+  Image__MonthlyUsdGuard: "20"
+  Image__AllowHighQuality: "false"
+  Image__BaseDirectory: "/app/data/user_memories/images"
+  Image__RetentionDays: "60"
   # Recall-tool config (replaces implicit memory relevance gating).
   # See docs/recall_tool_design.md §3 and §4.2.
   MemoryRelevance__RecallTopK: "20"

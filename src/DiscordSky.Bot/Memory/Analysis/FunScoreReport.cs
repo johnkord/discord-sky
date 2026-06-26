@@ -33,9 +33,9 @@ public sealed record FunScoreTargets
     /// <summary>Formulaic-opening rate target: kill the "Ohohoho, [name]" template.</summary>
     public double MaxOpeningRepetitionRate { get; init; } = 0.30;
 
-    /// <summary>Catchphrases tracked for over-use (the audit's worn grooves).</summary>
+    /// <summary>Catchphrases tracked for over-use (the audit's worn grooves plus the new vocabulary to watch).</summary>
     public IReadOnlyList<string> TrackedTokens { get; init; } =
-        ["Scratch", "Grounder", "Ohohoho", "Badnik"];
+        ["Scratch", "Grounder", "Ohohoho", "Badnik", "egg", "Mobius", "henchperson", "applause"];
 
     /// <summary>
     /// Lowercase substrings that suggest a reply is still in the Robotnik voice. A crude proxy for the
@@ -43,9 +43,15 @@ public sealed record FunScoreTargets
     /// </summary>
     public IReadOnlyList<string> PersonaMarkers { get; init; } =
     [
+        // Canon names and tics
         "robotnik", "sonic", "hedgehog", "ohohoho", "bahaha", "minion", "scheme", "egg", "scratch",
-        "grounder", "badnik", "fool", "doomed", "mobius", "prrr", "mustache", "pingas", "coconuts",
-        "momma", "henchman", "henchperson", "snooping",
+        "grounder", "badnik", "fool", "doom", "mobius", "prrr", "mustache", "pingas", "coconuts",
+        "momma", "henchman", "henchperson", "snooping", "robo-matic", "egg-o-matic",
+        // Vanity and conquest vocabulary: the new style leans on these, so the detector must too,
+        // otherwise it false-flags punchy in-voice one-liners (fun_assessment_2026-06-25 3.1).
+        "conque", "empir", "imperial", "regime", "decree", "magnific", "applau", "statue", "throne",
+        "fortress", "tribute", "peasant", "gloriou", "supreme", "villain", "despot", "gloat",
+        "grovel", "kneel", "tyrann", "coronation",
     ];
 
     /// <summary>

@@ -56,5 +56,8 @@ env-inventory.md
 # User memory data
 data/
 
+# Image smoke-test artifacts (tools/DiscordSky.ImageSmoke output)
+robotnik-smoke.*
+
 # K8s secrets (real values)
 k8s/discord-sky/secret.yaml

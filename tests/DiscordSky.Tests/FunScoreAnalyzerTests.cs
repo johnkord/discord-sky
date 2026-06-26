@@ -129,6 +129,20 @@ public class FunScoreAnalyzerTests
         Assert.Equal(0.0, report.HelpfulLeakRate, 3);
     }
 
+    [Fact]
+    public void Analyze_RecalibratedMarkers_RecognizeVanityOneLiners()
+    {
+        // Pure Robotnik but with none of the old canon keywords; the broadened markers
+        // (magnific, applau, mobius, peasant) must recognize them. fun_assessment_2026-06-25 3.1.
+        var corpus = new List<TranscriptEntry>
+        {
+            E("Good luck, goat; while RNG bleats, I shall replace Azeroth's moon with my magnificent face!"),
+            E("Bow before me and applaud, or be renamed Mobius's dullest peasant."),
+        };
+        var report = FunScoreAnalyzer.Analyze(corpus);
+        Assert.Equal(1.0, report.InCharacterRate, 3);
+    }
+
     private static double RateOf(FunScoreReport report, string token)
         => report.TokenRates.First(t => t.Token == token).Rate;
 }
