@@ -1384,8 +1384,17 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         // run many seconds. Disposed when the using block exits.
         using (context.Channel.EnterTypingState())
         {
+            // Load what we know about the requester so "draw me" can personalize, exactly as the
+            // model-decided path already does via the orchestrator's inline recall.
+            IReadOnlyList<UserMemory>? userMemories = null;
+            if (_options.EnableUserMemory)
+            {
+                userMemories = await _memoryStore.GetAdmissibleMemoriesAsync(
+                    context.User.Id, _memoryRelevanceMonitor, _shutdownCts.Token);
+            }
+
             var rewrite = await _imageRewriter.RewriteAsync(
-                persona, request, GetDisplayName(context.User), _shutdownCts.Token);
+                persona, request, GetDisplayName(context.User), userMemories, _shutdownCts.Token);
 
             if (rewrite.Refuse || string.IsNullOrWhiteSpace(rewrite.ImagePrompt))
             {

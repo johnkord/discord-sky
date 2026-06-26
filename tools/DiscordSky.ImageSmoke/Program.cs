@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Integrations.Images;
+using DiscordSky.Bot.Memory.Scoring;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -53,12 +54,13 @@ var llmOptions = new LlmOptions
     },
 };
 var chatClient = new OpenAIClient(apiKey).GetResponsesClient(chatModel).AsIChatClient();
+var memoryScorer = new LexicalMemoryScorer(new StaticOptionsMonitor<MemoryRelevanceOptions>(new MemoryRelevanceOptions()));
 var rewriter = new ImageRewriter(
-    chatClient, new StaticOptionsMonitor<LlmOptions>(llmOptions), loggerFactory.CreateLogger<ImageRewriter>());
+    chatClient, new StaticOptionsMonitor<LlmOptions>(llmOptions), memoryScorer, loggerFactory.CreateLogger<ImageRewriter>());
 
 Console.WriteLine($"Rewriting (chat model={chatModel}): \"{request}\"");
 var rwSw = Stopwatch.StartNew();
-var rewrite = await rewriter.RewriteAsync(persona, request, "smoke-tester", CancellationToken.None);
+var rewrite = await rewriter.RewriteAsync(persona, request, "smoke-tester", memories: null, CancellationToken.None);
 rwSw.Stop();
 
 Console.WriteLine($"Rewrite in {rwSw.ElapsedMilliseconds} ms: refuse={rewrite.Refuse}");

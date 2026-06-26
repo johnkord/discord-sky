@@ -1,6 +1,8 @@
 using System.Text;
 using System.Text.Json;
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Memory.Scoring;
+using DiscordSky.Bot.Models.Orchestration;
 using DiscordSky.Bot.Orchestration;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -24,19 +26,24 @@ public sealed record ImageRewrite(bool Refuse, string? RefusalText, string? Imag
 /// </summary>
 public sealed class ImageRewriter
 {
+    private const int MaxInlineMemories = 4;
+
     private readonly IChatClient _chatClient;
     private readonly IOptionsMonitor<LlmOptions> _llmOptions;
+    private readonly IMemoryScorer _memoryScorer;
     private readonly ILogger<ImageRewriter> _logger;
 
-    public ImageRewriter(IChatClient chatClient, IOptionsMonitor<LlmOptions> llmOptions, ILogger<ImageRewriter> logger)
+    public ImageRewriter(IChatClient chatClient, IOptionsMonitor<LlmOptions> llmOptions, IMemoryScorer memoryScorer, ILogger<ImageRewriter> logger)
     {
         _chatClient = chatClient;
         _llmOptions = llmOptions;
+        _memoryScorer = memoryScorer;
         _logger = logger;
     }
 
     public async Task<ImageRewrite> RewriteAsync(
-        string persona, string userRequest, string requesterDisplayName, CancellationToken cancellationToken)
+        string persona, string userRequest, string requesterDisplayName,
+        IReadOnlyList<UserMemory>? memories, CancellationToken cancellationToken)
     {
         try
         {
@@ -51,7 +58,7 @@ public sealed class ImageRewriter
             var options = new ChatOptions
             {
                 ModelId = _llmOptions.CurrentValue.GetActiveProvider().ChatModel,
-                Instructions = BuildSystemPrompt(persona),
+                Instructions = BuildSystemPrompt(persona, requesterDisplayName, userRequest, memories),
                 MaxOutputTokens = 1500,
             };
 
@@ -128,7 +135,7 @@ public sealed class ImageRewriter
         return sb.ToString();
     }
 
-    private static string BuildSystemPrompt(string persona)
+    private string BuildSystemPrompt(string persona, string requesterDisplayName, string userRequest, IReadOnlyList<UserMemory>? memories)
     {
         var sb = new StringBuilder();
 
@@ -142,17 +149,21 @@ public sealed class ImageRewriter
         }
         sb.AppendLine();
         sb.AppendLine("=== TASK: decide what image to generate, in character ===");
-        sb.AppendLine("A user asked you to make an image. You do NOT meekly draw what they asked for. You draw what YOU, a vain megalomaniac, have decided they should have asked for, and it is almost always about YOU and your empire: a heroic self-portrait, a propaganda poster glorifying yourself, a statue or oil painting of your own face, a blueprint for an absurd egg-themed doomsday machine, a 'wanted' poster for that hedgehog, your face bolted onto whatever they mentioned. Twist their request through your ego.");
+        sb.AppendLine("A user asked you to make an image. You do NOT meekly draw what they asked for; you twist it through your ego and your world. When the request is vague, default to grandiose self-portraits, propaganda posters, statues of your own face, blueprints for absurd egg-themed doomsday machines, or a 'wanted' poster for that hedgehog.");
+        sb.AppendLine("But when they ask for a picture of THEMSELVES or someone in the chat, draw that person as a CARTOON caricature dropped into your world, exaggerating the funniest, most fitting things you know about them (see WHAT YOU KNOW below). Roasting a friend into your empire is the best outcome of all.");
         sb.AppendLine();
         sb.AppendLine("The CAPTION is the actual joke. The picture is a prop; the caption is where the comedy lands. Make the caption a short, punchy, in-character boast or insult (one or two sentences). Protect the caption above all.");
+
+        AppendMemoryBlock(sb, requesterDisplayName, userRequest, memories);
+
         sb.AppendLine();
         sb.AppendLine("=== SAFETY (decide BEFORE drawing) ===");
         sb.AppendLine("Refuse, in character, by setting refuse=true and writing a gloating refusal in refusal_text, when the request is:");
         sb.AppendLine("- sexual or nudity, gore, or shock content;");
-        sb.AppendLine("- hateful or harassing toward a real person or group;");
-        sb.AppendLine("- a realistic likeness of a real, identifiable person (a named individual, a celebrity, the requester themselves). Redirect such asks into a cartoon-villain treatment of YOURSELF instead of a real likeness;");
-        sb.AppendLine("- anything depicting real-world violence toward real people.");
-        sb.AppendLine("Keep all cruelty cartoonish and aimed at your fictional world. Never produce a refusal that is genuinely mean to the real requester; mock the request, not the human.");
+        sb.AppendLine("- genuinely hateful or harassing (slurs, demeaning a real-world group);");
+        sb.AppendLine("- aiming for a photo-realistic likeness of a real person (your art is always a cartoon, so caricaturing a friend is encouraged; just never aim for a realistic photographic face);");
+        sb.AppendLine("- depicting real-world violence toward real people.");
+        sb.AppendLine("Keep all cruelty cartoonish and aimed at your fictional world. A refusal should mock the request, not be genuinely vicious to the human who asked.");
         sb.AppendLine();
         sb.AppendLine("=== OUTPUT: strict JSON only, no prose, no code fence ===");
         sb.AppendLine("{");
@@ -162,6 +173,24 @@ public sealed class ImageRewriter
         sb.AppendLine("  \"caption\": \"<the in-character caption to post with the image if refuse=false, else empty>\"");
         sb.AppendLine("}");
         return sb.ToString();
+    }
+
+    // Inline the requester's most relevant notes so a portrait of them can be personalized, mirroring the
+    // orchestrator's recall_inline behavior on high-intent turns. No filtering beyond the store's existing
+    // admissibility (suppressed/meta/superseded) is applied.
+    private void AppendMemoryBlock(StringBuilder sb, string requesterDisplayName, string userRequest, IReadOnlyList<UserMemory>? memories)
+    {
+        if (memories is not { Count: > 0 }) return;
+        var ranked = _memoryScorer.RankForRecall(memories, userRequest, DateTimeOffset.UtcNow);
+        if (ranked.Count == 0) return;
+
+        sb.AppendLine();
+        sb.AppendLine($"=== WHAT YOU KNOW ABOUT {requesterDisplayName} (most relevant first) ===");
+        sb.AppendLine("Weave the funniest, most fitting details into the picture and caption when the image is about them. Do not recite the list; do not force in details that do not fit the request.");
+        foreach (var s in ranked.Take(MaxInlineMemories))
+        {
+            sb.AppendLine($"- {s.Memory.Content}");
+        }
     }
 }
 
