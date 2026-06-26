@@ -4,6 +4,7 @@ using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Orchestration;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace DiscordSky.Bot.Integrations.Images;
 
@@ -24,11 +25,13 @@ public sealed record ImageRewrite(bool Refuse, string? RefusalText, string? Imag
 public sealed class ImageRewriter
 {
     private readonly IChatClient _chatClient;
+    private readonly IOptionsMonitor<LlmOptions> _llmOptions;
     private readonly ILogger<ImageRewriter> _logger;
 
-    public ImageRewriter(IChatClient chatClient, ILogger<ImageRewriter> logger)
+    public ImageRewriter(IChatClient chatClient, IOptionsMonitor<LlmOptions> llmOptions, ILogger<ImageRewriter> logger)
     {
         _chatClient = chatClient;
+        _llmOptions = llmOptions;
         _logger = logger;
     }
 
@@ -41,15 +44,21 @@ public sealed class ImageRewriter
             {
                 new(ChatRole.User, BuildUserMessage(requesterDisplayName, userRequest)),
             };
+            // Match the proven orchestrator request shape: set the model explicitly and do NOT use a
+            // structured ResponseFormat. gpt-5.5 on the Responses API returns HTTP 400 for a json_object
+            // response format and/or a null model. The prompt asks for JSON and ExtractJsonObject tolerates
+            // fencing/prose, so we parse defensively instead. Tokens give reasoning headroom.
             var options = new ChatOptions
             {
+                ModelId = _llmOptions.CurrentValue.GetActiveProvider().ChatModel,
                 Instructions = BuildSystemPrompt(persona),
-                MaxOutputTokens = 600,
-                ResponseFormat = ChatResponseFormat.Json,
+                MaxOutputTokens = 1500,
             };
 
             var response = await _chatClient.GetResponseAsync(messages, options, cancellationToken);
-            return Parse(response.Text);
+            var rewrite = Parse(response.Text);
+            _logger.LogInformation("image_rewrite outcome={Outcome}", rewrite.Refuse ? "refuse" : "draw");
+            return rewrite;
         }
         catch (OperationCanceledException)
         {
