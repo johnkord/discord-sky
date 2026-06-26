@@ -257,9 +257,12 @@ public sealed class CreativeOrchestrator
             maxOutputTokens = Math.Min(maxOutputTokens, 512);
         }
 
-        // Offer the image tool only when generation is wired AND this is not an ambient reply (Phase 2;
-        // spontaneous ambient image flourishes are deferred to Phase 3 and gated separately).
-        var offerImageTool = _imageToolService?.IsEnabled == true && request.InvocationKind != CreativeInvocationKind.Ambient;
+        // Offer the image tool when generation is wired. Command and direct-reply turns always get it;
+        // ambient interjections get it only on a low random roll, so spontaneous images stay a rare surprise
+        // rather than a firehose. The model still decides whether to actually draw.
+        var offerImageTool = _imageToolService?.IsEnabled == true
+            && (request.InvocationKind != CreativeInvocationKind.Ambient
+                || _randomProvider.NextDouble() < _imageToolService.AmbientChance);
         var tools = offerImageTool
             ? new List<AITool> { SendDiscordMessageTool, RecallAboutUserTool, GenerateImageTool }
             : new List<AITool> { SendDiscordMessageTool, RecallAboutUserTool };

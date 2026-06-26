@@ -128,4 +128,11 @@ public sealed class ImageToolServiceTests
         Assert.True(Build(new StubGenerator { Enabled = true }, new FakeLog()).IsEnabled);
         Assert.False(Build(new StubGenerator { Enabled = false }, new FakeLog()).IsEnabled);
     }
+
+    [Fact]
+    public void AmbientChance_ReflectsOption()
+    {
+        var service = Build(new StubGenerator(), new FakeLog(), new ImageOptions { AmbientChance = 0.25 });
+        Assert.Equal(0.25, service.AmbientChance);
+    }
 }

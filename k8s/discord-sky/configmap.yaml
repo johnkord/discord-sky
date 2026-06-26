@@ -61,9 +61,9 @@ data:
   # the Secret (LLM__Providers__OpenAI__ApiKey is reused). The log lives inside the PVC mount so the
   # durable daily cap and monthly guard survive pod rotation (a crash loop must not blow the budget).
   Image__Enabled: "true"
-  Image__Model: "gpt-image-1-mini"
+  Image__Model: "gpt-image-2"
   Image__Size: "1024x1024"
-  Image__Quality: "low"
+  Image__Quality: "medium"
   Image__OutputFormat: "jpeg"
   Image__Moderation: "auto"
   Image__PerUserPerHour: "2"
@@ -71,6 +71,7 @@ data:
   Image__MaxConcurrent: "2"
   Image__MonthlyUsdGuard: "20"
   Image__AllowHighQuality: "false"
+  Image__AmbientChance: "0.08"
   Image__BaseDirectory: "/app/data/user_memories/images"
   Image__RetentionDays: "60"
   # Recall-tool config (replaces implicit memory relevance gating).

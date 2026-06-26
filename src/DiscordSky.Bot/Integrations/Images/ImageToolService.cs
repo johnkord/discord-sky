@@ -58,6 +58,9 @@ public sealed class ImageToolService
     /// <summary>True when a real backend is wired (enabled + an API key was found).</summary>
     public bool IsEnabled => _generator.IsEnabled;
 
+    /// <summary>Probability the tool is offered on an ambient interjection (see <see cref="ImageOptions.AmbientChance"/>).</summary>
+    public double AmbientChance => _options.AmbientChance;
+
     /// <summary>
     /// Runs the budget gate, appends the style suffix, generates, and logs the outcome. Returns the image
     /// bytes on success or an in-character refusal string on any non-drawing outcome. The caller owns the

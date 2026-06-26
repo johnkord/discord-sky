@@ -48,6 +48,13 @@ public sealed class ImageOptions
     /// <summary>When false, a requested <c>high</c> quality is clamped to <c>medium</c>.</summary>
     public bool AllowHighQuality { get; set; } = false;
 
+    /// <summary>
+    /// Probability (0..1) that the model-decided <c>generate_image</c> tool is even offered on an ambient
+    /// (unprompted) interjection. Keeps spontaneous ambient images a rare surprise. Command and direct-reply
+    /// turns always offer the tool regardless of this value.
+    /// </summary>
+    public double AmbientChance { get; set; } = 0.08;
+
     /// <summary>Directory for the durable generation log. Should sit on the PVC so the daily cap survives restarts.</summary>
     public string BaseDirectory { get; set; } = Path.Combine("data", "images");
 
