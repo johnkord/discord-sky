@@ -67,7 +67,7 @@ public sealed class ImageToolService
     /// caption and the actual Discord send.
     /// </summary>
     public async Task<ImageGenerationOutcome> GenerateAsync(
-        ulong userId, string? channelName, string imagePrompt, CancellationToken cancellationToken)
+        ulong userId, string? channelName, string imagePrompt, ImageTier tier, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(imagePrompt))
         {
@@ -82,7 +82,7 @@ public sealed class ImageToolService
         }
 
         var startedAt = DateTimeOffset.UtcNow;
-        var requestOptions = ImageRequestOptions.FromConfig(_options);
+        var requestOptions = ImageRequestOptions.FromConfig(_options, tier);
         var estCost = ImageCost.Estimate(requestOptions.Model, requestOptions.Quality);
 
         try

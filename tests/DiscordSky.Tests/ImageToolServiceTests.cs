@@ -11,6 +11,7 @@ public sealed class ImageToolServiceTests
     {
         public bool Enabled = true;
         public string? CapturedPrompt;
+        public string? CapturedModel;
         public ImageResult Next = ImageResult.Ok(new byte[] { 1, 2, 3 }, "jpg", null);
 
         public bool IsEnabled => Enabled;
@@ -18,6 +19,7 @@ public sealed class ImageToolServiceTests
         public Task<ImageResult> GenerateAsync(string prompt, ImageRequestOptions options, CancellationToken cancellationToken)
         {
             CapturedPrompt = prompt;
+            CapturedModel = options.Model;
             return Task.FromResult(Next);
         }
     }
@@ -44,7 +46,7 @@ public sealed class ImageToolServiceTests
         var gen = new StubGenerator();
         var service = Build(gen, new FakeLog());
 
-        await service.GenerateAsync(123, "general", "a statue of my own glorious face", CancellationToken.None);
+        await service.GenerateAsync(123, "general", "a statue of my own glorious face", ImageTier.Commissioned, CancellationToken.None);
 
         Assert.NotNull(gen.CapturedPrompt);
         Assert.StartsWith("a statue of my own glorious face", gen.CapturedPrompt);
@@ -58,7 +60,7 @@ public sealed class ImageToolServiceTests
         var log = new FakeLog();
         var service = Build(gen, log);
 
-        var outcome = await service.GenerateAsync(1, "chan", "draw me a throne", CancellationToken.None);
+        var outcome = await service.GenerateAsync(1, "chan", "draw me a throne", ImageTier.Commissioned, CancellationToken.None);
 
         Assert.True(outcome.Generated);
         Assert.Equal(new byte[] { 1, 2, 3, 4 }, outcome.Bytes);
@@ -74,7 +76,7 @@ public sealed class ImageToolServiceTests
         var log = new FakeLog();
         var service = Build(gen, log);
 
-        var outcome = await service.GenerateAsync(1, "chan", "draw something", CancellationToken.None);
+        var outcome = await service.GenerateAsync(1, "chan", "draw something", ImageTier.Commissioned, CancellationToken.None);
 
         Assert.False(outcome.Generated);
         Assert.Null(outcome.Bytes);
@@ -89,7 +91,7 @@ public sealed class ImageToolServiceTests
         var log = new FakeLog();
         var service = Build(gen, log);
 
-        var outcome = await service.GenerateAsync(1, "chan", "draw", CancellationToken.None);
+        var outcome = await service.GenerateAsync(1, "chan", "draw", ImageTier.Commissioned, CancellationToken.None);
 
         Assert.False(outcome.Generated);
         Assert.Contains(log.Records, r => r.Outcome == ImageGenerationRecord.OutcomeError);
@@ -103,7 +105,7 @@ public sealed class ImageToolServiceTests
         var opts = new ImageOptions { GlobalPerDay = 5, PerUserPerHour = 0, MonthlyUsdGuard = 0, MaxConcurrent = 4 };
         var service = Build(gen, log, opts);
 
-        var outcome = await service.GenerateAsync(1, "chan", "draw", CancellationToken.None);
+        var outcome = await service.GenerateAsync(1, "chan", "draw", ImageTier.Commissioned, CancellationToken.None);
 
         Assert.False(outcome.Generated);
         Assert.False(string.IsNullOrWhiteSpace(outcome.RefusalText));
@@ -116,7 +118,7 @@ public sealed class ImageToolServiceTests
         var gen = new StubGenerator();
         var service = Build(gen, new FakeLog());
 
-        var outcome = await service.GenerateAsync(1, "chan", "   ", CancellationToken.None);
+        var outcome = await service.GenerateAsync(1, "chan", "   ", ImageTier.Commissioned, CancellationToken.None);
 
         Assert.False(outcome.Generated);
         Assert.Null(gen.CapturedPrompt);
@@ -127,6 +129,30 @@ public sealed class ImageToolServiceTests
     {
         Assert.True(Build(new StubGenerator { Enabled = true }, new FakeLog()).IsEnabled);
         Assert.False(Build(new StubGenerator { Enabled = false }, new FakeLog()).IsEnabled);
+    }
+
+    [Fact]
+    public async Task GenerateAsync_TierSelectsModel()
+    {
+        var gen = new StubGenerator();
+        var opts = new ImageOptions
+        {
+            Model = "gpt-image-2",
+            Quality = "medium",
+            SpontaneousModel = "gpt-image-1-mini",
+            SpontaneousQuality = "low",
+            PerUserPerHour = 0,
+            GlobalPerDay = 0,
+            MonthlyUsdGuard = 0,
+            MaxConcurrent = 4,
+        };
+        var service = Build(gen, new FakeLog(), opts);
+
+        await service.GenerateAsync(1, "c", "draw", ImageTier.Spontaneous, CancellationToken.None);
+        Assert.Equal("gpt-image-1-mini", gen.CapturedModel);
+
+        await service.GenerateAsync(1, "c", "draw", ImageTier.Commissioned, CancellationToken.None);
+        Assert.Equal("gpt-image-2", gen.CapturedModel);
     }
 
     [Fact]

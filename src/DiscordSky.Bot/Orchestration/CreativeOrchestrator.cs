@@ -116,7 +116,7 @@ public sealed class CreativeOrchestrator
     /// </summary>
     private static readonly AIFunctionDeclaration GenerateImageTool = AIFunctionFactory.CreateDeclaration(
         name: GenerateImageToolName,
-        description: "Generate an image and attach it to your reply. Use when unveiling something visual is funnier than describing it (a grand self-portrait, a propaganda poster, a blueprint of an absurd egg-machine, your face on a monument). You get ONE image per reply. Provide a vivid image_prompt; do NOT specify art style, it is added for you. After it renders, finish by calling send_discord_message with a short in-character caption. Keep every subject to your cartoon-villain self and your empire, never a realistic depiction of a real person.",
+        description: "Generate an image and attach it to your reply. Use when unveiling something visual is funnier than describing it (a grand self-portrait, a propaganda poster, a blueprint of an absurd egg-machine, your face on a monument). You get ONE image per reply. Provide a vivid but concise image_prompt (2-3 sentences; long prompts are slow); do NOT specify art style, it is added for you. After it renders, finish by calling send_discord_message with a short in-character caption. Keep every subject to your cartoon-villain self and your empire, never a realistic depiction of a real person.",
         jsonSchema: JsonDocument.Parse("""
         {
             "type": "object",
@@ -125,7 +125,7 @@ public sealed class CreativeOrchestrator
                 "image_prompt": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "A vivid, concrete visual description of the scene to draw: subject, composition, key details. Do not specify the art style."
+                    "description": "A vivid visual description of the scene: subject, composition, key details, in 2-3 tight sentences (long prompts render slowly). Do not specify the art style."
                 }
             },
             "required": ["image_prompt"]
@@ -344,8 +344,13 @@ public sealed class CreativeOrchestrator
                     else
                     {
                         imageAttempted = true;
+                        // Ambient surprises render on the fast spontaneous tier; explicit command and
+                        // direct-reply turns get the quality tier, where the person opted into the wait.
+                        var imageTier = request.InvocationKind == CreativeInvocationKind.Ambient
+                            ? ImageTier.Spontaneous
+                            : ImageTier.Commissioned;
                         var outcome = await _imageToolService!.GenerateAsync(
-                            request.UserId, request.Channel?.ChannelName, ParseImagePrompt(imageCall), cancellationToken);
+                            request.UserId, request.Channel?.ChannelName, ParseImagePrompt(imageCall), imageTier, cancellationToken);
                         if (outcome.Generated)
                         {
                             pendingImageBytes = outcome.Bytes;
@@ -648,7 +653,7 @@ public sealed class CreativeOrchestrator
         builder.Append(" The recall_about_user tool (optional, fetches stored notes about a participant) and the send_discord_message tool (required, ends the turn with your reply) are available.");
         if (imagesEnabled)
         {
-            builder.Append(" A generate_image tool is also available: call it to CREATE and attach a picture when unveiling something visual would be funnier than describing it, such as a grand self-portrait, a propaganda poster, a blueprint of an absurd egg-machine, or your face carved into a monument. Provide a vivid image_prompt (subject, composition, details); do NOT specify art style, it is handled for you. You get ONE image per reply and it is optional, so most replies are still just words. After it renders, finish with send_discord_message and a short caption. Every image must depict your cartoon-villain self and your empire, never a realistic real person.");
+            builder.Append(" A generate_image tool is also available: call it to CREATE and attach a picture when unveiling something visual would be funnier than describing it, such as a grand self-portrait, a propaganda poster, a blueprint of an absurd egg-machine, or your face carved into a monument. Provide a vivid but concise image_prompt (subject, composition, details in 2-3 sentences); do NOT specify art style, it is handled for you. You get ONE image per reply and it is optional, so most replies are still just words. After it renders, finish with send_discord_message and a short caption. Every image must depict your cartoon-villain self and your empire, never a realistic real person.");
         }
         builder.Append(" Your entire response must be tool calls — no plain text. Always finish by calling send_discord_message.");
         builder.Append(" For a general announcement to the whole channel, set mode=\"broadcast\" and target_message_id to null.");

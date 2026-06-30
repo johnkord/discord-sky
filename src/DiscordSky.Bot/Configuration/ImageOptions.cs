@@ -27,6 +27,16 @@ public sealed class ImageOptions
     /// <summary>low | medium | high | auto. Defaults low for cost and latency.</summary>
     public string Quality { get; set; } = "low";
 
+    /// <summary>
+    /// Model for spontaneous/ambient images, where speed matters more than fidelity (nobody is waiting on an
+    /// unsolicited image). Defaults to the fast mini model so surprises render in ~10s instead of ~70s.
+    /// Explicit requests (command, direct-reply, "draw me ...") use <see cref="Model"/> / <see cref="Quality"/>.
+    /// </summary>
+    public string SpontaneousModel { get; set; } = "gpt-image-1-mini";
+
+    /// <summary>Quality tier for spontaneous/ambient images. Defaults low for speed.</summary>
+    public string SpontaneousQuality { get; set; } = "low";
+
     /// <summary>png | jpeg | webp. jpeg is faster and cheaper to ship to Discord.</summary>
     public string OutputFormat { get; set; } = "jpeg";
 
@@ -49,11 +59,11 @@ public sealed class ImageOptions
     public bool AllowHighQuality { get; set; } = false;
 
     /// <summary>
-    /// Probability (0..1) that the model-decided <c>generate_image</c> tool is even offered on an ambient
-    /// (unprompted) interjection. Keeps spontaneous ambient images a rare surprise. Command and direct-reply
-    /// turns always offer the tool regardless of this value.
+    /// Probability (0..1) that the model-decided <c>generate_image</c> tool is offered on an ambient
+    /// (unprompted) interjection. Ambient images use the fast/cheap spontaneous tier, so this can be generous
+    /// while staying an occasional surprise. Command and direct-reply turns always offer the tool regardless.
     /// </summary>
-    public double AmbientChance { get; set; } = 0.08;
+    public double AmbientChance { get; set; } = 0.25;
 
     /// <summary>Directory for the durable generation log. Should sit on the PVC so the daily cap survives restarts.</summary>
     public string BaseDirectory { get; set; } = Path.Combine("data", "images");

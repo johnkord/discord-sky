@@ -1,22 +1,35 @@
 using System.ClientModel;
 using DiscordSky.Bot.Configuration;
 using Microsoft.Extensions.Logging;
+using OpenAI;
 using OpenAI.Images;
 
 namespace DiscordSky.Bot.Integrations.Images;
 
+/// <summary>Which quality/speed tier to render at, chosen by how the image was requested.</summary>
+public enum ImageTier
+{
+    /// <summary>Explicit request (command, direct reply, "draw me ..."): quality model, person opted into the wait.</summary>
+    Commissioned,
+    /// <summary>Spontaneous/ambient surprise: fast model, because a slow unsolicited image is a dead one.</summary>
+    Spontaneous,
+}
+
 /// <summary>Per-request image parameters, resolved from <see cref="ImageOptions"/> at call time.</summary>
 public sealed record ImageRequestOptions(string Model, string Size, string Quality, string OutputFormat, string Moderation)
 {
-    public static ImageRequestOptions FromConfig(ImageOptions o)
+    public static ImageRequestOptions FromConfig(ImageOptions o, ImageTier tier = ImageTier.Commissioned)
     {
+        var (model, quality) = tier == ImageTier.Spontaneous
+            ? (o.SpontaneousModel, o.SpontaneousQuality)
+            : (o.Model, o.Quality);
+
         // The high-quality tier is gated: clamp to medium unless explicitly allowed.
-        var quality = o.Quality;
         if (!o.AllowHighQuality && string.Equals(quality, "high", StringComparison.OrdinalIgnoreCase))
         {
             quality = "medium";
         }
-        return new ImageRequestOptions(o.Model, o.Size, quality, o.OutputFormat, o.Moderation);
+        return new ImageRequestOptions(model, o.Size, quality, o.OutputFormat, o.Moderation);
     }
 }
 
@@ -68,12 +81,12 @@ public sealed class NoOpImageGenerator : IImageGenerator
 /// </summary>
 public sealed class OpenAIImageGenerator : IImageGenerator
 {
-    private readonly ImageClient _client;
+    private readonly OpenAIClient _openAiClient;
     private readonly ILogger<OpenAIImageGenerator> _logger;
 
-    public OpenAIImageGenerator(ImageClient client, ILogger<OpenAIImageGenerator> logger)
+    public OpenAIImageGenerator(OpenAIClient openAiClient, ILogger<OpenAIImageGenerator> logger)
     {
-        _client = client;
+        _openAiClient = openAiClient;
         _logger = logger;
     }
 
@@ -92,7 +105,10 @@ public sealed class OpenAIImageGenerator : IImageGenerator
 
         try
         {
-            ClientResult<GeneratedImage> result = await _client.GenerateImageAsync(prompt, generationOptions, cancellationToken);
+            // The model is bound per call so the spontaneous (fast) and commissioned (quality) tiers can use
+            // different GPT Image models from one generator. GetImageClient is a cheap wrapper.
+            var client = _openAiClient.GetImageClient(options.Model);
+            ClientResult<GeneratedImage> result = await client.GenerateImageAsync(prompt, generationOptions, cancellationToken);
             var image = result.Value;
             var bytes = image.ImageBytes?.ToArray();
             if (bytes is null || bytes.Length == 0)

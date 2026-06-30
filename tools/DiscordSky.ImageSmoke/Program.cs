@@ -85,7 +85,7 @@ var options = ImageRequestOptions.FromConfig(new ImageOptions
     AllowHighQuality = true,
 });
 var generator = new OpenAIImageGenerator(
-    new OpenAIClient(apiKey).GetImageClient(imageModel),
+    new OpenAIClient(apiKey),
     loggerFactory.CreateLogger<OpenAIImageGenerator>());
 
 Console.WriteLine($"Generating: model={imageModel} size={size} quality={options.Quality} format={format} (5 to 60+ s)...");

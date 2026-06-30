@@ -161,7 +161,7 @@ builder.Services.AddSingleton<IImageGenerator>(sp =>
 	logger.LogInformation("Image generation ENABLED (provider={Provider}, model={Model}).",
 		imageOptions.ProviderName, imageOptions.Model);
 	return new OpenAIImageGenerator(
-		openAiClient.GetImageClient(imageOptions.Model),
+		openAiClient,
 		loggerFactory.CreateLogger<OpenAIImageGenerator>());
 });
 // Shared generation core used by both the !sky(image) command and the model-decided generate_image tool.

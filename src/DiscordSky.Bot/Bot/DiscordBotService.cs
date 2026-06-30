@@ -368,6 +368,20 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             return;
         }
 
+        // Natural-language image request when the bot is addressed by mention or name (not a reply): route
+        // to the image pipeline so images are not stranded behind a command nobody types. See ops_analysis P2.
+        if (_imageToolService?.IsEnabled == true && ImageIntentDetector.LooksLikeImageRequest(content))
+        {
+            var addressedBotId = _client.CurrentUser?.Id;
+            var addressed = (addressedBotId.HasValue && message.MentionedUsers.Any(u => u.Id == addressedBotId.Value))
+                || MentionsBotName(content);
+            if (addressed)
+            {
+                await HandleImageAsync(context, message, content);
+                return;
+            }
+        }
+
         // Ambient reply chance — modulated by context so the bot interjects at better moments and
         // does not dominate a channel. See docs/improvement_opportunities_2026-06-10.md F7.
         var chaosSettings = _chaosSettingsMonitor.CurrentValue;
@@ -583,6 +597,14 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
     private async Task HandleDirectReplyAsync(SocketCommandContext context, SocketUserMessage message)
     {
+        // Natural-language image request in a reply ("draw me as a knight") routes straight to the image
+        // pipeline, so it does not depend on the model choosing the tool. See docs/ops_analysis_2026-06-29.md P2.
+        if (_imageToolService?.IsEnabled == true && ImageIntentDetector.LooksLikeImageRequest(message.Content))
+        {
+            await HandleImageAsync(context, message, message.Content.Trim());
+            return;
+        }
+
         // Show typing indicator for direct replies (same as Command)
         await context.Channel.TriggerTypingAsync();
 
@@ -1405,8 +1427,19 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 return;
             }
 
+            // The commissioned tier (gpt-image-2/medium) can take ~70s; post an in-character placeholder the
+            // instant we commit to drawing so the wait reads as a bit, not a hang. See ops_analysis P1.
+            try
+            {
+                await context.Channel.SendMessageAsync(ImagePlaceholders.Random(_randomProvider), messageReference: reference);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed to post image placeholder; continuing.");
+            }
+
             var outcome = await _imageToolService.GenerateAsync(
-                context.User.Id, context.Channel.Name, rewrite.ImagePrompt!, _shutdownCts.Token);
+                context.User.Id, context.Channel.Name, rewrite.ImagePrompt!, ImageTier.Commissioned, _shutdownCts.Token);
 
             if (!outcome.Generated || outcome.Bytes is null || outcome.FileName is null)
             {

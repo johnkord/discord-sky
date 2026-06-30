@@ -169,7 +169,7 @@ public sealed class ImageRewriter
         sb.AppendLine("{");
         sb.AppendLine("  \"refuse\": <true|false>,");
         sb.AppendLine("  \"refusal_text\": \"<in-character refusal if refuse=true, else empty>\",");
-        sb.AppendLine("  \"image_prompt\": \"<a vivid, concrete visual description of the scene to draw if refuse=false, else empty. Describe subject, composition, and key details. Do NOT specify the art style; that is added automatically.>\",");
+        sb.AppendLine("  \"image_prompt\": \"<a vivid visual description of the scene to draw if refuse=false, else empty. Subject, composition, and key details in 2-3 tight sentences (long prompts render slowly). Do NOT specify the art style; that is added automatically.>\",");
         sb.AppendLine("  \"caption\": \"<the in-character caption to post with the image if refuse=false, else empty>\"");
         sb.AppendLine("}");
         return sb.ToString();
