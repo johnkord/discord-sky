@@ -4,6 +4,7 @@ using DiscordSky.Bot.Bot;
 using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Integrations.Images;
 using DiscordSky.Bot.Integrations.LinkUnfurling;
+using DiscordSky.Bot.Integrations.Safety;
 using DiscordSky.Bot.Memory;
 using DiscordSky.Bot.Memory.Logging;
 using DiscordSky.Bot.Memory.Scoring;
@@ -28,6 +29,21 @@ builder.Services.Configure<TranscriptOptions>(builder.Configuration.GetSection(T
 builder.Services.Configure<ReactionOptions>(builder.Configuration.GetSection(ReactionOptions.SectionName));
 builder.Services.Configure<ImageOptions>(builder.Configuration.GetSection(ImageOptions.SectionName));
 builder.Services.Configure<ScamGuardOptions>(builder.Configuration.GetSection(ScamGuardOptions.SectionName));
+
+// Phishing-domain feed (Sinking Yachts), opt-in. When enabled it doubles as the IPhishingDomainSource the scam
+// detector consults; otherwise the detector gets a no-op source and leans on its built-in heuristics.
+var scamGuardConfig = builder.Configuration.GetSection(ScamGuardOptions.SectionName).Get<ScamGuardOptions>()
+    ?? new ScamGuardOptions();
+if (scamGuardConfig.UsePhishingFeed)
+{
+    builder.Services.AddSingleton<PhishingDomainFeed>();
+    builder.Services.AddSingleton<IPhishingDomainSource>(sp => sp.GetRequiredService<PhishingDomainFeed>());
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<PhishingDomainFeed>());
+}
+else
+{
+    builder.Services.AddSingleton<IPhishingDomainSource>(NullPhishingDomainSource.Instance);
+}
 
 builder.Services.AddSingleton(_ => new DiscordSocketConfig
 {

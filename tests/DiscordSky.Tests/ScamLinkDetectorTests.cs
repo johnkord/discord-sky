@@ -80,10 +80,64 @@ public sealed class ScamLinkDetectorTests
         Assert.DoesNotContain("@here", line, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void Detect_FeedMatch_FlagsEvenWithoutHeuristicSignal()
+    {
+        var feed = new StubPhishingSource("evil.example");
+
+        var hit = ScamLinkDetector.Detect("yo check https://login.evil.example/winnings", false, phishingDomains: feed);
+        Assert.True(hit.IsScam);
+        Assert.Equal("feed", hit.Reason);
+
+        // A clean host is untouched even with a populated feed.
+        Assert.False(ScamLinkDetector.Detect(
+            "nice clip https://youtube.com/watch?v=z", false, phishingDomains: feed).IsScam);
+    }
+
+    [Theory]
+    // Cyrillic 'o' in "disc<o>rd-nitro" folds to ASCII and matches the lookalike rule.
+    [InlineData("click https://disc\u043Erd-nitro.com/claim")]
+    // Digit homoglyph: "d1scord" folds to "dlscord".
+    [InlineData("go to https://d1scord-gift.com")]
+    public void Detect_SeesThroughHomoglyphs(string text)
+    {
+        var result = ScamLinkDetector.Detect(text, false);
+        Assert.True(result.IsScam);
+        Assert.Equal("lookalike", result.Reason);
+    }
+
+    [Fact]
+    public void Detect_Shortener_NeedsCorroboration()
+    {
+        // Shortener + a strong token (in the path) is enough.
+        var hit = ScamLinkDetector.Detect("grab it https://bit.ly/cryptodrop", false);
+        Assert.True(hit.IsScam);
+        Assert.Equal("shortener", hit.Reason);
+
+        // Shortener + @everyone is enough even without a money word.
+        Assert.True(ScamLinkDetector.Detect("@everyone surprise https://bit.ly/x", true).IsScam);
+
+        // A bare shortener with no corroboration is left alone.
+        Assert.False(ScamLinkDetector.Detect("rsvp here https://bit.ly/party", false).IsScam);
+
+        // And the behavior can be switched off.
+        Assert.False(ScamLinkDetector.Detect(
+            "grab it https://bit.ly/cryptodrop", false, treatShortenersAsSignal: false).IsScam);
+    }
+
     private sealed class FixedRng : IRandomProvider
     {
         private readonly double _value;
         public FixedRng(double value) => _value = value;
         public double NextDouble() => _value;
+    }
+
+    private sealed class StubPhishingSource : IPhishingDomainSource
+    {
+        private readonly HashSet<string> _domains;
+        public StubPhishingSource(params string[] domains) =>
+            _domains = new HashSet<string>(domains, StringComparer.OrdinalIgnoreCase);
+        public bool Contains(string domain) => _domains.Contains(domain);
+        public int Count => _domains.Count;
     }
 }

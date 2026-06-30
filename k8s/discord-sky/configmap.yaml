@@ -79,6 +79,13 @@ data:
   # Scam-link guard: proactive in-character warnings on obvious phishing/crypto-scam links.
   ScamGuard__Enabled: "true"
   ScamGuard__CooldownSeconds: "45"
+  ScamGuard__TreatShortenersAsSignal: "true"
+  # Phishing-domain feed (Sinking Yachts), mirrored locally to the PVC. Fail-open.
+  ScamGuard__UsePhishingFeed: "true"
+  ScamGuard__PhishingFeedUrl: "https://phish.sinking.yachts"
+  ScamGuard__PhishingFeedRefreshMinutes: "15"
+  ScamGuard__PhishingFeedIdentity: "discord-sky-bot (private friend server)"
+  ScamGuard__PhishingFeedCachePath: "/app/data/user_memories/phishing_domains.json"
   # Recall-tool config (replaces implicit memory relevance gating).
   # See docs/recall_tool_design.md §3 and §4.2.
   MemoryRelevance__RecallTopK: "20"

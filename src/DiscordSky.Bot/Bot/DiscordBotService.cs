@@ -34,6 +34,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly ImageToolService? _imageToolService;
     private readonly ImageRewriter? _imageRewriter;
     private readonly ScamGuardOptions _scamGuard;
+    private readonly IPhishingDomainSource _phishingDomains;
     private readonly ConcurrentDictionary<ulong, DateTimeOffset> _scamWarnCooldown = new();
     private readonly ConcurrentDictionary<ulong, (string Persona, DateTimeOffset CreatedAt)> _personaCache = new();
     private readonly ConcurrentDictionary<ulong, ChannelMessageBuffer> _channelBuffers = new();
@@ -59,7 +60,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         IOptions<ReactionOptions>? reactionOptions = null,
         ImageToolService? imageToolService = null,
         ImageRewriter? imageRewriter = null,
-        IOptions<ScamGuardOptions>? scamGuardOptions = null)
+        IOptions<ScamGuardOptions>? scamGuardOptions = null,
+        IPhishingDomainSource? phishingDomains = null)
     {
         _client = client;
         _options = options.Value;
@@ -77,6 +79,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _imageToolService = imageToolService;
         _imageRewriter = imageRewriter;
         _scamGuard = scamGuardOptions?.Value ?? new ScamGuardOptions { Enabled = false };
+        _phishingDomains = phishingDomains ?? NullPhishingDomainSource.Instance;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -1532,7 +1535,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         {
             detection = ScamLinkDetector.Detect(
                 message.Content, message.MentionedEveryone,
-                _scamGuard.ExtraScamPhrases, _scamGuard.ExtraPhishingHosts);
+                _scamGuard.ExtraScamPhrases, _scamGuard.ExtraPhishingHosts,
+                _phishingDomains, _scamGuard.TreatShortenersAsSignal);
         }
         catch (Exception ex)
         {

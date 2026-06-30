@@ -29,4 +29,28 @@ public sealed class ScamGuardOptions
     /// (e.g. "dlscord", "steamcommunlty"). Only applied when the message also contains a link.
     /// </summary>
     public List<string> ExtraPhishingHosts { get; init; } = new();
+
+    /// <summary>
+    /// Whether known URL shorteners (bit.ly, tinyurl, ...) count as a corroborating scam signal when paired
+    /// with a strong scam token or a mass-mention. We never follow the shortener (that would be an SSRF risk).
+    /// </summary>
+    public bool TreatShortenersAsSignal { get; init; } = true;
+
+    /// <summary>
+    /// Whether to consult the Sinking Yachts phishing-domain feed (mirrored locally on the PVC). Opt-in because
+    /// it adds an outbound dependency; detection is always fail-open, falling back to the built-in heuristics.
+    /// </summary>
+    public bool UsePhishingFeed { get; init; } = false;
+
+    /// <summary>Base URL of the phishing-domain feed (Sinking Yachts API).</summary>
+    public string PhishingFeedUrl { get; init; } = "https://phish.sinking.yachts";
+
+    /// <summary>How often to pull recent feed changes.</summary>
+    public int PhishingFeedRefreshMinutes { get; init; } = 15;
+
+    /// <summary>Value sent in the X-Identity header so the feed maintainers know who is calling.</summary>
+    public string PhishingFeedIdentity { get; init; } = "discord-sky-bot";
+
+    /// <summary>Where the mirrored domain list is cached so restarts and outages stay covered.</summary>
+    public string PhishingFeedCachePath { get; init; } = "data/phishing_domains.json";
 }

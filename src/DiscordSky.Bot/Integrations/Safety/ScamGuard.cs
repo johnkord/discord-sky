@@ -20,10 +20,11 @@ public readonly record struct ScamDetection(bool IsScam, string? Reason)
 /// </summary>
 public static class ScamLinkDetector
 {
-    // The ask was specifically about spam LINKS, so a URL/domain must be present. Over-matching here is
-    // harmless: the URL is only a gate, and a real scam call still needs a phrase/host/mass-mention signal.
-    private static readonly Regex UrlRegex = new(
-        @"https?://\S+|\bwww\.\S+|\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.[a-z]{2,}\b",
+    // Stronger tokens used to corroborate a URL shortener (which hides its destination). Tighter than the
+    // mass-mention token list so "let's grab free pizza, rsvp bit.ly/party" does not trip it.
+    private static readonly Regex StrongScamTokenRegex = new(
+        @"nitro|crypto|airdrop|robux|v-?bucks|giveaway|usdt|casino|\bbtc\b|\beth\b|claim your|" +
+        @"free (?:nitro|crypto|robux|money|bitcoin|gift)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     // Lookalike / fake hosts. Every fragment below is something a legitimate Discord/Steam/crypto domain never
@@ -58,20 +59,49 @@ public static class ScamLinkDetector
         string? content,
         bool mentionsEveryone,
         IReadOnlyCollection<string>? extraPhrases = null,
-        IReadOnlyCollection<string>? extraHosts = null)
+        IReadOnlyCollection<string>? extraHosts = null,
+        IPhishingDomainSource? phishingDomains = null,
+        bool treatShortenersAsSignal = true)
     {
-        if (string.IsNullOrWhiteSpace(content) || !UrlRegex.IsMatch(content))
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return ScamDetection.None;
+        }
+
+        // Require a link: the request was about spam LINKS, and "has a host" is the cheapest precision gate.
+        var hosts = DomainUtilities.ExtractHosts(content);
+        if (hosts.Count == 0)
         {
             return ScamDetection.None;
         }
 
         var lower = content.ToLowerInvariant();
 
-        if (PhishingHostRegex.IsMatch(lower) || ContainsAny(lower, extraHosts))
+        // Layer 1 (highest confidence): a host confirmed bad by the live phishing-domain feed.
+        if (phishingDomains is { Count: > 0 })
         {
-            return new ScamDetection(true, "phishing-host");
+            foreach (var host in hosts)
+            {
+                foreach (var candidate in DomainUtilities.SuffixCandidates(host))
+                {
+                    if (phishingDomains.Contains(candidate))
+                    {
+                        return new ScamDetection(true, "feed");
+                    }
+                }
+            }
         }
 
+        // Layer 2: a lookalike host, seen through homoglyph/punycode folding (so cyrillic and xn-- evasions fail).
+        var foldedContent = DomainUtilities.FoldConfusables(lower);
+        if (PhishingHostRegex.IsMatch(foldedContent)
+            || hosts.Any(h => PhishingHostRegex.IsMatch(DomainUtilities.Skeleton(h)))
+            || ContainsAny(lower, extraHosts))
+        {
+            return new ScamDetection(true, "lookalike");
+        }
+
+        // Layer 3: an unambiguous scam phrase.
         foreach (var phrase in ScamPhrases)
         {
             if (lower.Contains(phrase, StringComparison.Ordinal))
@@ -85,6 +115,15 @@ public static class ScamLinkDetector
             return new ScamDetection(true, "phrase:custom");
         }
 
+        // Layer 4: a destination-hiding shortener, corroborated by a strong token or a mass-mention.
+        if (treatShortenersAsSignal
+            && hosts.Any(DomainUtilities.IsShortener)
+            && (mentionsEveryone || StrongScamTokenRegex.IsMatch(lower)))
+        {
+            return new ScamDetection(true, "shortener");
+        }
+
+        // Layer 5: the classic compromised-account raid (@everyone + a link + a money/gift token).
         if (mentionsEveryone && MoneyOrGiftRegex.IsMatch(lower))
         {
             return new ScamDetection(true, "mass-mention");
