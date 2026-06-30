@@ -5,6 +5,7 @@ using Discord.WebSocket;
 using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Integrations.Images;
 using DiscordSky.Bot.Integrations.LinkUnfurling;
+using DiscordSky.Bot.Integrations.Safety;
 using DiscordSky.Bot.Memory;
 using DiscordSky.Bot.Memory.Logging;
 using DiscordSky.Bot.Models.Orchestration;
@@ -32,6 +33,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly int _reactionExcerptLength;
     private readonly ImageToolService? _imageToolService;
     private readonly ImageRewriter? _imageRewriter;
+    private readonly ScamGuardOptions _scamGuard;
+    private readonly ConcurrentDictionary<ulong, DateTimeOffset> _scamWarnCooldown = new();
     private readonly ConcurrentDictionary<ulong, (string Persona, DateTimeOffset CreatedAt)> _personaCache = new();
     private readonly ConcurrentDictionary<ulong, ChannelMessageBuffer> _channelBuffers = new();
     private readonly ConcurrentDictionary<ulong, SemaphoreSlim> _userMemoryLocks = new();
@@ -55,7 +58,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         IReactionSink? reactionSink = null,
         IOptions<ReactionOptions>? reactionOptions = null,
         ImageToolService? imageToolService = null,
-        ImageRewriter? imageRewriter = null)
+        ImageRewriter? imageRewriter = null,
+        IOptions<ScamGuardOptions>? scamGuardOptions = null)
     {
         _client = client;
         _options = options.Value;
@@ -72,6 +76,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _reactionExcerptLength = reactionOptions?.Value.ReplyExcerptLength ?? 200;
         _imageToolService = imageToolService;
         _imageRewriter = imageRewriter;
+        _scamGuard = scamGuardOptions?.Value ?? new ScamGuardOptions { Enabled = false };
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -288,6 +293,14 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         if (!_options.IsChannelAllowed(channelName))
         {
             _logger.LogDebug("Channel '{ChannelName}' is not allow-listed; ignoring message.", channelName ?? "<unknown>");
+            return;
+        }
+
+        // Proactive scam-link guard: if an obvious phishing/crypto-scam link lands here, bellow an in-character
+        // warning and stop. Runs regardless of whether the bot was addressed, and before memory extraction so a
+        // scam never gets remembered as something a user "said". Requested by a server admin (sleeper-mod duty).
+        if (_scamGuard.Enabled && await TryHandleScamLinkAsync(message))
+        {
             return;
         }
 
@@ -1505,6 +1518,64 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             _logger.LogDebug(ex, "Failed to edit image placeholder; falling back to a fresh message.");
             return false;
         }
+    }
+
+    /// <summary>
+    /// Detects an obvious scam/phishing link and, if found, replies once (per-channel cooldown) with an
+    /// in-character warning. Returns true when the message was handled as a scam so the caller stops normal
+    /// processing. Returning true even while on cooldown means raid spam is silently dropped, not echoed.
+    /// </summary>
+    private async Task<bool> TryHandleScamLinkAsync(SocketUserMessage message)
+    {
+        ScamDetection detection;
+        try
+        {
+            detection = ScamLinkDetector.Detect(
+                message.Content, message.MentionedEveryone,
+                _scamGuard.ExtraScamPhrases, _scamGuard.ExtraPhishingHosts);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Scam detection threw; treating message as clean.");
+            return false;
+        }
+
+        if (!detection.IsScam)
+        {
+            return false;
+        }
+
+        var channelId = message.Channel.Id;
+        var now = DateTimeOffset.UtcNow;
+        var cooldown = TimeSpan.FromSeconds(Math.Max(0, _scamGuard.CooldownSeconds));
+        if (_scamWarnCooldown.TryGetValue(channelId, out var last) && now - last < cooldown)
+        {
+            _logger.LogInformation(
+                "scam_suppressed channel={Channel} reason={Reason} (cooldown)", message.Channel.Name, detection.Reason);
+            return true;
+        }
+
+        _scamWarnCooldown[channelId] = now;
+
+        try
+        {
+            // Reply anchors the warning to the offending message but pings nobody, so the bot never amplifies a
+            // mass-mention raid or pesters a possibly-compromised friend.
+            var noPing = new AllowedMentions(AllowedMentionTypes.None) { MentionRepliedUser = false };
+            await message.Channel.SendMessageAsync(
+                ScamWarnings.Random(_randomProvider),
+                messageReference: new MessageReference(message.Id),
+                allowedMentions: noPing);
+            _logger.LogInformation(
+                "scam_warned channel={Channel} author={Author} reason={Reason}",
+                message.Channel.Name, message.Author.Id, detection.Reason);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to post scam warning in channel {Channel}", message.Channel.Name);
+        }
+
+        return true;
     }
 
     private string GetDefaultPersona()

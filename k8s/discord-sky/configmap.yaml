@@ -76,6 +76,9 @@ data:
   Image__AmbientChance: "0.25"
   Image__BaseDirectory: "/app/data/user_memories/images"
   Image__RetentionDays: "60"
+  # Scam-link guard: proactive in-character warnings on obvious phishing/crypto-scam links.
+  ScamGuard__Enabled: "true"
+  ScamGuard__CooldownSeconds: "45"
   # Recall-tool config (replaces implicit memory relevance gating).
   # See docs/recall_tool_design.md §3 and §4.2.
   MemoryRelevance__RecallTopK: "20"

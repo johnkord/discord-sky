@@ -27,6 +27,7 @@ builder.Services.Configure<TelemetryOptions>(builder.Configuration.GetSection(Te
 builder.Services.Configure<TranscriptOptions>(builder.Configuration.GetSection(TranscriptOptions.SectionName));
 builder.Services.Configure<ReactionOptions>(builder.Configuration.GetSection(ReactionOptions.SectionName));
 builder.Services.Configure<ImageOptions>(builder.Configuration.GetSection(ImageOptions.SectionName));
+builder.Services.Configure<ScamGuardOptions>(builder.Configuration.GetSection(ScamGuardOptions.SectionName));
 
 builder.Services.AddSingleton(_ => new DiscordSocketConfig
 {
