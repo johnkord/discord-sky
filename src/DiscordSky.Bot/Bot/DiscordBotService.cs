@@ -1427,11 +1427,15 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 return;
             }
 
-            // The commissioned tier (gpt-image-2/medium) can take ~70s; post an in-character placeholder the
-            // instant we commit to drawing so the wait reads as a bit, not a hang. See ops_analysis P1.
+            // The commissioned tier (gpt-image-2/medium) can take ~70s. Post a single in-character placeholder
+            // the instant we commit to drawing, then edit THAT SAME message in place once the render lands, so a
+            // commission is one message that transforms from "firing up" into the finished piece rather than a
+            // placeholder followed by a separate reply. See ops_analysis P1.
+            IUserMessage? placeholder = null;
             try
             {
-                await context.Channel.SendMessageAsync(ImagePlaceholders.Random(_randomProvider), messageReference: reference);
+                placeholder = await context.Channel.SendMessageAsync(
+                    ImagePlaceholders.Random(_randomProvider), messageReference: reference);
             }
             catch (Exception ex)
             {
@@ -1443,13 +1447,63 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
             if (!outcome.Generated || outcome.Bytes is null || outcome.FileName is null)
             {
-                await SendChunkedAsync(
-                    context.Channel, outcome.RefusalText ?? ImageRefusals.GenericRefusal, reference, persona);
+                // Turn the placeholder into the refusal so we never leave a dangling "firing up" line behind.
+                var refusal = outcome.RefusalText ?? ImageRefusals.GenericRefusal;
+                if (!await TryEditPlaceholderAsync(placeholder, refusal, persona))
+                {
+                    await SendChunkedAsync(context.Channel, refusal, reference, persona);
+                }
                 return;
             }
 
             var caption = string.IsNullOrWhiteSpace(rewrite.Caption) ? "Behold." : rewrite.Caption;
-            await SendChunkedAsync(context.Channel, caption, reference, persona, outcome.Bytes, outcome.FileName);
+            if (!await TryEditPlaceholderAsync(placeholder, caption, persona, outcome.Bytes, outcome.FileName))
+            {
+                // No placeholder to edit (its send failed) or Discord rejected the edit -> post a fresh message.
+                await SendChunkedAsync(context.Channel, caption, reference, persona, outcome.Bytes, outcome.FileName);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Edits an already-posted placeholder message in place. With image bytes it becomes the finished render
+    /// (caption plus attachment); without, it becomes plain text such as a refusal. Returns false when there is
+    /// no placeholder, the content is too long, or Discord rejects the edit, so the caller can fall back to a
+    /// fresh message. Persona is cached against the message so replies keep character continuity, mirroring the
+    /// SendFileAsync path.
+    /// </summary>
+    private async Task<bool> TryEditPlaceholderAsync(
+        IUserMessage? placeholder, string content, string persona,
+        byte[]? imageBytes = null, string? fileName = null)
+    {
+        if (placeholder is null || content.Length > DiscordMaxMessageLength)
+        {
+            return false;
+        }
+
+        try
+        {
+            if (imageBytes is { Length: > 0 } && !string.IsNullOrWhiteSpace(fileName))
+            {
+                using var stream = new MemoryStream(imageBytes);
+                await placeholder.ModifyAsync(m =>
+                {
+                    m.Content = content;
+                    m.Attachments = new[] { new FileAttachment(stream, fileName!) };
+                });
+            }
+            else
+            {
+                await placeholder.ModifyAsync(m => m.Content = content);
+            }
+
+            CachePersona(placeholder.Id, persona);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to edit image placeholder; falling back to a fresh message.");
+            return false;
         }
     }
 
