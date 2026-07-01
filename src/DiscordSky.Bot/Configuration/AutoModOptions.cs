@@ -54,4 +54,13 @@ public sealed class AutoModOptions
 
     /// <summary>Per-channel cooldown for block taunts, so a raid does not turn into a wall of Robotnik.</summary>
     public int TauntCooldownSeconds { get; init; } = 60;
+
+    /// <summary>
+    /// Whether to maintain a native MentionSpam rule with adaptive mention-raid protection ("{prefix}-mentions").
+    /// Blocks and alerts on messages that mention more than <see cref="MentionLimit"/> users/roles.
+    /// </summary>
+    public bool ProtectMentionRaids { get; init; } = false;
+
+    /// <summary>Per-message mention cap for the mention-raid rule (clamped 1 to 50).</summary>
+    public int MentionLimit { get; init; } = 5;
 }

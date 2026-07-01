@@ -108,6 +108,15 @@ data:
   AutoMod__ReactToActions: "true"
   AutoMod__TauntOnBlock: "true"
   AutoMod__TauntCooldownSeconds: "60"
+  AutoMod__ProtectMentionRaids: "true"
+  AutoMod__MentionLimit: "5"
+  # Member events: in-house mass-join raid detection + in-character greeting. DORMANT until the
+  # "Server Members Intent" is enabled in the Discord dev portal AND MemberEvents__Enabled is "true".
+  MemberEvents__Enabled: "false"
+  MemberEvents__GreetNewMembers: "true"
+  MemberEvents__AlertChannelName: "pepega-chat-supreme"
+  MemberEvents__JoinRaidWindowSeconds: "30"
+  MemberEvents__JoinRaidThreshold: "5"
   # Recall-tool config (replaces implicit memory relevance gating).
   # See docs/recall_tool_design.md §3 and §4.2.
   MemoryRelevance__RecallTopK: "20"

@@ -3,6 +3,7 @@ using Discord;
 using Discord.Commands;
 using Discord.WebSocket;
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Integrations;
 using DiscordSky.Bot.Integrations.Images;
 using DiscordSky.Bot.Integrations.LinkUnfurling;
 using DiscordSky.Bot.Integrations.Safety;
@@ -1655,15 +1656,19 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             var phrases = MergeLearned(_scamGuard.ExtraScamPhrases, _learnedScams?.Phrases);
             var hosts = MergeLearned(_scamGuard.ExtraPhishingHosts, _learnedScams?.Hosts);
 
+            // Include forwarded-message content: a forwarded scam link lives in a message snapshot, not Content,
+            // so scanning only Content would miss it entirely.
+            var scanText = message.TextWithForwarded();
+
             detection = ScamLinkDetector.Detect(
-                message.Content, message.MentionedEveryone, phrases, hosts,
+                scanText, message.MentionedEveryone, phrases, hosts,
                 _phishingDomains, _scamGuard.TreatShortenersAsSignal, senderIsBot, senderIsNewAccount);
 
             // Behavioral raid signal: even if the content looks clean, the same link sprayed across channels or
             // repeated quickly is a raid. Only link-bearing messages are tracked.
             if (!detection.IsScam)
             {
-                var keys = DomainUtilities.ExtractLinkKeys(message.Content);
+                var keys = DomainUtilities.ExtractLinkKeys(scanText);
                 if (keys.Count > 0)
                 {
                     var fingerprint = string.Join(",", keys.OrderBy(k => k, StringComparer.Ordinal));

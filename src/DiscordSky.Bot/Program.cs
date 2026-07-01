@@ -4,6 +4,7 @@ using DiscordSky.Bot.Bot;
 using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Integrations.Images;
 using DiscordSky.Bot.Integrations.LinkUnfurling;
+using DiscordSky.Bot.Integrations.Members;
 using DiscordSky.Bot.Integrations.Safety;
 using DiscordSky.Bot.Memory;
 using DiscordSky.Bot.Memory.Logging;
@@ -56,9 +57,24 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<AutoModSyncService
 builder.Services.AddSingleton<AutoModActionResponder>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AutoModActionResponder>());
 
+// Member events: in-house mass-join raid detection + an in-character greeting. Off by default.
+builder.Services.Configure<MemberEventsOptions>(builder.Configuration.GetSection(MemberEventsOptions.SectionName));
+builder.Services.AddSingleton<JoinRaidTracker>();
+builder.Services.AddSingleton<MemberJoinService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<MemberJoinService>());
+
+// GuildMembers is a PRIVILEGED intent (needs "Server Members Intent" in the dev portal). Request it ONLY when
+// member events are enabled, so a default deploy needs no portal change and cannot fail to connect.
+var memberEventsEnabled = builder.Configuration.GetValue<bool>($"{MemberEventsOptions.SectionName}:Enabled");
+var gatewayIntents = GatewayIntents.Guilds | GatewayIntents.GuildMessages | GatewayIntents.MessageContent | GatewayIntents.DirectMessages | GatewayIntents.GuildMessageReactions | GatewayIntents.AutoModerationActionExecution;
+if (memberEventsEnabled)
+{
+	gatewayIntents |= GatewayIntents.GuildMembers;
+}
+
 builder.Services.AddSingleton(_ => new DiscordSocketConfig
 {
-	GatewayIntents = GatewayIntents.Guilds | GatewayIntents.GuildMessages | GatewayIntents.MessageContent | GatewayIntents.DirectMessages | GatewayIntents.GuildMessageReactions | GatewayIntents.AutoModerationActionExecution,
+	GatewayIntents = gatewayIntents,
 	LogLevel = LogSeverity.Info,
 	AlwaysDownloadUsers = false,
 	MessageCacheSize = 100

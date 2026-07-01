@@ -161,6 +161,25 @@ public sealed class AutoModSyncService : IHostedService, IDisposable
             }
         }
 
+        // Mention-raid tier: native MentionSpam trigger with adaptive raid protection. Blocks messages that ping
+        // more than MentionLimit users/roles, which on a small server is unambiguous spam.
+        if (_options.ProtectMentionRaids)
+        {
+            var mentionsName = _options.RuleNamePrefix + "-mentions";
+            var mentionActions = new List<AutoModRuleActionProperties>
+            {
+                new() { Type = AutoModActionType.BlockMessage, CustomMessage = Truncate(_options.BlockMessageText, 50) },
+            };
+            if (alertChannelId is not null)
+            {
+                mentionActions.Insert(0, new AutoModRuleActionProperties { Type = AutoModActionType.SendAlertMessage, ChannelId = alertChannelId });
+            }
+            if (await ApplyMentionRuleAsync(guild, Find(mentionsName), mentionsName, mentionActions, exemptChannelIds))
+            {
+                keep.Add(mentionsName);
+            }
+        }
+
         // Cleanup: delete any rule we previously created under this prefix that we are no longer keeping
         // (the old single "sky-scamguard" rule, or a tier that got disabled/emptied).
         foreach (var rule in rules)
@@ -215,6 +234,55 @@ public sealed class AutoModSyncService : IHostedService, IDisposable
             _logger.LogInformation(
                 "automod_synced action=updated guild={Guild} rule={Rule} tier={Tier} keywords={Keywords} regex={Regex} block={Block}",
                 guild.Name, ruleName, tier, plan.Keywords.Count, plan.RegexPatterns.Count, blocks);
+        }
+
+        return true;
+    }
+
+    private async Task<bool> ApplyMentionRuleAsync(
+        SocketGuild guild, IAutoModRule? existing, string ruleName,
+        List<AutoModRuleActionProperties> actions, ulong[] exemptChannelIds)
+    {
+        if (actions.Count == 0)
+        {
+            return false;
+        }
+
+        var limit = Math.Clamp(_options.MentionLimit, 1, 50);
+        void Apply(AutoModRuleProperties props)
+        {
+            props.Name = ruleName;
+            props.TriggerType = AutoModTriggerType.MentionSpam;
+            props.EventType = AutoModEventType.MessageSend;
+            props.MentionLimit = limit;
+            props.MentionRaidProtectionEnabled = true;
+            props.Actions = actions.ToArray();
+            props.Enabled = true;
+            if (exemptChannelIds.Length > 0)
+            {
+                props.ExemptChannels = exemptChannelIds;
+            }
+        }
+
+        try
+        {
+            if (existing is null)
+            {
+                await guild.CreateAutoModRuleAsync(Apply);
+                _logger.LogInformation("automod_synced action=created guild={Guild} rule={Rule} tier=mentions limit={Limit} raidProtection=True", guild.Name, ruleName, limit);
+            }
+            else
+            {
+                await existing.ModifyAsync(Apply);
+                _logger.LogInformation("automod_synced action=updated guild={Guild} rule={Rule} tier=mentions limit={Limit} raidProtection=True", guild.Name, ruleName, limit);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Discord allows only one MentionSpam rule per guild; if one already exists (e.g. hand-made), our
+            // create fails. Fail-open: log and leave the mention tier unmanaged rather than breaking the sync.
+            _logger.LogWarning(ex, "AutoMod mention-raid rule apply failed in {Guild} (a MentionSpam rule may already exist).", guild.Name);
+            return false;
         }
 
         return true;

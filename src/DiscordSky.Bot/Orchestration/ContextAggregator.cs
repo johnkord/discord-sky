@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using Discord;
 using Discord.Commands;
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Integrations;
 using DiscordSky.Bot.Integrations.LinkUnfurling;
 using DiscordSky.Bot.Models.Orchestration;
 using Microsoft.Extensions.Logging;
@@ -95,7 +96,7 @@ public sealed class ContextAggregator
                         continue;
                     }
 
-                    var content = message.Content ?? string.Empty;
+                    var content = message.TextWithForwarded();
                     var trimmed = content.Trim();
                     IReadOnlyList<ChannelImage> images = Array.Empty<ChannelImage>();
 
@@ -128,7 +129,7 @@ public sealed class ContextAggregator
                     {
                         MessageId = message.Id,
                         Author = message.Author.Username,
-                        Content = message.Content ?? string.Empty,
+                        Content = content,
                         Timestamp = message.Timestamp,
                         IsBot = message.Author.IsBot,
                         Images = images,
