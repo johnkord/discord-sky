@@ -60,7 +60,7 @@ var rewriter = new ImageRewriter(
 
 Console.WriteLine($"Rewriting (chat model={chatModel}): \"{request}\"");
 var rwSw = Stopwatch.StartNew();
-var rewrite = await rewriter.RewriteAsync(persona, request, "smoke-tester", memories: null, CancellationToken.None);
+var rewrite = await rewriter.RewriteAsync(persona, request, "smoke-tester", memories: null, replyContext: null, CancellationToken.None);
 rwSw.Stop();
 
 Console.WriteLine($"Rewrite in {rwSw.ElapsedMilliseconds} ms: refuse={rewrite.Refuse}");

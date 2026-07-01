@@ -544,6 +544,53 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         return stripped.Trim();
     }
 
+    /// <summary>
+    /// Fetches the message a request is replying to (if any) and formats it as grounding context, so an image
+    /// request like "draw this" can resolve "this" to the referenced content. Returns null when not a reply or
+    /// the referent has no usable text. I/O; formatting is delegated to the pure <see cref="FormatReferencedContext"/>.
+    /// </summary>
+    private async Task<string?> TryGetReferencedContextAsync(SocketUserMessage message)
+    {
+        if (message.Reference?.MessageId.IsSpecified != true)
+        {
+            return null;
+        }
+
+        try
+        {
+            var referenced = message.ReferencedMessage
+                ?? await message.Channel.GetMessageAsync(message.Reference.MessageId.Value);
+            return FormatReferencedContext(referenced?.Author?.Username, referenced?.Content);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to fetch referenced message for image context.");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Formats a referenced message as a compact "author: content" grounding string, bounded in length so it
+    /// stays a recognizable referent rather than a second essay. Returns null for empty content. Pure for tests.
+    /// </summary>
+    internal static string? FormatReferencedContext(string? author, string? content)
+    {
+        var text = content?.Trim();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        const int maxLength = 500;
+        if (text.Length > maxLength)
+        {
+            text = text[..maxLength];
+        }
+
+        var who = string.IsNullOrWhiteSpace(author) ? "someone" : author.Trim();
+        return $"{who}: {text}";
+    }
+
     private async Task HandlePersonaAsync(SocketCommandContext context, string content, SocketUserMessage message, CreativeInvocationKind invocationKind)
     {
         var prefix = _options.CommandPrefix;
@@ -1494,8 +1541,13 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                     context.User.Id, _memoryRelevanceMonitor, _shutdownCts.Token);
             }
 
+            // If this is a reply, the replied-to message is the referent for deictic words like "this"/"that",
+            // which the rewriter otherwise never sees (it only gets the literal request). Fetch it and pass it
+            // as untrusted grounding context (reference-resolution-by-description; the rewriter data-marks it).
+            var replyContext = await TryGetReferencedContextAsync(message);
+
             var rewrite = await _imageRewriter.RewriteAsync(
-                persona, request, GetDisplayName(context.User), userMemories, _shutdownCts.Token);
+                persona, request, GetDisplayName(context.User), userMemories, replyContext, _shutdownCts.Token);
 
             if (rewrite.Refuse || string.IsNullOrWhiteSpace(rewrite.ImagePrompt))
             {
