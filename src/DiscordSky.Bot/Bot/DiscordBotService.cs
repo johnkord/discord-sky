@@ -419,9 +419,13 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         // A direct @mention (ping) of the bot is an explicit address, so guarantee a reply instead of leaving
         // it to the ambient dice (a bare ping used to only get a 2.5x ambient nudge and often whiffed). A loose
         // name-drop is not a ping and stays on the ambient path below. Toggle via Bot:RespondToDirectMention.
-        if (ShouldReplyToDirectMention(_options.RespondToDirectMention, _client.CurrentUser?.Id, message.MentionedUsers.Select(u => u.Id)))
+        var botUserId = _client.CurrentUser?.Id;
+        if (ShouldReplyToDirectMention(_options.RespondToDirectMention, botUserId, message.MentionedUsers.Select(u => u.Id)))
         {
-            await HandlePersonaAsync(context, _options.CommandPrefix + " " + content, message, CreativeInvocationKind.Mention);
+            // Drop the bot's own mention token so the model gets a clean topic ("say hi", not "<@123> say hi").
+            // A bare ping strips to an empty topic, which routes to free improvisation.
+            var topic = StripBotMention(content, botUserId!.Value);
+            await HandlePersonaAsync(context, _options.CommandPrefix + " " + topic, message, CreativeInvocationKind.Mention);
             return;
         }
 
@@ -515,6 +519,30 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     /// </summary>
     internal static bool ShouldReplyToDirectMention(bool enabled, ulong? botUserId, IEnumerable<ulong> mentionedUserIds)
         => enabled && botUserId.HasValue && mentionedUserIds.Contains(botUserId.Value);
+
+    /// <summary>
+    /// Removes the bot's own @mention token (<c>&lt;@id&gt;</c> or the nickname form <c>&lt;@!id&gt;</c>) from a
+    /// message so a direct ping yields a clean topic. Collapses the extra spaces the removal leaves behind while
+    /// keeping newlines, and leaves other users' mention tokens untouched. Pure for testability.
+    /// </summary>
+    internal static string StripBotMention(string content, ulong botUserId)
+    {
+        if (string.IsNullOrEmpty(content))
+        {
+            return string.Empty;
+        }
+
+        var stripped = content
+            .Replace($"<@{botUserId}>", string.Empty)
+            .Replace($"<@!{botUserId}>", string.Empty);
+
+        while (stripped.Contains("  "))
+        {
+            stripped = stripped.Replace("  ", " ");
+        }
+
+        return stripped.Trim();
+    }
 
     private async Task HandlePersonaAsync(SocketCommandContext context, string content, SocketUserMessage message, CreativeInvocationKind invocationKind)
     {

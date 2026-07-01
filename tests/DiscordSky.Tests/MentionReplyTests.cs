@@ -58,6 +58,36 @@ public class MentionReplyTests
         Assert.NotEqual(ambient.LengthDirective, mention.LengthDirective);
     }
 
+    [Theory]
+    [InlineData("<@123> say hi", "say hi")]
+    [InlineData("say <@123> hi", "say hi")]
+    [InlineData("hi <@123>", "hi")]
+    [InlineData("<@!123> nickname form", "nickname form")]
+    [InlineData("<@123>", "")]
+    [InlineData("no token here", "no token here")]
+    public void StripBotMention_removes_the_bot_token_and_tidies_spacing(string input, string expected)
+    {
+        Assert.Equal(expected, DiscordBotService.StripBotMention(input, 123UL));
+    }
+
+    [Fact]
+    public void StripBotMention_leaves_other_users_tokens_intact()
+    {
+        Assert.Equal("<@999> hey", DiscordBotService.StripBotMention("<@999> <@123> hey", 123UL));
+    }
+
+    [Fact]
+    public void StripBotMention_preserves_newlines()
+    {
+        Assert.Equal("line1\nline2", DiscordBotService.StripBotMention("<@123> line1\nline2", 123UL));
+    }
+
+    [Fact]
+    public void StripBotMention_handles_empty()
+    {
+        Assert.Equal(string.Empty, DiscordBotService.StripBotMention("", 123UL));
+    }
+
     private sealed class FixedRng : IRandomProvider
     {
         private readonly double _value;
