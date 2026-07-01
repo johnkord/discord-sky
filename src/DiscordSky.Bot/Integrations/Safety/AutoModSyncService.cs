@@ -70,25 +70,11 @@ public sealed class AutoModSyncService : IHostedService, IDisposable
 
         try
         {
-            var plan = AutoModRuleBuilder.Build(
-                ScamLinkDetector.BuiltInScamPhrases,
-                ScamLinkDetector.BuiltInLookalikePattern,
-                _learned?.Phrases ?? Array.Empty<string>(),
-                _learned?.Hosts ?? Array.Empty<string>(),
-                _options.IncludePhrases,
-                _options.IncludeLookalikeRegex);
-
-            if (plan.Keywords.Count == 0 && plan.RegexPatterns.Count == 0)
-            {
-                _logger.LogWarning("AutoMod sync: nothing to sync (phrases and regex both empty/disabled).");
-                return;
-            }
-
             foreach (var guild in _client.Guilds)
             {
                 try
                 {
-                    await ReconcileGuildAsync(guild, plan);
+                    await ReconcileGuildAsync(guild);
                 }
                 catch (Exception ex)
                 {
@@ -106,7 +92,7 @@ public sealed class AutoModSyncService : IHostedService, IDisposable
         }
     }
 
-    private async Task ReconcileGuildAsync(SocketGuild guild, AutoModRulePlan plan)
+    private async Task ReconcileGuildAsync(SocketGuild guild)
     {
         if (_options.GuildAllowList.Count > 0
             && !_options.GuildAllowList.Any(g => string.Equals(g, guild.Name, StringComparison.OrdinalIgnoreCase)))
@@ -120,15 +106,6 @@ public sealed class AutoModSyncService : IHostedService, IDisposable
             return;
         }
 
-        var actions = BuildActions(guild);
-        if (actions.Count == 0)
-        {
-            _logger.LogWarning(
-                "AutoMod sync: no actions resolvable for {Guild} (alert channel '{Channel}' not found and blocking off); skipping.",
-                guild.Name, _options.AlertChannelName);
-            return;
-        }
-
         var exemptChannelIds = _options.ExemptChannelNames.Count == 0
             ? Array.Empty<ulong>()
             : guild.TextChannels
@@ -136,9 +113,81 @@ public sealed class AutoModSyncService : IHostedService, IDisposable
                 .Select(c => c.Id)
                 .ToArray();
 
+        ulong? alertChannelId = null;
+        if (!string.IsNullOrWhiteSpace(_options.AlertChannelName))
+        {
+            alertChannelId = guild.TextChannels
+                .FirstOrDefault(c => string.Equals(c.Name, _options.AlertChannelName, StringComparison.OrdinalIgnoreCase))?.Id;
+        }
+
+        var rules = (await guild.GetAutoModRulesAsync()).Cast<IAutoModRule>().ToList();
+        IAutoModRule? Find(string name) =>
+            rules.FirstOrDefault(r => string.Equals(r.Name, name, StringComparison.OrdinalIgnoreCase)
+                && r.CreatorId == _client.CurrentUser.Id);
+
+        var blockName = _options.RuleNamePrefix + "-block";
+        var alertName = _options.RuleNamePrefix + "-alert";
+        var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Block tier: lookalike domains + moderator-reported hosts. High precision, evasion-resistant -> block.
+        var blockPlan = AutoModRuleBuilder.BuildBlockPlan(
+            ScamLinkDetector.BuiltInLookalikePattern, _learned?.Hosts ?? Array.Empty<string>());
+        var blockActions = new List<AutoModRuleActionProperties>();
+        if (alertChannelId is not null)
+        {
+            blockActions.Add(new AutoModRuleActionProperties { Type = AutoModActionType.SendAlertMessage, ChannelId = alertChannelId });
+        }
+        if (_options.BlockLookalikes)
+        {
+            blockActions.Add(new AutoModRuleActionProperties { Type = AutoModActionType.BlockMessage, CustomMessage = Truncate(_options.BlockMessageText, 150) });
+        }
+        if (await ApplyRuleAsync(guild, Find(blockName), blockName, blockPlan, blockActions, exemptChannelIds, "block"))
+        {
+            keep.Add(blockName);
+        }
+
+        // Alert tier: scam phrases. FP-prone and easily mutated -> alert only (needs an alert channel).
+        if (_options.AlertPhrases && alertChannelId is not null)
+        {
+            var alertPlan = AutoModRuleBuilder.BuildAlertPlan(
+                ScamLinkDetector.BuiltInScamPhrases, _learned?.Phrases ?? Array.Empty<string>());
+            var alertActions = new List<AutoModRuleActionProperties>
+            {
+                new() { Type = AutoModActionType.SendAlertMessage, ChannelId = alertChannelId },
+            };
+            if (await ApplyRuleAsync(guild, Find(alertName), alertName, alertPlan, alertActions, exemptChannelIds, "alert"))
+            {
+                keep.Add(alertName);
+            }
+        }
+
+        // Cleanup: delete any rule we previously created under this prefix that we are no longer keeping
+        // (the old single "sky-scamguard" rule, or a tier that got disabled/emptied).
+        foreach (var rule in rules)
+        {
+            if (rule.CreatorId == _client.CurrentUser.Id
+                && rule.Name.StartsWith(_options.RuleNamePrefix, StringComparison.OrdinalIgnoreCase)
+                && !keep.Contains(rule.Name))
+            {
+                await rule.DeleteAsync();
+                _logger.LogInformation("automod_synced action=deleted guild={Guild} rule={Rule}", guild.Name, rule.Name);
+            }
+        }
+    }
+
+    private async Task<bool> ApplyRuleAsync(
+        SocketGuild guild, IAutoModRule? existing, string ruleName,
+        AutoModRulePlan plan, List<AutoModRuleActionProperties> actions, ulong[] exemptChannelIds, string tier)
+    {
+        var hasContent = plan.Keywords.Count > 0 || plan.RegexPatterns.Count > 0;
+        if (!hasContent || actions.Count == 0)
+        {
+            return false;
+        }
+
         void Apply(AutoModRuleProperties props)
         {
-            props.Name = _options.RuleName;
+            props.Name = ruleName;
             props.TriggerType = AutoModTriggerType.Keyword;
             props.EventType = AutoModEventType.MessageSend;
             props.KeywordFilter = plan.Keywords.ToArray();
@@ -152,55 +201,23 @@ public sealed class AutoModSyncService : IHostedService, IDisposable
             }
         }
 
-        var rules = await guild.GetAutoModRulesAsync();
-        var existing = rules.Cast<IAutoModRule>().FirstOrDefault(r =>
-            string.Equals(r.Name, _options.RuleName, StringComparison.OrdinalIgnoreCase)
-            && r.CreatorId == _client.CurrentUser.Id);
-
+        var blocks = actions.Any(a => a.Type == AutoModActionType.BlockMessage);
         if (existing is null)
         {
             await guild.CreateAutoModRuleAsync(Apply);
             _logger.LogInformation(
-                "automod_synced action=created guild={Guild} rule={Rule} keywords={Keywords} regex={Regex} block={Block}",
-                guild.Name, _options.RuleName, plan.Keywords.Count, plan.RegexPatterns.Count, _options.BlockMessages);
+                "automod_synced action=created guild={Guild} rule={Rule} tier={Tier} keywords={Keywords} regex={Regex} block={Block}",
+                guild.Name, ruleName, tier, plan.Keywords.Count, plan.RegexPatterns.Count, blocks);
         }
         else
         {
             await existing.ModifyAsync(Apply);
             _logger.LogInformation(
-                "automod_synced action=updated guild={Guild} rule={Rule} keywords={Keywords} regex={Regex} block={Block}",
-                guild.Name, _options.RuleName, plan.Keywords.Count, plan.RegexPatterns.Count, _options.BlockMessages);
-        }
-    }
-
-    private List<AutoModRuleActionProperties> BuildActions(SocketGuild guild)
-    {
-        var actions = new List<AutoModRuleActionProperties>();
-
-        if (!string.IsNullOrWhiteSpace(_options.AlertChannelName))
-        {
-            var alertChannel = guild.TextChannels.FirstOrDefault(
-                c => string.Equals(c.Name, _options.AlertChannelName, StringComparison.OrdinalIgnoreCase));
-            if (alertChannel is not null)
-            {
-                actions.Add(new AutoModRuleActionProperties
-                {
-                    Type = AutoModActionType.SendAlertMessage,
-                    ChannelId = alertChannel.Id,
-                });
-            }
+                "automod_synced action=updated guild={Guild} rule={Rule} tier={Tier} keywords={Keywords} regex={Regex} block={Block}",
+                guild.Name, ruleName, tier, plan.Keywords.Count, plan.RegexPatterns.Count, blocks);
         }
 
-        if (_options.BlockMessages)
-        {
-            actions.Add(new AutoModRuleActionProperties
-            {
-                Type = AutoModActionType.BlockMessage,
-                CustomMessage = Truncate(_options.BlockMessageText, 150),
-            });
-        }
-
-        return actions;
+        return true;
     }
 
     private static string Truncate(string value, int max) =>

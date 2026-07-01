@@ -20,22 +20,42 @@ public static class AutoModRuleBuilder
     private const int MaxKeywords = 1000;       // Discord: <= 1000 keywords
     private const int MaxRegexLength = 260;     // Discord: each regex pattern <= 260 chars
 
-    public static AutoModRulePlan Build(
-        IReadOnlyList<string> builtInPhrases,
-        string lookalikePattern,
-        IReadOnlyCollection<string> learnedPhrases,
-        IReadOnlyCollection<string> learnedHosts,
-        bool includePhrases,
-        bool includeLookalikeRegex)
+    // Block tier: the lookalike-domain regex plus moderator-reported bad hosts. High precision and hard to
+    // mutate without breaking the fake domain, so it is safe to block.
+    public static AutoModRulePlan BuildBlockPlan(string lookalikePattern, IReadOnlyCollection<string> learnedHosts)
+    {
+        var regexPatterns = new List<string>();
+        if (!string.IsNullOrWhiteSpace(lookalikePattern))
+        {
+            var pattern = "(?i)" + lookalikePattern; // case-insensitive for Discord's Rust regex engine
+            if (pattern.Length <= MaxRegexLength)
+            {
+                regexPatterns.Add(pattern);
+            }
+        }
+
+        return new AutoModRulePlan(WrapKeywords(learnedHosts), regexPatterns, Array.Empty<string>());
+    }
+
+    // Alert tier: scam phrases (built-in + learned). AutoMod cannot require a link and phrases are easily
+    // mutated, so these alert rather than block.
+    public static AutoModRulePlan BuildAlertPlan(
+        IReadOnlyList<string> builtInPhrases, IReadOnlyCollection<string> learnedPhrases)
+    {
+        var all = new List<string>(builtInPhrases);
+        all.AddRange(learnedPhrases);
+        return new AutoModRulePlan(WrapKeywords(all), Array.Empty<string>(), Array.Empty<string>());
+    }
+
+    private static IReadOnlyList<string> WrapKeywords(IEnumerable<string> values)
     {
         var keywords = new List<string>();
-
-        void AddKeyword(string? value)
+        foreach (var value in values)
         {
             var trimmed = value?.Trim().ToLowerInvariant();
             if (string.IsNullOrWhiteSpace(trimmed) || keywords.Count >= MaxKeywords)
             {
-                return;
+                continue;
             }
 
             // "*keyword*" matches anywhere, mirroring our detector's Contains() semantics.
@@ -46,34 +66,6 @@ public static class AutoModRuleBuilder
             }
         }
 
-        if (includePhrases)
-        {
-            foreach (var phrase in builtInPhrases)
-            {
-                AddKeyword(phrase);
-            }
-            foreach (var phrase in learnedPhrases)
-            {
-                AddKeyword(phrase);
-            }
-        }
-
-        // Learned hosts are always useful as keywords: a known-bad domain substring matches inside a URL.
-        foreach (var host in learnedHosts)
-        {
-            AddKeyword(host);
-        }
-
-        var regexPatterns = new List<string>();
-        if (includeLookalikeRegex && !string.IsNullOrWhiteSpace(lookalikePattern))
-        {
-            var pattern = "(?i)" + lookalikePattern; // case-insensitive for Discord's Rust regex engine
-            if (pattern.Length <= MaxRegexLength)
-            {
-                regexPatterns.Add(pattern);
-            }
-        }
-
-        return new AutoModRulePlan(keywords, regexPatterns, Array.Empty<string>());
+        return keywords;
     }
 }

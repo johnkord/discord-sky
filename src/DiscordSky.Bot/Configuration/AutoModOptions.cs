@@ -12,27 +12,29 @@ public sealed class AutoModOptions
     /// <summary>Whether to create/maintain the AutoMod rule at all.</summary>
     public bool Enabled { get; init; } = false;
 
-    /// <summary>Name of the rule we own. We only ever touch a rule with this name that we created.</summary>
-    public string RuleName { get; init; } = "sky-scamguard";
+    /// <summary>Prefix for the rules we own; we maintain "{prefix}-block" and "{prefix}-alert".</summary>
+    public string RuleNamePrefix { get; init; } = "sky-scamguard";
 
-    /// <summary>When true the rule blocks the message; when false it only alerts (start here, then graduate).</summary>
-    public bool BlockMessages { get; init; } = false;
+    /// <summary>
+    /// Whether the block-tier rule (lookalike domains + moderator-reported hosts) actually blocks. When false it
+    /// only alerts, which is a safe way to preview the block tier.
+    /// </summary>
+    public bool BlockLookalikes { get; init; } = true;
 
-    /// <summary>Channel name AutoMod posts its native alerts to. Empty and not blocking means the rule is skipped.</summary>
+    /// <summary>
+    /// Whether to maintain the alert-tier rule (scam phrases). Phrases cannot require a link in AutoMod and are
+    /// easily mutated, so they alert rather than block; disable to drop them entirely.
+    /// </summary>
+    public bool AlertPhrases { get; init; } = true;
+
+    /// <summary>Channel name AutoMod posts its native alerts to.</summary>
     public string AlertChannelName { get; init; } = string.Empty;
 
     /// <summary>Guild names to manage. Empty means every guild where the bot has Manage Server.</summary>
     public List<string> GuildAllowList { get; init; } = new();
 
-    /// <summary>Channel names exempt from the rule (e.g. a scam-testing channel).</summary>
+    /// <summary>Channel names exempt from the rules (e.g. the mod channel, so scam discussion does not self-trigger).</summary>
     public List<string> ExemptChannelNames { get; init; } = new();
-
-    /// <summary>Include ScamGuard's scam phrases as keywords. AutoMod cannot require a link, so these can fire on
-    /// link-less chatter; disable if the alert channel gets noisy and rely on the lookalike regex.</summary>
-    public bool IncludePhrases { get; init; } = true;
-
-    /// <summary>Include the lookalike-host fragments as a regex pattern (near-zero false positives).</summary>
-    public bool IncludeLookalikeRegex { get; init; } = true;
 
     /// <summary>Message shown to a user when their message is blocked (only used when BlockMessages is true).</summary>
     public string BlockMessageText { get; init; } = "Halted by the Eggman Empire's anti-thievery perimeter.";
