@@ -8,6 +8,12 @@ public sealed class BotOptions
     public string Status { get; init; } = "SnooPING AS usual";
     public List<string> AllowedChannelNames { get; init; } = new();
     public string CommandPrefix { get; init; } = "!sky";
+
+    /// <summary>
+    /// Whether a direct @mention (ping) of the bot guarantees a reply. A bare ping otherwise only nudges the
+    /// ambient chance and often does not fire. A loose name-drop is not a ping and stays on the ambient path.
+    /// </summary>
+    public bool RespondToDirectMention { get; init; } = true;
     public int HistoryMessageLimit { get; init; } = 20;
     public string DefaultPersona { get; init; } = "Weird Al";
     public bool AllowImageContext { get; init; } = true;

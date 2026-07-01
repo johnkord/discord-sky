@@ -8,6 +8,7 @@ data:
   ASPNETCORE_URLS: "http://+:8080"
   Bot__Status: "SnooPING AS usual"
   Bot__CommandPrefix: "!sky"
+  Bot__RespondToDirectMention: "true"
   Bot__HistoryMessageLimit: "20"
   Bot__MemoryDataPath: "/app/data/user_memories"
   Bot__EnableUserMemory: "true"

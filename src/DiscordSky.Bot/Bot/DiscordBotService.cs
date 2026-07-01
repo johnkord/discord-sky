@@ -416,6 +416,15 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             }
         }
 
+        // A direct @mention (ping) of the bot is an explicit address, so guarantee a reply instead of leaving
+        // it to the ambient dice (a bare ping used to only get a 2.5x ambient nudge and often whiffed). A loose
+        // name-drop is not a ping and stays on the ambient path below. Toggle via Bot:RespondToDirectMention.
+        if (ShouldReplyToDirectMention(_options.RespondToDirectMention, _client.CurrentUser?.Id, message.MentionedUsers.Select(u => u.Id)))
+        {
+            await HandlePersonaAsync(context, _options.CommandPrefix + " " + content, message, CreativeInvocationKind.Mention);
+            return;
+        }
+
         // Ambient reply chance — modulated by context so the bot interjects at better moments and
         // does not dominate a channel. See docs/improvement_opportunities_2026-06-10.md F7.
         var chaosSettings = _chaosSettingsMonitor.CurrentValue;
@@ -499,6 +508,14 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             && content.Contains(name, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// True when a message is a direct @mention (ping) of the bot and direct-mention replies are enabled.
+    /// A loose name-drop is deliberately excluded (that stays on the ambient path); only an actual ping,
+    /// where the bot's user id is among the message's mentioned users, guarantees a reply. Pure for tests.
+    /// </summary>
+    internal static bool ShouldReplyToDirectMention(bool enabled, ulong? botUserId, IEnumerable<ulong> mentionedUserIds)
+        => enabled && botUserId.HasValue && mentionedUserIds.Contains(botUserId.Value);
+
     private async Task HandlePersonaAsync(SocketCommandContext context, string content, SocketUserMessage message, CreativeInvocationKind invocationKind)
     {
         var prefix = _options.CommandPrefix;
@@ -528,7 +545,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
         // For ambient replies, always use the default persona — the user doesn't know
         // they triggered an ambient reply, so parsing persona syntax would be misleading.
-        if (invocationKind == CreativeInvocationKind.Ambient)
+        if (invocationKind is CreativeInvocationKind.Ambient or CreativeInvocationKind.Mention)
         {
             persona = defaultPersona;
             remainder = payload;

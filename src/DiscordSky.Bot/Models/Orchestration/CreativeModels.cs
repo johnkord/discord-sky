@@ -4,7 +4,8 @@ public enum CreativeInvocationKind
 {
     Command,
     Ambient,
-    DirectReply
+    DirectReply,
+    Mention
 }
 
 public sealed record CreativeRequest(
