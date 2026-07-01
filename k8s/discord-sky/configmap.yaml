@@ -94,6 +94,14 @@ data:
   ScamGuard__PhishingFeedRefreshMinutes: "15"
   ScamGuard__PhishingFeedIdentity: "discord-sky-bot (private friend server)"
   ScamGuard__PhishingFeedCachePath: "/app/data/user_memories/phishing_domains.json"
+  # AutoMod sync: native Discord AutoMod rule seeded from ScamGuard lists (proactive, all senders). Alert-only.
+  AutoMod__Enabled: "true"
+  AutoMod__RuleName: "sky-scamguard"
+  AutoMod__BlockMessages: "false"
+  AutoMod__AlertChannelName: "pepega-chat-supreme"
+  AutoMod__IncludePhrases: "true"
+  AutoMod__IncludeLookalikeRegex: "true"
+  AutoMod__GuildAllowList__0: "Flavorful Feral's Funhouse"
   # Recall-tool config (replaces implicit memory relevance gating).
   # See docs/recall_tool_design.md §3 and §4.2.
   MemoryRelevance__RecallTopK: "20"

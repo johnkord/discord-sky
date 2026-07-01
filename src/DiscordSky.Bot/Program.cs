@@ -48,6 +48,10 @@ else
 builder.Services.AddSingleton<RaidTracker>();
 builder.Services.AddSingleton<LearnedScamStore>();
 
+builder.Services.Configure<AutoModOptions>(builder.Configuration.GetSection(AutoModOptions.SectionName));
+builder.Services.AddSingleton<AutoModSyncService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AutoModSyncService>());
+
 builder.Services.AddSingleton(_ => new DiscordSocketConfig
 {
 	GatewayIntents = GatewayIntents.Guilds | GatewayIntents.GuildMessages | GatewayIntents.MessageContent | GatewayIntents.DirectMessages | GatewayIntents.GuildMessageReactions,

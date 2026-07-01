@@ -28,11 +28,24 @@ public static class ScamLinkDetector
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     // Lookalike / fake hosts. Every fragment below is something a legitimate Discord/Steam/crypto domain never
-    // contains, so matching one is essentially proof of phishing (near-zero false-positive rate).
+    // contains, so matching one is essentially proof of phishing (near-zero false-positive rate). Kept as a
+    // list so the AutoMod sync can reuse the exact same fragments as a native regex rule (one source of truth).
+    private static readonly string[] LookalikeFragments =
+    {
+        "dlscord", "disc0rd", "discordgift", "discord-gift", "discord-nitro", "nitro-discord",
+        "free-?nitro", @"discordapp\.(?:gift|click|info|ru)",
+        "steamcommunlty", "steamcomunity", "steamnitro", "steam-gift", "steamgift",
+    };
+
     private static readonly Regex PhishingHostRegex = new(
-        @"dlscord|disc0rd|discordgift|discord-gift|discord-nitro|nitro-discord|free-?nitro|discordapp\.(?:gift|click|info|ru)|" +
-        @"steamcommunlty|steamcomunity|steamnitro|steam-gift|steamgift",
+        string.Join("|", LookalikeFragments),
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>Built-in scam phrases, exposed so the AutoMod rule can mirror them (one source of truth).</summary>
+    public static IReadOnlyList<string> BuiltInScamPhrases => ScamPhrases;
+
+    /// <summary>Lookalike-host fragments as a single alternation, for the AutoMod regex pattern.</summary>
+    public static string BuiltInLookalikePattern => string.Join("|", LookalikeFragments);
 
     // Phrases that, paired with a link, are overwhelmingly scams in casual chat. Deliberately excludes terms
     // that ride along with legitimate shares (e.g. "mrbeast", "elon musk", "casino", "gift card") to avoid
