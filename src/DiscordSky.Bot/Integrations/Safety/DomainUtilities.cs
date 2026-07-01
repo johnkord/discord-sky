@@ -18,6 +18,17 @@ public static class DomainUtilities
         @"(?>(?:[a-z0-9\u00a1-\uffff][a-z0-9\u00a1-\uffff-]*\.)+)[a-z\u00a1-\uffff][a-z0-9\u00a1-\uffff-]{1,}",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    // Host plus optional first path segment, e.g. "discord.gg/abc". Used as a raid fingerprint that
+    // distinguishes two different invites while staying stable across the text a raider varies per channel.
+    private static readonly Regex LinkKeyRegex = new(
+        @"(?>(?:[a-z0-9\u00a1-\uffff][a-z0-9\u00a1-\uffff-]*\.)+)[a-z\u00a1-\uffff][a-z0-9\u00a1-\uffff-]{1,}(?:/[^\s/?#]+)?",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // Discord server invites. Benign on their own; the detector only escalates them when corroborated.
+    private static readonly Regex InviteRegex = new(
+        @"(?:discord\.gg|discord(?:app)?\.com/invite|discord\.me|dsc\.gg)/[a-z0-9-]+",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     private static readonly HashSet<string> Shorteners = new(StringComparer.OrdinalIgnoreCase)
     {
         "bit.ly", "tinyurl.com", "t.co", "goo.gl", "is.gd", "cutt.ly", "rb.gy", "shorturl.at",
@@ -53,6 +64,34 @@ public static class DomainUtilities
         }
 
         return hosts;
+    }
+
+    /// <summary>True when the text contains a Discord server invite link.</summary>
+    public static bool ContainsInvite(string? content) =>
+        !string.IsNullOrWhiteSpace(content) && InviteRegex.IsMatch(content);
+
+    /// <summary>
+    /// Distinct "host/first-path-segment" keys, lower-cased, used as a raid fingerprint. Two posts of the same
+    /// invite share a key; two different invites do not, so ordinary invite-sharing is not mistaken for a raid.
+    /// </summary>
+    public static IReadOnlyList<string> ExtractLinkKeys(string? content)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return Array.Empty<string>();
+        }
+
+        var keys = new List<string>();
+        foreach (Match m in LinkKeyRegex.Matches(content))
+        {
+            var key = m.Value.Trim().TrimEnd('.').ToLowerInvariant();
+            if (key.IndexOf('.') > 0 && !keys.Contains(key))
+            {
+                keys.Add(key);
+            }
+        }
+
+        return keys;
     }
 
     /// <summary>

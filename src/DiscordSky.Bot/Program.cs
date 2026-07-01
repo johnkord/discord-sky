@@ -45,6 +45,9 @@ else
     builder.Services.AddSingleton<IPhishingDomainSource>(NullPhishingDomainSource.Instance);
 }
 
+builder.Services.AddSingleton<RaidTracker>();
+builder.Services.AddSingleton<LearnedScamStore>();
+
 builder.Services.AddSingleton(_ => new DiscordSocketConfig
 {
 	GatewayIntents = GatewayIntents.Guilds | GatewayIntents.GuildMessages | GatewayIntents.MessageContent | GatewayIntents.DirectMessages | GatewayIntents.GuildMessageReactions,

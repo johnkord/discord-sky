@@ -61,7 +61,9 @@ public static class ScamLinkDetector
         IReadOnlyCollection<string>? extraPhrases = null,
         IReadOnlyCollection<string>? extraHosts = null,
         IPhishingDomainSource? phishingDomains = null,
-        bool treatShortenersAsSignal = true)
+        bool treatShortenersAsSignal = true,
+        bool senderIsBot = false,
+        bool senderIsNewAccount = false)
     {
         if (string.IsNullOrWhiteSpace(content))
         {
@@ -115,10 +117,18 @@ public static class ScamLinkDetector
             return new ScamDetection(true, "phrase:custom");
         }
 
-        // Layer 4: a destination-hiding shortener, corroborated by a strong token or a mass-mention.
+        // Layer: a Discord server invite. Benign on its own (friends share invites), so it only escalates when
+        // corroborated by a mass-mention, a scam token, or a suspicious sender (untrusted bot / brand-new account).
+        if (DomainUtilities.ContainsInvite(content)
+            && (mentionsEveryone || senderIsBot || senderIsNewAccount || StrongScamTokenRegex.IsMatch(lower)))
+        {
+            return new ScamDetection(true, "invite");
+        }
+
+        // Layer: a destination-hiding shortener, corroborated by a strong token, a mass-mention, or a bot sender.
         if (treatShortenersAsSignal
             && hosts.Any(DomainUtilities.IsShortener)
-            && (mentionsEveryone || StrongScamTokenRegex.IsMatch(lower)))
+            && (mentionsEveryone || senderIsBot || StrongScamTokenRegex.IsMatch(lower)))
         {
             return new ScamDetection(true, "shortener");
         }

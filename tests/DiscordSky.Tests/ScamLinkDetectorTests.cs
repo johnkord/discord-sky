@@ -125,6 +125,27 @@ public sealed class ScamLinkDetectorTests
             "grab it https://bit.ly/cryptodrop", false, treatShortenersAsSignal: false).IsScam);
     }
 
+    [Fact]
+    public void Detect_Invite_NeedsCorroboration()
+    {
+        // A bare invite is fine, friends share invites all the time.
+        Assert.False(ScamLinkDetector.Detect("join my wow guild https://discord.gg/wowguild", false).IsScam);
+
+        // Invite + @everyone.
+        var everyoneHit = ScamLinkDetector.Detect("@everyone check this out https://discord.gg/xyz", true);
+        Assert.True(everyoneHit.IsScam);
+        Assert.Equal("invite", everyoneHit.Reason);
+
+        // Invite + an untrusted bot sender.
+        var botHit = ScamLinkDetector.Detect("come join https://discord.gg/mrbeast", false, senderIsBot: true);
+        Assert.True(botHit.IsScam);
+        Assert.Equal("invite", botHit.Reason);
+
+        // Invite + a brand-new account.
+        Assert.True(ScamLinkDetector.Detect(
+            "join https://discord.gg/mrbeast", false, senderIsNewAccount: true).IsScam);
+    }
+
     private sealed class FixedRng : IRandomProvider
     {
         private readonly double _value;

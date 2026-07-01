@@ -53,4 +53,28 @@ public sealed class ScamGuardOptions
 
     /// <summary>Where the mirrored domain list is cached so restarts and outages stay covered.</summary>
     public string PhishingFeedCachePath { get; init; } = "data/phishing_domains.json";
+
+    /// <summary>Whether to scan messages from other bots and webhooks (the primary raid vector).</summary>
+    public bool ScanBotMessages { get; init; } = true;
+
+    /// <summary>Bot/webhook user IDs that are trusted and never scanned (music bots, GitHub, etc.).</summary>
+    public List<ulong> TrustedBotIds { get; init; } = new();
+
+    /// <summary>Accounts younger than this many days count as a "new account" corroborating signal for invites.</summary>
+    public int NewAccountDays { get; init; } = 7;
+
+    /// <summary>Sliding-window length, in seconds, for behavioral raid detection.</summary>
+    public int RaidWindowSeconds { get; init; } = 60;
+
+    /// <summary>Distinct channels the same link must hit within the window to count as a raid.</summary>
+    public int RaidChannelThreshold { get; init; } = 3;
+
+    /// <summary>Repeat count of the same link within the window to count as a raid.</summary>
+    public int RaidRepeatThreshold { get; init; } = 4;
+
+    /// <summary>Channel name to post scam/raid alerts to (with a jump link). Empty disables reporting.</summary>
+    public string AlertChannelName { get; init; } = string.Empty;
+
+    /// <summary>Where moderator-taught scam phrases/hosts are persisted.</summary>
+    public string LearnedListPath { get; init; } = "data/learned_scams.json";
 }

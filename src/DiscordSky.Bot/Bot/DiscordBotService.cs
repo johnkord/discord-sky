@@ -35,6 +35,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly ImageRewriter? _imageRewriter;
     private readonly ScamGuardOptions _scamGuard;
     private readonly IPhishingDomainSource _phishingDomains;
+    private readonly RaidTracker _raidTracker;
+    private readonly LearnedScamStore? _learnedScams;
     private readonly ConcurrentDictionary<ulong, DateTimeOffset> _scamWarnCooldown = new();
     private readonly ConcurrentDictionary<ulong, (string Persona, DateTimeOffset CreatedAt)> _personaCache = new();
     private readonly ConcurrentDictionary<ulong, ChannelMessageBuffer> _channelBuffers = new();
@@ -61,7 +63,9 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         ImageToolService? imageToolService = null,
         ImageRewriter? imageRewriter = null,
         IOptions<ScamGuardOptions>? scamGuardOptions = null,
-        IPhishingDomainSource? phishingDomains = null)
+        IPhishingDomainSource? phishingDomains = null,
+        RaidTracker? raidTracker = null,
+        LearnedScamStore? learnedScams = null)
     {
         _client = client;
         _options = options.Value;
@@ -80,6 +84,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _imageRewriter = imageRewriter;
         _scamGuard = scamGuardOptions?.Value ?? new ScamGuardOptions { Enabled = false };
         _phishingDomains = phishingDomains ?? NullPhishingDomainSource.Instance;
+        _raidTracker = raidTracker ?? new RaidTracker();
+        _learnedScams = learnedScams;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -281,6 +287,18 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             return;
         }
 
+        // Scam guard runs above the IsBot gate on purpose: bot and webhook accounts are the primary Discord raid
+        // vector, and the earlier placement (below this gate) meant automated spam was never scanned. We still
+        // skip our own messages and any trusted bots, and the persona flow below still ignores bots entirely.
+        var isSelfMessage = _client.CurrentUser is not null && message.Author.Id == _client.CurrentUser.Id;
+        if (_scamGuard.Enabled && !isSelfMessage
+            && (_scamGuard.ScanBotMessages || !message.Author.IsBot)
+            && !_scamGuard.TrustedBotIds.Contains(message.Author.Id)
+            && await TryHandleScamLinkAsync(message))
+        {
+            return;
+        }
+
         if (message.Author.IsBot)
         {
             return;
@@ -296,14 +314,6 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         if (!_options.IsChannelAllowed(channelName))
         {
             _logger.LogDebug("Channel '{ChannelName}' is not allow-listed; ignoring message.", channelName ?? "<unknown>");
-            return;
-        }
-
-        // Proactive scam-link guard: if an obvious phishing/crypto-scam link lands here, bellow an in-character
-        // warning and stop. Runs regardless of whether the bot was addressed, and before memory extraction so a
-        // scam never gets remembered as something a user "said". Requested by a server admin (sleeper-mod duty).
-        if (_scamGuard.Enabled && await TryHandleScamLinkAsync(message))
-        {
             return;
         }
 
@@ -377,6 +387,14 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             {
                 var imageRequest = payload["(image)".Length..].Trim();
                 await HandleImageAsync(context, message, imageRequest);
+                return;
+            }
+
+            if (payload.StartsWith("scam-report", StringComparison.OrdinalIgnoreCase)
+                || payload.StartsWith("scamreport", StringComparison.OrdinalIgnoreCase)
+                || payload.StartsWith("scam report", StringComparison.OrdinalIgnoreCase))
+            {
+                await HandleScamReportAsync(context, message, payload);
                 return;
             }
 
@@ -1533,10 +1551,34 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         ScamDetection detection;
         try
         {
+            var now = DateTimeOffset.UtcNow;
+            var senderIsBot = message.Author.IsBot;
+            var senderIsNewAccount = (now - message.Author.CreatedAt).TotalDays < Math.Max(0, _scamGuard.NewAccountDays);
+
+            var phrases = MergeLearned(_scamGuard.ExtraScamPhrases, _learnedScams?.Phrases);
+            var hosts = MergeLearned(_scamGuard.ExtraPhishingHosts, _learnedScams?.Hosts);
+
             detection = ScamLinkDetector.Detect(
-                message.Content, message.MentionedEveryone,
-                _scamGuard.ExtraScamPhrases, _scamGuard.ExtraPhishingHosts,
-                _phishingDomains, _scamGuard.TreatShortenersAsSignal);
+                message.Content, message.MentionedEveryone, phrases, hosts,
+                _phishingDomains, _scamGuard.TreatShortenersAsSignal, senderIsBot, senderIsNewAccount);
+
+            // Behavioral raid signal: even if the content looks clean, the same link sprayed across channels or
+            // repeated quickly is a raid. Only link-bearing messages are tracked.
+            if (!detection.IsScam)
+            {
+                var keys = DomainUtilities.ExtractLinkKeys(message.Content);
+                if (keys.Count > 0)
+                {
+                    var fingerprint = string.Join(",", keys.OrderBy(k => k, StringComparer.Ordinal));
+                    var raid = _raidTracker.Record(
+                        message.Author.Id, message.Channel.Id, fingerprint, now,
+                        _scamGuard.RaidWindowSeconds, _scamGuard.RaidChannelThreshold, _scamGuard.RaidRepeatThreshold);
+                    if (raid.IsRaid)
+                    {
+                        detection = new ScamDetection(true, raid.Reason);
+                    }
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -1550,16 +1592,17 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         }
 
         var channelId = message.Channel.Id;
-        var now = DateTimeOffset.UtcNow;
+        var stamp = DateTimeOffset.UtcNow;
         var cooldown = TimeSpan.FromSeconds(Math.Max(0, _scamGuard.CooldownSeconds));
-        if (_scamWarnCooldown.TryGetValue(channelId, out var last) && now - last < cooldown)
+        if (_scamWarnCooldown.TryGetValue(channelId, out var last) && stamp - last < cooldown)
         {
             _logger.LogInformation(
                 "scam_suppressed channel={Channel} reason={Reason} (cooldown)", message.Channel.Name, detection.Reason);
+            EmitScamTelemetry(message, detection, "suppressed");
             return true;
         }
 
-        _scamWarnCooldown[channelId] = now;
+        _scamWarnCooldown[channelId] = stamp;
 
         try
         {
@@ -1571,15 +1614,177 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 messageReference: new MessageReference(message.Id),
                 allowedMentions: noPing);
             _logger.LogInformation(
-                "scam_warned channel={Channel} author={Author} reason={Reason}",
-                message.Channel.Name, message.Author.Id, detection.Reason);
+                "scam_warned channel={Channel} author={Author} reason={Reason} bot={Bot}",
+                message.Channel.Name, message.Author.Id, detection.Reason, message.Author.IsBot);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to post scam warning in channel {Channel}", message.Channel.Name);
         }
 
+        EmitScamTelemetry(message, detection, "warned");
+        await ReportScamAsync(message, detection);
         return true;
+    }
+
+    private static IReadOnlyCollection<string> MergeLearned(
+        List<string> configured, IReadOnlyCollection<string>? learned)
+    {
+        if (learned is null || learned.Count == 0)
+        {
+            return configured;
+        }
+
+        var merged = new List<string>(configured);
+        merged.AddRange(learned);
+        return merged;
+    }
+
+    private void EmitScamTelemetry(SocketUserMessage message, ScamDetection detection, string outcome)
+    {
+        try
+        {
+            _telemetry.Emit(new TelemetryEvent(
+                DateTimeOffset.UtcNow,
+                TelemetryEventTypes.ScamDetected,
+                UserHash: UserIdHash.Hash(message.Author.Id),
+                Channel: message.Channel.Name,
+                Kind: message.Author.IsBot ? "bot" : "user",
+                Outcome: outcome,
+                Reason: detection.Reason,
+                MessageId: message.Id));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to emit scam telemetry.");
+        }
+    }
+
+    private async Task ReportScamAsync(SocketUserMessage message, ScamDetection detection)
+    {
+        if (string.IsNullOrWhiteSpace(_scamGuard.AlertChannelName))
+        {
+            return;
+        }
+
+        var guild = (message.Channel as SocketGuildChannel)?.Guild;
+        var alertChannel = guild?.TextChannels.FirstOrDefault(
+            c => string.Equals(c.Name, _scamGuard.AlertChannelName, StringComparison.OrdinalIgnoreCase));
+        if (guild is null || alertChannel is null)
+        {
+            return;
+        }
+
+        var jump = $"https://discord.com/channels/{guild.Id}/{message.Channel.Id}/{message.Id}";
+        var botTag = message.Author.IsBot ? " [BOT]" : string.Empty;
+        var report =
+            $"Scam guard flagged a message. reason=`{detection.Reason}` author=**{message.Author.Username}** " +
+            $"(`{message.Author.Id}`){botTag} channel=#{message.Channel.Name}\n{jump}";
+        try
+        {
+            await alertChannel.SendMessageAsync(report, allowedMentions: AllowedMentions.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to post scam alert to #{Channel}.", _scamGuard.AlertChannelName);
+        }
+    }
+
+    private async Task HandleScamReportAsync(SocketCommandContext context, SocketUserMessage message, string payload)
+    {
+        if (_learnedScams is null)
+        {
+            await context.Channel.SendMessageAsync("Scam learning is not enabled.");
+            return;
+        }
+
+        // Gate to moderators so a joke report cannot teach the bot to warn on ordinary words.
+        var perms = (context.User as SocketGuildUser)?.GuildPermissions;
+        if (perms?.ManageMessages != true)
+        {
+            await context.Channel.SendMessageAsync("You need the Manage Messages permission to teach me a scam.");
+            return;
+        }
+
+        var rest = payload;
+        foreach (var cmd in new[] { "scam-report", "scamreport", "scam report" })
+        {
+            if (payload.StartsWith(cmd, StringComparison.OrdinalIgnoreCase))
+            {
+                rest = payload[cmd.Length..];
+                break;
+            }
+        }
+        rest = rest.Trim();
+
+        var learnedHosts = new List<string>();
+        var learnedPhrases = new List<string>();
+
+        foreach (var token in rest.Split(new[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var hostsInToken = DomainUtilities.ExtractHosts(token);
+            if (hostsInToken.Count > 0)
+            {
+                foreach (var host in hostsInToken)
+                {
+                    if (_learnedScams.AddHost(host))
+                    {
+                        learnedHosts.Add(host);
+                    }
+                }
+            }
+            else if (_learnedScams.AddPhrase(token))
+            {
+                learnedPhrases.Add(token.ToLowerInvariant());
+            }
+        }
+
+        // When used as a reply to the offending message, learn its hosts automatically.
+        if (message.Reference?.MessageId.IsSpecified == true)
+        {
+            try
+            {
+                var referenced = message.ReferencedMessage
+                    ?? await message.Channel.GetMessageAsync(message.Reference.MessageId.Value);
+                if (referenced is not null)
+                {
+                    foreach (var host in DomainUtilities.ExtractHosts(referenced.Content))
+                    {
+                        if (_learnedScams.AddHost(host))
+                        {
+                            learnedHosts.Add(host);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "scam-report: failed to read referenced message.");
+            }
+        }
+
+        if (learnedHosts.Count == 0 && learnedPhrases.Count == 0)
+        {
+            await context.Channel.SendMessageAsync(
+                "Nothing new to learn. Reply to a scam with `!sky scam-report`, or `!sky scam-report <domain-or-phrase>`.");
+            return;
+        }
+
+        var parts = new List<string>();
+        if (learnedHosts.Count > 0)
+        {
+            parts.Add($"{learnedHosts.Count} host(s)");
+        }
+        if (learnedPhrases.Count > 0)
+        {
+            parts.Add($"{learnedPhrases.Count} phrase(s)");
+        }
+
+        _logger.LogInformation(
+            "scam_report by={User} hosts={Hosts} phrases={Phrases}",
+            context.User.Id, learnedHosts.Count, learnedPhrases.Count);
+        await context.Channel.SendMessageAsync(
+            $"Learned {string.Join(" and ", parts)}. I will flag those from now on.");
     }
 
     private string GetDefaultPersona()
