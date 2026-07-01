@@ -139,7 +139,7 @@ public sealed class AutoModSyncService : IHostedService, IDisposable
         }
         if (_options.BlockLookalikes)
         {
-            blockActions.Add(new AutoModRuleActionProperties { Type = AutoModActionType.BlockMessage, CustomMessage = Truncate(_options.BlockMessageText, 150) });
+            blockActions.Add(new AutoModRuleActionProperties { Type = AutoModActionType.BlockMessage, CustomMessage = Truncate(_options.BlockMessageText, 50) });
         }
         if (await ApplyRuleAsync(guild, Find(blockName), blockName, blockPlan, blockActions, exemptChannelIds, "block"))
         {

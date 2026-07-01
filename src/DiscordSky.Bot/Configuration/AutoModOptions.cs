@@ -36,6 +36,6 @@ public sealed class AutoModOptions
     /// <summary>Channel names exempt from the rules (e.g. the mod channel, so scam discussion does not self-trigger).</summary>
     public List<string> ExemptChannelNames { get; init; } = new();
 
-    /// <summary>Message shown to a user when their message is blocked (only used when BlockMessages is true).</summary>
-    public string BlockMessageText { get; init; } = "Halted by the Eggman Empire's anti-thievery perimeter.";
+    /// <summary>Message shown to a user when their message is blocked (block tier only; max 50 chars).</summary>
+    public string BlockMessageText { get; init; } = "Halted by the Eggman Empire's anti-scam net.";
 }
