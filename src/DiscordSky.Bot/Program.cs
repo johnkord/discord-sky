@@ -52,9 +52,13 @@ builder.Services.Configure<AutoModOptions>(builder.Configuration.GetSection(Auto
 builder.Services.AddSingleton<AutoModSyncService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AutoModSyncService>());
 
+// Read side of AutoMod: record native block/alert actions as telemetry (and optionally taunt on block).
+builder.Services.AddSingleton<AutoModActionResponder>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AutoModActionResponder>());
+
 builder.Services.AddSingleton(_ => new DiscordSocketConfig
 {
-	GatewayIntents = GatewayIntents.Guilds | GatewayIntents.GuildMessages | GatewayIntents.MessageContent | GatewayIntents.DirectMessages | GatewayIntents.GuildMessageReactions,
+	GatewayIntents = GatewayIntents.Guilds | GatewayIntents.GuildMessages | GatewayIntents.MessageContent | GatewayIntents.DirectMessages | GatewayIntents.GuildMessageReactions | GatewayIntents.AutoModerationActionExecution,
 	LogLevel = LogSeverity.Info,
 	AlwaysDownloadUsers = false,
 	MessageCacheSize = 100

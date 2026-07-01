@@ -103,6 +103,10 @@ data:
   AutoMod__AlertChannelName: "pepega-chat-supreme"
   AutoMod__GuildAllowList__0: "Flavorful Feral's Funhouse"
   AutoMod__ExemptChannelNames__0: "pepega-chat-supreme"
+  # Read side: record native AutoMod block/alert actions as "automod_action" telemetry. Taunt is opt-in.
+  AutoMod__ReactToActions: "true"
+  AutoMod__TauntOnBlock: "false"
+  AutoMod__TauntCooldownSeconds: "60"
   # Recall-tool config (replaces implicit memory relevance gating).
   # See docs/recall_tool_design.md §3 and §4.2.
   MemoryRelevance__RecallTopK: "20"

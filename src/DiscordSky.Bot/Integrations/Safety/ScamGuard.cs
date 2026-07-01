@@ -205,3 +205,29 @@ public static class ScamWarnings
         return Lines[i];
     }
 }
+
+/// <summary>
+/// In-character lines Robotnik posts when a NATIVE AutoMod rule blocks a scam before it ever appeared. Canned
+/// (no LLM) so they are instant and reliable. Unlike <see cref="ScamWarnings"/> these do not reply to a visible
+/// message (the offending message was blocked and never posted), so the flavor is "intercepted at the gate".
+/// </summary>
+public static class AutoModBlockTaunts
+{
+    private static readonly string[] Lines =
+    {
+        "BAH! A scam transmission, INTERCEPTED by the Eggman anti-scam net before it could flicker onto your screens. You are welcome, peasants.",
+        "SNRK. Another hedgehog-grade swindle vaporized at the gate. My net does not sleep, unlike my useless badniks.",
+        "HALT and DESPAIR, scammer: your feeble link never breached my perimeter. Eggman Empire: many. Larcenous rodents: zero.",
+        "DENIED at the door. Some cretin just tried to smuggle a scam past MY defenses and failed, predictably. Grovel accordingly.",
+        "INTERCEPTED. A fraudulent little payload, crushed before delivery by my superior automation. Applause is the minimum I will accept.",
+        "PAH. The anti-scam net just swatted a swindle out of the air mid-flight. You saw nothing because I ALLOWED you to see nothing.",
+        "BEHOLD: a theft attempt, blocked before it drew breath. My machines guard this realm while you fools scroll obliviously.",
+        "ROBOTNIK'S PERIMETER HOLDS. One more spammy gremlin turned away at the gate. Do try to look grateful, citizens.",
+    };
+
+    public static string Random(IRandomProvider rng)
+    {
+        var i = (int)(Math.Clamp(rng.NextDouble(), 0.0, 0.999999) * Lines.Length);
+        return Lines[i];
+    }
+}

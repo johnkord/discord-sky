@@ -38,4 +38,20 @@ public sealed class AutoModOptions
 
     /// <summary>Message shown to a user when their message is blocked (block tier only; max 50 chars).</summary>
     public string BlockMessageText { get; init; } = "Halted by the Eggman Empire's anti-scam net.";
+
+    /// <summary>
+    /// Whether to subscribe to native AutoMod action events and record them as durable telemetry
+    /// (event type "automod_action"), so you can measure whether the rules ever actually fire. Cheap; on by
+    /// default. Requires the AutoModerationActionExecution gateway intent (added in Program.cs).
+    /// </summary>
+    public bool ReactToActions { get; init; } = true;
+
+    /// <summary>
+    /// When true, Robotnik posts an in-character taunt in the origin channel each time one of our own rules
+    /// BLOCKS a message. Off by default (a block is otherwise silent to the channel). Rate-limited per channel.
+    /// </summary>
+    public bool TauntOnBlock { get; init; } = false;
+
+    /// <summary>Per-channel cooldown for block taunts, so a raid does not turn into a wall of Robotnik.</summary>
+    public int TauntCooldownSeconds { get; init; } = 60;
 }

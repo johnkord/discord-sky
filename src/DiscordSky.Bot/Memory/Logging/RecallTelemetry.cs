@@ -62,6 +62,7 @@ public static class TelemetryEventTypes
     public const string CircuitBreakerOpened = "circuit_breaker_opened";
     public const string GatewayDisconnect = "gateway_disconnect";
     public const string ScamDetected = "scam_detected";
+    public const string AutoModAction = "automod_action";
 }
 
 /// <summary>Test/CI default. Discards events.</summary>
