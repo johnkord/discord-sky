@@ -57,6 +57,14 @@ data:
   Reactions__Enabled: "true"
   Reactions__BaseDirectory: "/app/data/user_memories/reactions"
   Reactions__RetentionDays: "30"
+  # In-character emoji reactions: Robotnik slaps a derisive emoji on a message he did NOT reply to.
+  Reactions__EmojiReactChance: "0.08"
+  Reactions__EmojiReactCooldownSeconds: "90"
+  # Proven bits: rank his best-received past lines (by reaction) and feed the winners back into the persona prompt.
+  Reactions__ProvenBitsEnabled: "true"
+  Reactions__ProvenBitsPoolSize: "10"
+  Reactions__ProvenBitsLookbackDays: "30"
+  Reactions__ProvenBitsRefreshHours: "6"
   # Image generation (docs/image_generation_design.md). OFF by default: enabling spends real money and
   # requires the OpenAI org to pass API Organization Verification first, plus an OpenAI image API key in
   # the Secret (LLM__Providers__OpenAI__ApiKey is reused). The log lives inside the PVC mount so the

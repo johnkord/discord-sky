@@ -168,4 +168,22 @@ public sealed class ReactionOptions
 
     /// <summary>Max characters of the bot reply excerpt stored with each reaction (for join-free analysis).</summary>
     public int ReplyExcerptLength { get; set; } = 200;
+
+    /// <summary>Chance [0,1] that Robotnik adds a single in-character emoji reaction to a message he did NOT reply to. 0 disables.</summary>
+    public double EmojiReactChance { get; set; } = 0.0;
+
+    /// <summary>Per-channel cooldown (seconds) between in-character emoji reactions, so he does not carpet-react.</summary>
+    public int EmojiReactCooldownSeconds { get; set; } = 90;
+
+    /// <summary>Whether to inject "proven bits" (the bot's best-received past lines, ranked by reaction) into the persona prompt.</summary>
+    public bool ProvenBitsEnabled { get; set; } = true;
+
+    /// <summary>How many top proven bits to keep in the rotating pool the prompt samples from.</summary>
+    public int ProvenBitsPoolSize { get; set; } = 10;
+
+    /// <summary>Days of reaction history to consider when ranking proven bits.</summary>
+    public int ProvenBitsLookbackDays { get; set; } = 30;
+
+    /// <summary>Hours between proven-bits refreshes.</summary>
+    public int ProvenBitsRefreshHours { get; set; } = 6;
 }

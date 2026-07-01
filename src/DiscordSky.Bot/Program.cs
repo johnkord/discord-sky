@@ -8,6 +8,7 @@ using DiscordSky.Bot.Integrations.Members;
 using DiscordSky.Bot.Integrations.Safety;
 using DiscordSky.Bot.Memory;
 using DiscordSky.Bot.Memory.Logging;
+using DiscordSky.Bot.Memory.Reception;
 using DiscordSky.Bot.Memory.Scoring;
 using DiscordSky.Bot.Orchestration;
 using Microsoft.Extensions.AI;
@@ -62,6 +63,12 @@ builder.Services.Configure<MemberEventsOptions>(builder.Configuration.GetSection
 builder.Services.AddSingleton<JoinRaidTracker>();
 builder.Services.AddSingleton<MemberJoinService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<MemberJoinService>());
+
+// Reception-driven "proven bits": rank the bot's best-received replies from the reaction log and feed the
+// winners back into the persona prompt. The cache is injected into the orchestrator; the service refreshes it.
+builder.Services.AddSingleton<GreatestHitsCache>();
+builder.Services.AddSingleton<GreatestHitsRefreshService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<GreatestHitsRefreshService>());
 
 // GuildMembers is a PRIVILEGED intent (needs "Server Members Intent" in the dev portal). Request it ONLY when
 // member events are enabled, so a default deploy needs no portal change and cannot fail to connect.

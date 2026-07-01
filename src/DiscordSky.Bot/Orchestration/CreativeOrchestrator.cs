@@ -9,6 +9,7 @@ using DiscordSky.Bot.Integrations.Images;
 using DiscordSky.Bot.Memory;
 using DiscordSky.Bot.Memory.Logging;
 using DiscordSky.Bot.Memory.Recall;
+using DiscordSky.Bot.Memory.Reception;
 using DiscordSky.Bot.Memory.Scoring;
 using DiscordSky.Bot.Models.Orchestration;
 using Microsoft.Extensions.AI;
@@ -192,6 +193,9 @@ public sealed class CreativeOrchestrator
         }
         """).RootElement);
 
+    private readonly GreatestHitsCache? _provenBits;
+    private const int ProvenBitsPerTurn = 3;
+
     public CreativeOrchestrator(
         ContextAggregator contextAggregator,
         IChatClient chatClient,
@@ -205,7 +209,8 @@ public sealed class CreativeOrchestrator
         IRecallTelemetrySink telemetry,
         ITranscriptSink? transcript = null,
         IRandomProvider? randomProvider = null,
-        ImageToolService? imageToolService = null)
+        ImageToolService? imageToolService = null,
+        GreatestHitsCache? provenBits = null)
     {
         _contextAggregator = contextAggregator;
         _chatClient = chatClient;
@@ -220,6 +225,7 @@ public sealed class CreativeOrchestrator
         _transcript = transcript ?? new NoOpTranscriptSink();
         _randomProvider = randomProvider ?? DefaultRandomProvider.Instance;
         _imageToolService = imageToolService;
+        _provenBits = provenBits;
     }
 
     public async Task<CreativeResult> ExecuteAsync(CreativeRequest request, SocketCommandContext commandContext, CancellationToken cancellationToken)
@@ -241,6 +247,12 @@ public sealed class CreativeOrchestrator
         var turnFlavor = RobotnikPersona.Matches(request.Persona)
             ? RobotnikPersona.RollTurnFlavor(_randomProvider, request.InvocationKind)
             : PersonaTurnFlavor.None;
+
+        // Reception-driven "proven bits": a rotating sample of the bot's best-received past lines (ranked by
+        // the reactions they earned) so Robotnik leans into what actually lands on this server.
+        var provenDirective = _provenBits is not null && RobotnikPersona.Matches(request.Persona)
+            ? GreatestHits.BuildDirective(_provenBits.Sample(_randomProvider, ProvenBitsPerTurn))
+            : null;
 
         var userContent = BuildUserContent(request, historySlice, hasTopic, turnFlavor.EndReminder);
 
@@ -270,7 +282,7 @@ public sealed class CreativeOrchestrator
         var chatOptions = new ChatOptions
         {
             ModelId = ResolveModel(request.Persona, llmProvider),
-            Instructions = BuildSystemInstructions(request.Persona, hasTopic, request.InvocationKind, request.ReplyChain, request.IsInThread, turnFlavor, offerImageTool),
+            Instructions = BuildSystemInstructions(request.Persona, hasTopic, request.InvocationKind, request.ReplyChain, request.IsInThread, turnFlavor, offerImageTool, provenDirective),
             MaxOutputTokens = maxOutputTokens,
             Tools = tools,
             ToolMode = ChatToolMode.Auto,
@@ -604,7 +616,7 @@ public sealed class CreativeOrchestrator
         }
     }
 
-    private static string BuildSystemInstructions(string persona, bool hasTopic, CreativeInvocationKind invocationKind, IReadOnlyList<ChannelMessage>? replyChain, bool isInThread, PersonaTurnFlavor flavor, bool imagesEnabled)
+    private static string BuildSystemInstructions(string persona, bool hasTopic, CreativeInvocationKind invocationKind, IReadOnlyList<ChannelMessage>? replyChain, bool isInThread, PersonaTurnFlavor flavor, bool imagesEnabled, string? provenBitsDirective = null)
     {
         var builder = new StringBuilder();
 
@@ -615,6 +627,10 @@ public sealed class CreativeOrchestrator
             AppendDirective(builder, flavor.LengthDirective);
             AppendDirective(builder, flavor.MoveDirective);
             AppendDirective(builder, flavor.PaletteDirective);
+            if (!string.IsNullOrWhiteSpace(provenBitsDirective))
+            {
+                builder.Append(provenBitsDirective);
+            }
         }
         else
         {
@@ -1220,8 +1236,8 @@ public sealed class CreativeOrchestrator
 
             if (consolidated is null || consolidated.Count == 0)
             {
-                _logger.LogWarning("Memory consolidation returned empty result for user {UserId} after retry; skipping", userId);
-                return null;
+                _logger.LogWarning("Memory consolidation returned empty result for user {UserId} after retry; using deterministic fallback", userId);
+                return DeterministicConsolidate(existingMemories, targetCount);
             }
 
             if (consolidated.Count > targetCount)
@@ -1244,11 +1260,35 @@ public sealed class CreativeOrchestrator
 
             return consolidated;
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Memory consolidation failed for user {UserId}; falling back to LRU eviction", userId);
-            return null;
+            _logger.LogWarning(ex, "Memory consolidation failed for user {UserId}; using deterministic fallback", userId);
+            return existingMemories.Count > targetCount ? DeterministicConsolidate(existingMemories, targetCount) : null;
         }
+    }
+
+    /// <summary>
+    /// Deterministic fallback consolidation used when the LLM path yields nothing (empty result or error).
+    /// Keeps the highest-value memories (comedic ammo first, then most-recently referenced, then newest) and
+    /// drops the rest, so a user is never left pinned at the cap by a flaky model call. Pure and testable.
+    /// </summary>
+    internal static List<UserMemory> DeterministicConsolidate(IReadOnlyList<UserMemory> memories, int targetCount)
+    {
+        if (targetCount < 1)
+        {
+            targetCount = 1;
+        }
+
+        return memories
+            .OrderByDescending(m => m.Importance ?? 0)
+            .ThenByDescending(m => m.LastReferencedAt)
+            .ThenByDescending(m => m.CreatedAt)
+            .Take(targetCount)
+            .ToList();
     }
 
     /// <summary>

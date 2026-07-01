@@ -32,6 +32,9 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly IRandomProvider _randomProvider;
     private readonly IReactionSink _reactionSink;
     private readonly int _reactionExcerptLength;
+    private readonly double _emojiReactChance;
+    private readonly TimeSpan _emojiReactCooldown;
+    private readonly ConcurrentDictionary<ulong, DateTimeOffset> _reactCooldowns = new();
     private readonly ImageToolService? _imageToolService;
     private readonly ImageRewriter? _imageRewriter;
     private readonly ScamGuardOptions _scamGuard;
@@ -81,6 +84,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _randomProvider = randomProvider ?? DefaultRandomProvider.Instance;
         _reactionSink = reactionSink ?? new NoOpReactionSink();
         _reactionExcerptLength = reactionOptions?.Value.ReplyExcerptLength ?? 200;
+        _emojiReactChance = reactionOptions?.Value.EmojiReactChance ?? 0.0;
+        _emojiReactCooldown = TimeSpan.FromSeconds(Math.Max(0, reactionOptions?.Value.EmojiReactCooldownSeconds ?? 90));
         _imageToolService = imageToolService;
         _imageRewriter = imageRewriter;
         _scamGuard = scamGuardOptions?.Value ?? new ScamGuardOptions { Enabled = false };
@@ -450,7 +455,45 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                     roll, effectiveChance, chaosSettings.AmbientReplyChance, botSpokeRecently, mentionsBot, message.Id, channelName);
                 // Pass prefix + message content so HandlePersonaAsync can extract the user's text as the topic
                 await HandlePersonaAsync(context, _options.CommandPrefix + " " + content, message, CreativeInvocationKind.Ambient);
+                return;
             }
+        }
+
+        // He held his tongue this turn: maybe just editorialize with a single in-character emoji reaction.
+        // Cheap presence that costs no LLM call and does not dominate the channel.
+        await MaybeReactInCharacterAsync(message);
+    }
+
+    /// <summary>
+    /// When the bot chose not to reply, occasionally add a single in-character emoji reaction to the message.
+    /// Rate-limited per channel so he does not carpet-react. Fail-open: reaction failures are swallowed.
+    /// </summary>
+    private async Task MaybeReactInCharacterAsync(SocketUserMessage message)
+    {
+        if (_emojiReactChance <= 0.0 || _randomProvider.NextDouble() >= _emojiReactChance)
+        {
+            return;
+        }
+
+        var channelId = message.Channel.Id;
+        var now = DateTimeOffset.UtcNow;
+        if (_reactCooldowns.TryGetValue(channelId, out var last) && now - last < _emojiReactCooldown)
+        {
+            return;
+        }
+
+        _reactCooldowns[channelId] = now;
+        try
+        {
+            var emoji = RobotnikReactions.Pick(_randomProvider);
+            await message.AddReactionAsync(new Emoji(emoji));
+            _logger.LogInformation(
+                "in_character_reaction emote={Emote} channel={Channel} message={MessageId}",
+                emoji, message.Channel.Name, message.Id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "In-character reaction failed; ignoring.");
         }
     }
 
