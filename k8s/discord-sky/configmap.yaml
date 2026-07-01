@@ -86,7 +86,7 @@ data:
   ScamGuard__RaidWindowSeconds: "60"
   ScamGuard__RaidChannelThreshold: "3"
   ScamGuard__RaidRepeatThreshold: "4"
-  ScamGuard__AlertChannelName: ""
+  ScamGuard__AlertChannelName: "pepega-chat-supreme"
   ScamGuard__LearnedListPath: "/app/data/user_memories/learned_scams.json"
   # Phishing-domain feed (Sinking Yachts), mirrored locally to the PVC. Fail-open.
   ScamGuard__UsePhishingFeed: "true"
