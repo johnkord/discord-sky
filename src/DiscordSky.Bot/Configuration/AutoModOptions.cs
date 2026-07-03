@@ -63,4 +63,10 @@ public sealed class AutoModOptions
 
     /// <summary>Per-message mention cap for the mention-raid rule (clamped 1 to 50).</summary>
     public int MentionLimit { get; init; } = 5;
+
+    /// <summary>
+    /// Whether to maintain a native SPAM rule ("{prefix}-spam") using Discord's built-in ML "generic spam"
+    /// classifier (catches free-nitro and invite spam). Alert-only; English-only and imperfect, but free recall.
+    /// </summary>
+    public bool UseNativeSpamFilter { get; init; } = false;
 }

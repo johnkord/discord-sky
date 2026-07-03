@@ -180,6 +180,21 @@ public sealed class AutoModSyncService : IHostedService, IDisposable
             }
         }
 
+        // Native spam tier: Discord's own ML "generic spam" classifier (free-nitro / invite spam). Free recall we
+        // were not using; alert-only because the ML filter is English-only and imperfect. One SPAM rule per guild.
+        if (_options.UseNativeSpamFilter && alertChannelId is not null)
+        {
+            var spamName = _options.RuleNamePrefix + "-spam";
+            var spamActions = new List<AutoModRuleActionProperties>
+            {
+                new() { Type = AutoModActionType.SendAlertMessage, ChannelId = alertChannelId },
+            };
+            if (await ApplySpamRuleAsync(guild, Find(spamName), spamName, spamActions, exemptChannelIds))
+            {
+                keep.Add(spamName);
+            }
+        }
+
         // Cleanup: delete any rule we previously created under this prefix that we are no longer keeping
         // (the old single "sky-scamguard" rule, or a tier that got disabled/emptied).
         foreach (var rule in rules)
@@ -282,6 +297,52 @@ public sealed class AutoModSyncService : IHostedService, IDisposable
             // Discord allows only one MentionSpam rule per guild; if one already exists (e.g. hand-made), our
             // create fails. Fail-open: log and leave the mention tier unmanaged rather than breaking the sync.
             _logger.LogWarning(ex, "AutoMod mention-raid rule apply failed in {Guild} (a MentionSpam rule may already exist).", guild.Name);
+            return false;
+        }
+
+        return true;
+    }
+
+    private async Task<bool> ApplySpamRuleAsync(
+        SocketGuild guild, IAutoModRule? existing, string ruleName,
+        List<AutoModRuleActionProperties> actions, ulong[] exemptChannelIds)
+    {
+        if (actions.Count == 0)
+        {
+            return false;
+        }
+
+        void Apply(AutoModRuleProperties props)
+        {
+            props.Name = ruleName;
+            props.TriggerType = AutoModTriggerType.Spam;
+            props.EventType = AutoModEventType.MessageSend;
+            props.Actions = actions.ToArray();
+            props.Enabled = true;
+            if (exemptChannelIds.Length > 0)
+            {
+                props.ExemptChannels = exemptChannelIds;
+            }
+        }
+
+        try
+        {
+            if (existing is null)
+            {
+                await guild.CreateAutoModRuleAsync(Apply);
+                _logger.LogInformation("automod_synced action=created guild={Guild} rule={Rule} tier=spam", guild.Name, ruleName);
+            }
+            else
+            {
+                await existing.ModifyAsync(Apply);
+                _logger.LogInformation("automod_synced action=updated guild={Guild} rule={Rule} tier=spam", guild.Name, ruleName);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Discord allows only one SPAM rule per guild; if one already exists (e.g. hand-made), our create
+            // fails. Fail-open: log and leave the spam tier unmanaged rather than breaking the sync.
+            _logger.LogWarning(ex, "AutoMod spam rule apply failed in {Guild} (a SPAM rule may already exist).", guild.Name);
             return false;
         }
 

@@ -91,7 +91,11 @@ data:
   ScamGuard__TreatShortenersAsSignal: "true"
   # Scan other bots/webhooks (the primary raid vector) plus behavioral raid detection and reporting.
   ScamGuard__ScanBotMessages: "true"
-  ScamGuard__NewAccountDays: "7"
+  ScamGuard__NewAccountDays: "21"
+  # New-account behavioral watch: alert mods (in character) when a very new account posts a payload. Alert-only.
+  ScamGuard__AlertNewAccounts: "true"
+  ScamGuard__NewAccountAlertThreshold: "3"
+  ScamGuard__NewAccountAlertCooldownSeconds: "600"
   ScamGuard__RaidWindowSeconds: "60"
   ScamGuard__RaidChannelThreshold: "3"
   ScamGuard__RaidRepeatThreshold: "4"
@@ -118,6 +122,8 @@ data:
   AutoMod__TauntCooldownSeconds: "60"
   AutoMod__ProtectMentionRaids: "true"
   AutoMod__MentionLimit: "5"
+  # Native ML "generic spam" filter (free-nitro / invite spam). Alert-only, English-only, free recall.
+  AutoMod__UseNativeSpamFilter: "true"
   # Member events: in-house mass-join raid detection + in-character greeting. DORMANT until the
   # "Server Members Intent" is enabled in the Discord dev portal AND MemberEvents__Enabled is "true".
   MemberEvents__Enabled: "false"

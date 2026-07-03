@@ -41,6 +41,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly IPhishingDomainSource _phishingDomains;
     private readonly RaidTracker _raidTracker;
     private readonly LearnedScamStore? _learnedScams;
+    private readonly NewAccountFlagLog _newAccountFlags;
     private readonly ConcurrentDictionary<ulong, DateTimeOffset> _scamWarnCooldown = new();
     private readonly ConcurrentDictionary<ulong, (string Persona, DateTimeOffset CreatedAt)> _personaCache = new();
     private readonly ConcurrentDictionary<ulong, ChannelMessageBuffer> _channelBuffers = new();
@@ -69,7 +70,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         IOptions<ScamGuardOptions>? scamGuardOptions = null,
         IPhishingDomainSource? phishingDomains = null,
         RaidTracker? raidTracker = null,
-        LearnedScamStore? learnedScams = null)
+        LearnedScamStore? learnedScams = null,
+        NewAccountFlagLog? newAccountFlags = null)
     {
         _client = client;
         _options = options.Value;
@@ -92,6 +94,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _phishingDomains = phishingDomains ?? NullPhishingDomainSource.Instance;
         _raidTracker = raidTracker ?? new RaidTracker();
         _learnedScams = learnedScams;
+        _newAccountFlags = newAccountFlags ?? new NewAccountFlagLog();
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -303,6 +306,14 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             && await TryHandleScamLinkAsync(message))
         {
             return;
+        }
+
+        // New-account behavioral watch (link-optional). Alerts the mods out of band when a brand-new account posts
+        // a payload-bearing message; the real spam threat here often has no parseable link, so the link detector
+        // above misses it. Never blocks or bans, and runs before the IsBot return so new bot accounts are covered.
+        if (_scamGuard.Enabled && !isSelfMessage && !_scamGuard.TrustedBotIds.Contains(message.Author.Id))
+        {
+            await TryHandleNewAccountAlertAsync(message);
         }
 
         if (message.Author.IsBot)
@@ -1832,6 +1843,93 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "Failed to post scam alert to #{Channel}.", _scamGuard.AlertChannelName);
+        }
+    }
+
+    /// <summary>
+    /// New-account behavioral watch: when a brand-new account posts a payload-bearing message, alert the mods
+    /// out of band (in character) so they can review. Link-optional and precision-first (only genuinely new
+    /// accounts, only above a multi-signal score), alert-only (never blocks or bans), and per-user cooldowned.
+    /// </summary>
+    private async Task TryHandleNewAccountAlertAsync(SocketUserMessage message)
+    {
+        if (!_scamGuard.AlertNewAccounts || string.IsNullOrWhiteSpace(_scamGuard.AlertChannelName))
+        {
+            return;
+        }
+
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            var scanText = message.TextWithForwarded();
+            var signals = new NewAccountSignals(
+                AccountAgeDays: (now - message.Author.CreatedAt).TotalDays,
+                HasLink: DomainUtilities.ExtractHosts(scanText).Count > 0,
+                HasInvite: DomainUtilities.ContainsInvite(scanText),
+                HasAttachment: message.Attachments.Count > 0,
+                HasEmbed: message.Embeds.Count > 0,
+                MentionsEveryone: message.MentionedEveryone,
+                MentionedCount: message.MentionedUsers.Count + message.MentionedRoles.Count);
+
+            var verdict = NewAccountHeuristics.Evaluate(
+                signals, _scamGuard.NewAccountDays, _scamGuard.NewAccountAlertThreshold);
+            if (!verdict.ShouldAlert)
+            {
+                return;
+            }
+
+            // Alert once per newcomer, not once per message.
+            var cooldown = TimeSpan.FromSeconds(Math.Max(0, _scamGuard.NewAccountAlertCooldownSeconds));
+            if (_newAccountFlags.WasFlaggedWithin(message.Author.Id, now, cooldown))
+            {
+                return;
+            }
+            _newAccountFlags.Record(message.Author.Id, now, verdict.Reason);
+
+            _telemetry.Emit(new TelemetryEvent(
+                now,
+                TelemetryEventTypes.NewAccountFlag,
+                UserHash: UserIdHash.Hash(message.Author.Id),
+                Channel: message.Channel.Name,
+                Kind: message.Author.IsBot ? "bot" : "user",
+                Outcome: "alerted",
+                Count: (int)signals.AccountAgeDays,
+                Reason: verdict.Reason,
+                MessageId: message.Id));
+
+            await PostNewAccountAlertAsync(message, signals, verdict);
+            _logger.LogInformation(
+                "new_account_flag author={Author} acctAgeDays={Age} score={Score} reason={Reason} channel={Channel}",
+                message.Author.Id, (int)signals.AccountAgeDays, verdict.Score, verdict.Reason, message.Channel.Name);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "New-account watch threw; ignoring.");
+        }
+    }
+
+    private async Task PostNewAccountAlertAsync(SocketUserMessage message, NewAccountSignals signals, NewAccountVerdict verdict)
+    {
+        var guild = (message.Channel as SocketGuildChannel)?.Guild;
+        var alertChannel = guild?.TextChannels.FirstOrDefault(
+            c => string.Equals(c.Name, _scamGuard.AlertChannelName, StringComparison.OrdinalIgnoreCase));
+        if (guild is null || alertChannel is null)
+        {
+            return;
+        }
+
+        var jump = $"https://discord.com/channels/{guild.Id}/{message.Channel.Id}/{message.Id}";
+        var report =
+            $"INTRUDER SCAN: a freshly-minted account just scuttled into my domain. **{message.Author.Username}** " +
+            $"(`{message.Author.Id}`), a mere **{(int)signals.AccountAgeDays} days** old, posting in #{message.Channel.Name}. " +
+            $"Reeks of a throwaway. Signals: `{verdict.Reason}`. Inspect the rabble, mods.\n{jump}";
+        try
+        {
+            await alertChannel.SendMessageAsync(report, allowedMentions: AllowedMentions.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to post new-account alert to #{Channel}.", _scamGuard.AlertChannelName);
         }
     }
 

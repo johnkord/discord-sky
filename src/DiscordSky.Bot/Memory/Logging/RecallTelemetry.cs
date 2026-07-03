@@ -63,6 +63,8 @@ public static class TelemetryEventTypes
     public const string GatewayDisconnect = "gateway_disconnect";
     public const string ScamDetected = "scam_detected";
     public const string AutoModAction = "automod_action";
+    public const string NewAccountFlag = "new_account_flag";
+    public const string BanObserved = "ban_observed";
 }
 
 /// <summary>Test/CI default. Discards events.</summary>

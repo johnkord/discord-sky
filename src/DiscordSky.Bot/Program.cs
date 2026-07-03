@@ -49,6 +49,9 @@ else
 
 builder.Services.AddSingleton<RaidTracker>();
 builder.Services.AddSingleton<LearnedScamStore>();
+builder.Services.AddSingleton<NewAccountFlagLog>();
+builder.Services.AddSingleton<BanWatchService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<BanWatchService>());
 
 builder.Services.Configure<AutoModOptions>(builder.Configuration.GetSection(AutoModOptions.SectionName));
 builder.Services.AddSingleton<AutoModSyncService>();
@@ -73,7 +76,7 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<GreatestHitsRefres
 // GuildMembers is a PRIVILEGED intent (needs "Server Members Intent" in the dev portal). Request it ONLY when
 // member events are enabled, so a default deploy needs no portal change and cannot fail to connect.
 var memberEventsEnabled = builder.Configuration.GetValue<bool>($"{MemberEventsOptions.SectionName}:Enabled");
-var gatewayIntents = GatewayIntents.Guilds | GatewayIntents.GuildMessages | GatewayIntents.MessageContent | GatewayIntents.DirectMessages | GatewayIntents.GuildMessageReactions | GatewayIntents.AutoModerationActionExecution;
+var gatewayIntents = GatewayIntents.Guilds | GatewayIntents.GuildMessages | GatewayIntents.MessageContent | GatewayIntents.DirectMessages | GatewayIntents.GuildMessageReactions | GatewayIntents.AutoModerationActionExecution | GatewayIntents.GuildBans;
 if (memberEventsEnabled)
 {
 	gatewayIntents |= GatewayIntents.GuildMembers;

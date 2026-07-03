@@ -60,8 +60,20 @@ public sealed class ScamGuardOptions
     /// <summary>Bot/webhook user IDs that are trusted and never scanned (music bots, GitHub, etc.).</summary>
     public List<ulong> TrustedBotIds { get; init; } = new();
 
-    /// <summary>Accounts younger than this many days count as a "new account" corroborating signal for invites.</summary>
-    public int NewAccountDays { get; init; } = 7;
+    /// <summary>Accounts younger than this many days count as "new" for the invite corroboration AND the new-account watch.</summary>
+    public int NewAccountDays { get; init; } = 21;
+
+    /// <summary>
+    /// Whether to alert the mod channel (out of band, in character) when a brand-new account posts a
+    /// payload-bearing message. A link-optional behavioral watch; it never blocks or bans. Needs AlertChannelName.
+    /// </summary>
+    public bool AlertNewAccounts { get; init; } = true;
+
+    /// <summary>Score threshold for a new-account alert (NewAccountHeuristics: new=2, payload signals add 1-2).</summary>
+    public int NewAccountAlertThreshold { get; init; } = 3;
+
+    /// <summary>Per-user cooldown (seconds) so the same newcomer is flagged once, not once per message.</summary>
+    public int NewAccountAlertCooldownSeconds { get; init; } = 600;
 
     /// <summary>Sliding-window length, in seconds, for behavioral raid detection.</summary>
     public int RaidWindowSeconds { get; init; } = 60;
