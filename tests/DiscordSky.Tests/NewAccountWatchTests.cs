@@ -5,14 +5,15 @@ namespace DiscordSky.Tests;
 public class NewAccountHeuristicsTests
 {
     private static NewAccountSignals Signals(
-        double age, bool link = false, bool invite = false, bool attach = false,
-        bool embed = false, bool everyone = false, int mentions = 0)
-        => new(age, link, invite, attach, embed, everyone, mentions);
+        double age, bool invite = false, bool everyone = false, bool shortener = false,
+        bool linkOrEmbed = false, bool attach = false, int mentions = 0)
+        => new(age, invite, everyone, shortener, linkOrEmbed, attach, mentions);
 
     [Fact]
     public void OldAccount_NeverAlerts_EvenWithPayload()
     {
-        var v = NewAccountHeuristics.Evaluate(Signals(400, link: true, invite: true, everyone: true), newAccountDays: 21, threshold: 3);
+        var v = NewAccountHeuristics.Evaluate(
+            Signals(400, invite: true, everyone: true, linkOrEmbed: true), newAccountDays: 21, threshold: 3);
         Assert.False(v.ShouldAlert);
         Assert.Equal(0, v.Score);
     }
@@ -26,9 +27,10 @@ public class NewAccountHeuristicsTests
     }
 
     [Fact]
-    public void NewAccount_WithLink_Alerts()
+    public void NewAccount_WithLink_AlertsAtDefaultThreshold()
     {
-        var v = NewAccountHeuristics.Evaluate(Signals(3, link: true), 21, 3);
+        // On this rare-new-member server the default (3) is high-recall: a new account + any link alerts.
+        var v = NewAccountHeuristics.Evaluate(Signals(3, linkOrEmbed: true), 21, 3);
         Assert.True(v.ShouldAlert);
         Assert.Equal(3, v.Score);
         Assert.Contains("link", v.Reason);
@@ -36,36 +38,43 @@ public class NewAccountHeuristicsTests
     }
 
     [Fact]
-    public void NewAccount_WithInvite_Alerts()
+    public void LinkAndEmbed_AreOneSignal_NotTwo()
     {
-        var v = NewAccountHeuristics.Evaluate(Signals(6, invite: true), 21, 3);
-        Assert.True(v.ShouldAlert);
+        // A link and the embed Discord auto-generates for it must not double-count: score stays 3, not 4.
+        var v = NewAccountHeuristics.Evaluate(Signals(3, linkOrEmbed: true), 21, 4);
+        Assert.Equal(3, v.Score);
+        Assert.False(v.ShouldAlert); // a lone link is weak; below a strict threshold of 4
+    }
+
+    [Fact]
+    public void NewAccount_WithInvite_IsStrong()
+    {
+        var v = NewAccountHeuristics.Evaluate(Signals(6, invite: true), 21, 4);
+        Assert.True(v.ShouldAlert); // a strong signal reaches the strict threshold alone
         Assert.True(v.Score >= 4);
     }
 
     [Fact]
-    public void NewAccount_AttachmentOnly_Alerts()
+    public void NewAccount_WithShortener_IsStrong()
     {
-        Assert.True(NewAccountHeuristics.Evaluate(Signals(7, attach: true), 21, 3).ShouldAlert);
+        var v = NewAccountHeuristics.Evaluate(Signals(6, shortener: true), 21, 4);
+        Assert.True(v.ShouldAlert);
+        Assert.Contains("shortener", v.Reason);
     }
 
     [Fact]
-    public void NewAccount_EmbedOnly_Alerts()
+    public void NewAccount_EveryoneMention_IsStrong()
     {
-        Assert.True(NewAccountHeuristics.Evaluate(Signals(2, embed: true), 21, 3).ShouldAlert);
+        Assert.True(NewAccountHeuristics.Evaluate(Signals(2, everyone: true), 21, 4).ShouldAlert);
     }
 
     [Fact]
-    public void NewAccount_EveryoneMention_Alerts()
+    public void NewAccount_TwoWeakSignals_ReachStrictThreshold()
     {
-        Assert.True(NewAccountHeuristics.Evaluate(Signals(2, everyone: true), 21, 3).ShouldAlert);
-    }
-
-    [Fact]
-    public void Threshold_Respected()
-    {
-        // With a stricter threshold, a lone link is not enough.
-        Assert.False(NewAccountHeuristics.Evaluate(Signals(3, link: true), 21, 5).ShouldAlert);
+        // link + attachment: two weak signals corroborate to 4.
+        var v = NewAccountHeuristics.Evaluate(Signals(3, linkOrEmbed: true, attach: true), 21, 4);
+        Assert.Equal(4, v.Score);
+        Assert.True(v.ShouldAlert);
     }
 
     [Theory]
@@ -75,8 +84,8 @@ public class NewAccountHeuristicsTests
     public void MatchesTheMissedSpammers_YoungAccountWithPayload(double age)
     {
         // The three real 2026-07-02 misses were 6.2/7.0/7.5-day accounts posting a payload. Under the 21-day gate
-        // (raised from 7, which two of them exceeded), all three now alert.
-        Assert.True(NewAccountHeuristics.Evaluate(Signals(age, link: true), 21, 3).ShouldAlert);
+        // (raised from 7, which two of them exceeded), a young account with a link alerts at the default threshold.
+        Assert.True(NewAccountHeuristics.Evaluate(Signals(age, linkOrEmbed: true), 21, 3).ShouldAlert);
     }
 }
 

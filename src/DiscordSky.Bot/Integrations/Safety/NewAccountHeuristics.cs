@@ -9,11 +9,11 @@ namespace DiscordSky.Bot.Integrations.Safety;
 /// </summary>
 public readonly record struct NewAccountSignals(
     double AccountAgeDays,
-    bool HasLink,
     bool HasInvite,
-    bool HasAttachment,
-    bool HasEmbed,
     bool MentionsEveryone,
+    bool HasShortener,
+    bool HasLinkOrEmbed,
+    bool HasAttachment,
     int MentionedCount);
 
 /// <summary>Result of scoring a message: whether to alert the mods, the score, and a compact reason string.</summary>
@@ -41,11 +41,16 @@ public static class NewAccountHeuristics
         var score = 2;
         var reasons = new List<string> { $"new_account({s.AccountAgeDays:F0}d)" };
 
+        // Strong signals (each +2): the unambiguous new-account spam shapes. At a stricter threshold (4+) any one
+        // of these alerts on its own, while benign newcomer behavior does not.
         if (s.HasInvite) { score += 2; reasons.Add("invite"); }
         if (s.MentionsEveryone) { score += 2; reasons.Add("everyone"); }
-        if (s.HasLink) { score += 1; reasons.Add("link"); }
+        if (s.HasShortener) { score += 2; reasons.Add("shortener"); }
+
+        // Weak signals (each +1): benign for a real newcomer alone, corroborating together. A link and the embed
+        // Discord auto-generates for it are ONE signal, not two, so a single shared link is not double-counted.
+        if (s.HasLinkOrEmbed) { score += 1; reasons.Add("link"); }
         if (s.HasAttachment) { score += 1; reasons.Add("attachment"); }
-        if (s.HasEmbed) { score += 1; reasons.Add("embed"); }
         if (s.MentionedCount >= 3) { score += 1; reasons.Add($"mentions({s.MentionedCount})"); }
 
         var alert = score >= Math.Max(1, threshold);

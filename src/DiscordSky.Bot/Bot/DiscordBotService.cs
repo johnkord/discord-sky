@@ -1853,22 +1853,32 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     /// </summary>
     private async Task TryHandleNewAccountAlertAsync(SocketUserMessage message)
     {
-        if (!_scamGuard.AlertNewAccounts || string.IsNullOrWhiteSpace(_scamGuard.AlertChannelName))
+        if (!_scamGuard.AlertNewAccounts || string.IsNullOrWhiteSpace(_scamGuard.AlertChannelName)
+            || message.Channel is not SocketGuildChannel)
+        {
+            return;
+        }
+
+        // Cheap age gate FIRST: the overwhelming majority of messages come from established accounts, so skip the
+        // regex-heavy signal extraction (ExtractHosts / ContainsInvite) entirely for them.
+        var now = DateTimeOffset.UtcNow;
+        var ageDays = (now - message.Author.CreatedAt).TotalDays;
+        if (ageDays >= Math.Max(1, _scamGuard.NewAccountDays))
         {
             return;
         }
 
         try
         {
-            var now = DateTimeOffset.UtcNow;
             var scanText = message.TextWithForwarded();
+            var hosts = DomainUtilities.ExtractHosts(scanText);
             var signals = new NewAccountSignals(
-                AccountAgeDays: (now - message.Author.CreatedAt).TotalDays,
-                HasLink: DomainUtilities.ExtractHosts(scanText).Count > 0,
+                AccountAgeDays: ageDays,
                 HasInvite: DomainUtilities.ContainsInvite(scanText),
-                HasAttachment: message.Attachments.Count > 0,
-                HasEmbed: message.Embeds.Count > 0,
                 MentionsEveryone: message.MentionedEveryone,
+                HasShortener: hosts.Any(DomainUtilities.IsShortener),
+                HasLinkOrEmbed: hosts.Count > 0 || message.Embeds.Count > 0,
+                HasAttachment: message.Attachments.Count > 0,
                 MentionedCount: message.MentionedUsers.Count + message.MentionedRoles.Count);
 
             var verdict = NewAccountHeuristics.Evaluate(
@@ -1893,14 +1903,14 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 Channel: message.Channel.Name,
                 Kind: message.Author.IsBot ? "bot" : "user",
                 Outcome: "alerted",
-                Count: (int)signals.AccountAgeDays,
+                Count: (int)ageDays,
                 Reason: verdict.Reason,
                 MessageId: message.Id));
 
-            await PostNewAccountAlertAsync(message, signals, verdict);
+            await PostNewAccountAlertAsync(message, ageDays, verdict);
             _logger.LogInformation(
                 "new_account_flag author={Author} acctAgeDays={Age} score={Score} reason={Reason} channel={Channel}",
-                message.Author.Id, (int)signals.AccountAgeDays, verdict.Score, verdict.Reason, message.Channel.Name);
+                message.Author.Id, (int)ageDays, verdict.Score, verdict.Reason, message.Channel.Name);
         }
         catch (Exception ex)
         {
@@ -1908,7 +1918,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         }
     }
 
-    private async Task PostNewAccountAlertAsync(SocketUserMessage message, NewAccountSignals signals, NewAccountVerdict verdict)
+    private async Task PostNewAccountAlertAsync(SocketUserMessage message, double ageDays, NewAccountVerdict verdict)
     {
         var guild = (message.Channel as SocketGuildChannel)?.Guild;
         var alertChannel = guild?.TextChannels.FirstOrDefault(
@@ -1921,8 +1931,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         var jump = $"https://discord.com/channels/{guild.Id}/{message.Channel.Id}/{message.Id}";
         var report =
             $"INTRUDER SCAN: a freshly-minted account just scuttled into my domain. **{message.Author.Username}** " +
-            $"(`{message.Author.Id}`), a mere **{(int)signals.AccountAgeDays} days** old, posting in #{message.Channel.Name}. " +
-            $"Reeks of a throwaway. Signals: `{verdict.Reason}`. Inspect the rabble, mods.\n{jump}";
+            $"(`{message.Author.Id}`), a mere **{(int)ageDays} days** old, posting in #{message.Channel.Name}. " +
+            $"Reeks of a throwaway. Signals: `{verdict.Reason}`.{BuildAlertExcerpt(message)} Inspect the rabble, mods.\n{jump}";
         try
         {
             await alertChannel.SendMessageAsync(report, allowedMentions: AllowedMentions.None);
@@ -1931,6 +1941,27 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         {
             _logger.LogDebug(ex, "Failed to post new-account alert to #{Channel}.", _scamGuard.AlertChannelName);
         }
+    }
+
+    /// <summary>
+    /// A bounded, single-line excerpt of the flagged message for the mod alert, wrapped in an inline code span so
+    /// any link inside neither previews nor becomes clickable in the mod channel. Empty when there is no text.
+    /// </summary>
+    private static string BuildAlertExcerpt(SocketUserMessage message)
+    {
+        var text = (message.Content ?? string.Empty).Trim();
+        if (string.IsNullOrEmpty(text))
+        {
+            return message.Attachments.Count > 0 ? " Payload: [attachment, no text]." : string.Empty;
+        }
+
+        if (text.Length > 180)
+        {
+            text = text[..180] + "...";
+        }
+
+        text = text.Replace('`', '\'').Replace('\n', ' ');
+        return $" Payload: `{text}`.";
     }
 
     private async Task HandleScamReportAsync(SocketCommandContext context, SocketUserMessage message, string payload)
