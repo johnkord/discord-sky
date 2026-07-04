@@ -2,48 +2,47 @@ using System.Text.Json;
 using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Orchestration.Impulse;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OpenAI;
 using OpenAI.Responses;
 
 // ScenarioLab: Phase 0 of the eval harness (docs/scenario_eval_harness_design_2026-07-04.md).
-// Runs the REAL ColdOpenComposer against scenario fixtures and dumps its raw output. It does NOT judge;
+// Runs the REAL ColdOpenComposer over scenario fixtures and dumps its raw output. It does NOT judge;
 // judging is the session's and the human's job (see the discord-sky-eval skill). Nothing is posted to Discord.
+//
+// Fidelity: loads the bot's REAL LlmOptions from src/DiscordSky.Bot/appsettings.json (plus env overrides) and
+// builds the IChatClient the same way Program.cs does, so it exercises official bot code and config, not a
+// parallel reimplementation. Each run is stamped with the git SHA it built from (a dirty tree is flagged);
+// since we deploy after every change, that SHA is the deployed bot.
 //
 // Usage:
 //   OPENAI_API_KEY=sk-... dotnet run --project tools/DiscordSky.ScenarioLab -- <fixtures.json|dir> \
-//       [--model gpt-5.5] [--runs 1] [--json]
+//       [--model <override>] [--runs 1] [--json]
 //
+//   --model    override the configured ChatModel (for experiments); default is the bot's configured model.
 //   --runs N   compose each scenario N times to see the variance of a stochastic generator.
-//   --json     emit machine-readable records (one per scenario+run) for saving as a durable artifact.
+//   --json     emit machine-readable records, stamped with the bot source SHA, for saving as a durable artifact.
 
 if (args.Length == 0 || args.Contains("-h") || args.Contains("--help"))
 {
-    Console.WriteLine("Usage: OPENAI_API_KEY=... dotnet run --project tools/DiscordSky.ScenarioLab -- <fixtures.json|dir> [--model gpt-5.5] [--runs 1] [--json]");
+    Console.WriteLine("Usage: OPENAI_API_KEY=... dotnet run --project tools/DiscordSky.ScenarioLab -- <fixtures.json|dir> [--model <override>] [--runs 1] [--json]");
     return 0;
 }
 
 var path = args[0];
-var model = "gpt-5.5";
+string? modelOverride = null;
 var runs = 1;
 var asJson = false;
 for (var i = 1; i < args.Length; i++)
 {
     switch (args[i])
     {
-        case "--model" when i + 1 < args.Length: model = args[++i]; break;
+        case "--model" when i + 1 < args.Length: modelOverride = args[++i]; break;
         case "--runs" when i + 1 < args.Length && int.TryParse(args[i + 1], out var r): runs = Math.Max(1, r); i++; break;
         case "--json": asJson = true; break;
     }
-}
-
-var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY")
-    ?? Environment.GetEnvironmentVariable("LLM__Providers__OpenAI__ApiKey");
-if (string.IsNullOrWhiteSpace(apiKey))
-{
-    Console.Error.WriteLine("Set OPENAI_API_KEY (or LLM__Providers__OpenAI__ApiKey) in the environment.");
-    return 1;
 }
 
 var files = Directory.Exists(path)
@@ -64,20 +63,55 @@ foreach (var f in files)
 }
 if (scenarios.Count == 0) { Console.Error.WriteLine("No scenarios parsed."); return 1; }
 
-// Build the REAL ColdOpenComposer against the live model, using the Responses API path exactly as the bot does
-// for gpt-5.5 (Program.cs). The composer sets ModelId per request from the options below.
-var chatClient = new OpenAIClient(apiKey).GetResponsesClient(model).AsIChatClient();
-var llm = new LlmOptions
+// Resolve the repo root (independent of cwd) so we can load the bot's real config and stamp the git SHA.
+var repoRoot = FindRepoRoot();
+var appsettings = Path.Combine(repoRoot, "src", "DiscordSky.Bot", "appsettings.json");
+if (!File.Exists(appsettings)) { Console.Error.WriteLine($"Could not find bot config at {appsettings}"); return 1; }
+
+// Base config: the bot's appsettings + its Development overlay + environment (so LLM__... env overrides apply,
+// exactly like the bot). Then overlay the API key (from OPENAI_API_KEY) and any --model override.
+var baseCfg = new ConfigurationBuilder()
+    .AddJsonFile(appsettings, optional: false)
+    .AddJsonFile(Path.Combine(repoRoot, "src", "DiscordSky.Bot", "appsettings.Development.json"), optional: true)
+    .AddEnvironmentVariables()
+    .Build();
+
+var activeProvider = baseCfg["LLM:ActiveProvider"] ?? "OpenAI";
+var apiKey = baseCfg[$"LLM:Providers:{activeProvider}:ApiKey"];
+if (string.IsNullOrWhiteSpace(apiKey)) apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+if (string.IsNullOrWhiteSpace(apiKey))
 {
-    ActiveProvider = "OpenAI",
-    Providers = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["OpenAI"] = new LlmProviderOptions { ApiKey = apiKey, ChatModel = model, UseResponsesApi = true },
-    },
-};
+    Console.Error.WriteLine($"No API key for provider '{activeProvider}'. Set OPENAI_API_KEY (or LLM__Providers__{activeProvider}__ApiKey).");
+    return 1;
+}
+
+var overlay = new Dictionary<string, string?> { [$"LLM:Providers:{activeProvider}:ApiKey"] = apiKey };
+if (!string.IsNullOrWhiteSpace(modelOverride)) overlay[$"LLM:Providers:{activeProvider}:ChatModel"] = modelOverride;
+var cfg = new ConfigurationBuilder().AddConfiguration(baseCfg).AddInMemoryCollection(overlay).Build();
+
+var llm = cfg.GetSection("LLM").Get<LlmOptions>() ?? new LlmOptions();
+if (!llm.Providers.TryGetValue(llm.ActiveProvider, out var provider))
+{
+    Console.Error.WriteLine($"Active provider '{llm.ActiveProvider}' is not configured in appsettings.");
+    return 1;
+}
+var model = provider.ChatModel;
+
+// Build the IChatClient EXACTLY as Program.cs does: honor a custom endpoint, and choose the Responses API vs
+// Chat Completions the same way the bot does. This is the real construction path, not a simplified copy.
+var openAiClient = string.IsNullOrWhiteSpace(provider.Endpoint)
+    ? new OpenAIClient(provider.ApiKey)
+    : new OpenAIClient(new System.ClientModel.ApiKeyCredential(provider.ApiKey), new OpenAIClientOptions { Endpoint = new Uri(provider.Endpoint) });
+var chatClient = provider.UseResponsesApi
+    ? openAiClient.GetResponsesClient(model).AsIChatClient()
+    : openAiClient.GetChatClient(model).AsIChatClient();
+
 var composer = new ColdOpenComposer(chatClient, new StaticOptionsMonitor<LlmOptions>(llm), NullLogger<ColdOpenComposer>.Instance);
 
-Console.Error.WriteLine($"Composing {scenarios.Count} scenario(s) x {runs} run(s) with model {model}...");
+var sourceSha = GitStamp(repoRoot);
+if (sourceSha.EndsWith("-dirty", StringComparison.Ordinal))
+    Console.Error.WriteLine("warning: working tree is dirty; this eval reflects uncommitted changes, not a committed/deployed state.");
+Console.Error.WriteLine($"Composing {scenarios.Count} scenario(s) x {runs} run(s) | provider {llm.ActiveProvider} | model {model} | bot source {sourceSha}");
 
 var records = new List<OutputRecord>();
 foreach (var s in scenarios)
@@ -99,7 +133,8 @@ foreach (var s in scenarios)
 
 if (asJson)
 {
-    Console.WriteLine(JsonSerializer.Serialize(records, new JsonSerializerOptions { WriteIndented = true }));
+    var payload = new { botSourceSha = sourceSha, model, activeProvider = llm.ActiveProvider, generatedAt = DateTimeOffset.UtcNow, records };
+    Console.WriteLine(JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
     return 0;
 }
 
@@ -123,8 +158,45 @@ foreach (var group in records.GroupBy(r => r.Scenario))
 }
 
 Console.WriteLine();
-Console.WriteLine($"{records.Count} output(s) from {scenarios.Count} scenario(s). This tool does not judge; that is the session's and your job.");
+Console.WriteLine($"{records.Count} output(s) from {scenarios.Count} scenario(s), bot source {sourceSha}. This tool does not judge; that is the session's and your job.");
 return 0;
+
+// --- helpers ---
+
+static string FindRepoRoot()
+{
+    var dir = new DirectoryInfo(AppContext.BaseDirectory);
+    while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "DiscordSky.sln")))
+        dir = dir.Parent;
+    return dir?.FullName ?? Directory.GetCurrentDirectory();
+}
+
+static string GitStamp(string repoRoot)
+{
+    string Run(string arguments)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("git", arguments)
+            {
+                WorkingDirectory = repoRoot,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            };
+            using var proc = System.Diagnostics.Process.Start(psi);
+            if (proc is null) return string.Empty;
+            var text = proc.StandardOutput.ReadToEnd().Trim();
+            proc.WaitForExit();
+            return proc.ExitCode == 0 ? text : string.Empty;
+        }
+        catch { return string.Empty; }
+    }
+
+    var sha = Run("rev-parse --short HEAD");
+    if (string.IsNullOrEmpty(sha)) return "unknown";
+    return string.IsNullOrWhiteSpace(Run("status --porcelain")) ? sha : sha + "-dirty";
+}
 
 // --- types (fixtures schema + output record + a minimal options monitor) ---
 

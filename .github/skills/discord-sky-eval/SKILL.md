@@ -70,16 +70,60 @@ second list. When in genuine doubt, escalate rather than guess.
 
 ---
 
+## Execution model: run it locally, not in the pod
+
+Run the harness locally in the repo (dotnet run), calling the real bot components through a project
+reference. Do NOT run the bot under test via kubectl inside the AKS pod. Testing official code is a
+code-reference property, not a location one: fidelity comes from CALLING the real compiled components,
+not from where the process runs.
+
+Why not in the pod:
+
+- The deployed bot is a long-running worker driven by live Discord events and timers, not a
+  scenario-in, output-out harness. Evaluating through it means injecting synthetic traffic or exec-ing
+  a separate process in the pod: invasive, non-reproducible, and it risks actually posting to Discord.
+- In-pod eval shares the process, API key, rate limits, telemetry, and gateway with the live bot, which
+  breaks the offline-only guardrail.
+- The whole value is dozens of outputs in minutes. An in-pod loop is edit, rebuild image, push,
+  redeploy, exec: the slow loop the harness exists to escape.
+- Controlled A/B (baseline versus candidate prompt), N-run variance, and blind pairwise all need the
+  harness to control the inputs. The live pod runs on live state you cannot freeze or replay.
+
+You already have the in-cluster, official, end-to-end eval: it is SHADOW MODE. `ColdOpen__ShadowMode=true`
+runs the real deployed bot, real config, real live state, the full gate-to-compose pipeline, and logs
+what it would post without posting, grounded by real reactions. The local harness is the complementary
+tier shadow mode cannot be: fast, controlled, counterfactual, and runnable before you deploy. Use
+kubectl (the `discord-sky-ops` skill) to READ ground truth out of the cluster (real transcripts for
+fixtures, real reactions for grounding), never to RUN the bot under test.
+
+Fidelity rules for the local harness (so it never tests diverged code):
+
+- Call bot code; never reimplement it. Construct and invoke real components, but do not restate their
+  prompts or logic. If a check needs the prompt, call the real builder (for example
+  `ColdOpenComposer.BuildSystemPrompt`), never a copy.
+- Load the bot's real config, do not hardcode. ScenarioLab binds `LlmOptions` from
+  `src/DiscordSky.Bot/appsettings.json` (plus env) and builds the `IChatClient` the same way
+  `Program.cs` does (endpoint plus the Responses-versus-Chat branch).
+- Stamp every run with the git SHA it built from (ScenarioLab prints it; a dirty tree is flagged).
+  Because we deploy after every change, that SHA is the deployed bot, so each eval carries a mechanical
+  "official code at <sha>" proof, not a trusted assumption. A dirty-tree eval is a draft, not a verdict
+  on shippable code.
+
+---
+
 ## The eval round (steps)
 
-Steps marked [provisional] depend on the `tools/DiscordSky.ScenarioLab` console tool, which is not
-built yet (Phase 0 of the design). Until it exists, run the real components directly or judge real
-shadow output pulled via `discord-sky-ops`.
+The `tools/DiscordSky.ScenarioLab` console tool exists for cold opens (Phase 0): it runs the real
+ColdOpenComposer over scenario fixtures and dumps output. Run it LOCALLY (see the execution-model
+section above):
+`OPENAI_API_KEY=... dotnet run --project tools/DiscordSky.ScenarioLab -- tools/DiscordSky.ScenarioLab/fixtures/coldopen-scenarios.json [--runs 3] [--json]`.
+Steps marked [provisional] cover what the tool does not yet drive (the ambient worth and reaction
+behaviors, and the pairwise-queue plumbing).
 
 1. Read the why-corpus and the rubric so this round judges by the same standard as the last.
 2. Assemble scenarios (real snapshots plus synthetic edge cases).
-3. [provisional] Run the harness to emit the bot's raw output per scenario (line, worth, hook, or
-   decline). No judgment in the tool.
+3. Run the harness (ScenarioLab for cold opens) to emit the bot's raw output per scenario (line, worth,
+   hook, or decline). No judgment in the tool; it stamps each run with the bot source SHA.
 4. Judge the checkable axes; pre-filter the obviously-broken.
 5. Build the blind pairwise humor queue from the survivors, slipping in the occasional real human line
    from the same moment (the equal-severity check) and the occasional repeat (self-consistency).
@@ -141,6 +185,7 @@ lines ship.
 
 ## Status
 
-This skill is intentionally lean and provisional. The mechanical steps firm up once Phase 0 (the
-ScenarioLab tool) exists and the loop has actually run. Treat the skill as living: update it from what
-a real round teaches, the same way the design treats the eval itself as a living thing.
+Phase 0 (the ScenarioLab tool) is built for cold opens, and it loads real config and stamps the bot
+source SHA; the loop has not yet run against a live key. The rest stays lean and provisional and firms
+up as real rounds teach us. Treat the skill as living: update it from what a real round teaches, the
+same way the design treats the eval itself as a living thing.
