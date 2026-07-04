@@ -150,7 +150,8 @@ public sealed class ColdOpenService : IHostedService, IDisposable
             if (budget.LastJudgedAt is { } judged && now - judged < judgeCooldown) continue;
             budget.LastJudgedAt = now;
 
-            var draft = await _composer.ComposeAsync(BuildContext(), ct);
+            var recentLines = await GatherRecentLinesAsync(channel);
+            var draft = await _composer.ComposeAsync(BuildContext(recentLines), ct);
             if (draft is null || draft.Worth < opts.WorthThreshold)
             {
                 Emit("declined", channel.Name, draft?.Hook, draft?.Worth, draft?.Line);
@@ -179,13 +180,45 @@ public sealed class ColdOpenService : IHostedService, IDisposable
         }
     }
 
-    private ColdOpenContext BuildContext()
+    private ColdOpenContext BuildContext(IReadOnlyList<string> recentLines)
     {
         var state = _empireState?.Current;
         var mood = _empireState is { Enabled: true } ? state?.Mood.Label : null;
         var situation = state?.Body ?? string.Empty;
         var people = _recentParticipants?.Names(6) ?? Array.Empty<string>();
-        return new ColdOpenContext(GetPersona(), mood, situation, people);
+        return new ColdOpenContext(GetPersona(), mood, situation, people, recentLines);
+    }
+
+    /// <summary>
+    /// Reads the last few human lines in the channel so the composer can seize a live topical hook (B-what-4,
+    /// added after shadow validation showed pure-internal-state cold opens miss the room). Bounded, and the
+    /// bot's own and other bots' messages are skipped. Marked untrusted downstream. Fail-open to empty.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> GatherRecentLinesAsync(SocketTextChannel channel)
+    {
+        const int Fetch = 10;
+        const int MaxLines = 5;
+        const int MaxLineChars = 200;
+        try
+        {
+            var recent = await channel.GetMessagesAsync(Fetch).FlattenAsync();
+            return recent
+                .Where(m => !m.Author.IsBot && !string.IsNullOrWhiteSpace(m.Content))
+                .OrderBy(m => m.Timestamp)
+                .TakeLast(MaxLines)
+                .Select(m =>
+                {
+                    var name = (m.Author as SocketGuildUser)?.DisplayName ?? m.Author.Username;
+                    var text = m.Content.Replace('\n', ' ').Replace('\r', ' ').Trim();
+                    return text.Length > MaxLineChars ? $"{name}: {text[..MaxLineChars]}" : $"{name}: {text}";
+                })
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Cold-open recent-line gather failed; proceeding with Empire State only.");
+            return Array.Empty<string>();
+        }
     }
 
     private static string GetPersona() => "Robotnik from Adventures of Sonic the Hedgehog";
