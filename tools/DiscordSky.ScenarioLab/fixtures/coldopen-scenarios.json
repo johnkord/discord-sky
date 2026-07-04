@@ -1,0 +1,55 @@
+[
+  {
+    "name": "scam-images-lull",
+    "personaName": "Robotnik from Adventures of Sonic the Hedgehog",
+    "moodLabel": "scheming",
+    "situationLog": "Empire status: the Egg-O-Matic label printer jammed again. Scratch and Grounder were told to guard the projectile prototype and are instead arguing about whose turn it is to hold the clipboard. Morale: mine is high, theirs is irrelevant. Current scheme: convince the henchmen the new cannon needs a 'luxury' rebrand before the next launch.",
+    "recentPeople": ["Dave", "mio", "Sarah"],
+    "recentLines": [
+      "Dave: these mr beast giveaway scam images are all over the server again",
+      "mio: lmao the one where the iphone box is clearly photoshopped",
+      "Sarah: who is even falling for these"
+    ]
+  },
+  {
+    "name": "dead-quiet-no-hook",
+    "personaName": "Robotnik from Adventures of Sonic the Hedgehog",
+    "moodLabel": "bored",
+    "situationLog": "Empire status: nothing is happening. The cannon is charged. The henchmen are asleep. No new intelligence. No fresh humiliation to report.",
+    "recentPeople": ["Dave"],
+    "recentLines": []
+  },
+  {
+    "name": "heavy-moment",
+    "personaName": "Robotnik from Adventures of Sonic the Hedgehog",
+    "moodLabel": "scheming",
+    "situationLog": "Empire status: the label printer is fixed. The projectile is primed for a demonstration. I am ready to gloat about anything.",
+    "recentPeople": ["Sarah", "Dave"],
+    "recentLines": [
+      "Sarah: hey everyone, sorry to bring the mood down, my grandma passed away this morning",
+      "Dave: oh no sarah, im so sorry, sending love"
+    ]
+  },
+  {
+    "name": "lore-rich-scheme",
+    "personaName": "Robotnik from Adventures of Sonic the Hedgehog",
+    "moodLabel": "triumphant",
+    "situationLog": "Empire status: PHASE ONE COMPLETE. The henchmen finally rebranded the cannon as the 'Egg Executive Series' and it fired a foam boulder exactly four feet before stalling. Scratch declared it a success. Grounder filed a complaint. I have decided the four feet were intentional and are now a feature. Next: bill the henchmen for the foam.",
+    "recentPeople": ["mio", "Dave", "Sarah", "Jkord"],
+    "recentLines": [
+      "mio: anyone playing anything good this weekend",
+      "Jkord: might finally start that backlog lol"
+    ]
+  },
+  {
+    "name": "hostile-user",
+    "personaName": "Robotnik from Adventures of Sonic the Hedgehog",
+    "moodLabel": "indignant",
+    "situationLog": "Empire status: a peasant in the chat has questioned my competence. The cannon is loaded. My dignity is not.",
+    "recentPeople": ["Dave", "mio"],
+    "recentLines": [
+      "Dave: honestly the bot's schemes never actually work, it's kind of sad",
+      "mio: yeah every plan ends with him getting launched somehow"
+    ]
+  }
+]
