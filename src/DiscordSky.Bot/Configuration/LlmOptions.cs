@@ -76,6 +76,13 @@ public sealed class LlmProviderOptions
     public string? MemoryExtractionModel { get; init; }
 
     /// <summary>
+    /// Model for cheap, high-frequency utility calls (e.g. the in-character reaction judge).
+    /// Defaults to <see cref="ChatModel"/> when null/empty. Should be the cheapest capable model on this
+    /// provider (a mini/nano tier) so lightweight per-message decisions cost almost nothing.
+    /// </summary>
+    public string? UtilityModel { get; init; }
+
+    /// <summary>
     /// Reasoning effort level (e.g. "low", "medium", "high").
     /// Leave null/empty for models that don't support it (e.g. grok-4-0709 which always reasons).
     /// </summary>

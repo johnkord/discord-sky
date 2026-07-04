@@ -25,6 +25,10 @@ data:
   # keeping production on OpenAI even if the out-of-band Secret still names another provider.
   LLM__ActiveProvider: "OpenAI"
   LLM__Providers__OpenAI__ChatModel: "gpt-5.5"
+  # Cheap model for high-frequency utility calls (the in-character reaction judge). There is no gpt-5.5-mini;
+  # gpt-5.4-mini is the newest cheap tier (gpt-5.4-nano is cheaper still). Change just this value to swap; no
+  # rebuild needed, only a pod restart to re-read the env.
+  LLM__Providers__OpenAI__UtilityModel: "gpt-5.4-mini"
   LLM__Providers__OpenAI__MaxTokens: "1200"
   LLM__Providers__OpenAI__ReasoningEffort: "medium"
   LLM__Providers__OpenAI__UseResponsesApi: "true"
@@ -57,9 +61,12 @@ data:
   Reactions__Enabled: "true"
   Reactions__BaseDirectory: "/app/data/user_memories/reactions"
   Reactions__RetentionDays: "30"
-  # In-character emoji reactions: Robotnik slaps a derisive emoji on a message he did NOT reply to.
-  Reactions__EmojiReactChance: "0.08"
-  Reactions__EmojiReactCooldownSeconds: "90"
+  # In-character emoji reactions: on a message he did NOT reply to, a cheap LLM (UtilityModel) decides whether
+  # Robotnik renders a one-emoji verdict (from the unicode palette + the guild's custom emotes) or declines.
+  # The cooldown caps judge calls per channel (react OR decline), keeping it rare, tasteful, and cheap.
+  Reactions__EmojiReactEnabled: "true"
+  Reactions__EmojiReactCooldownSeconds: "150"
+  Reactions__MaxCustomEmotes: "30"
   # Proven bits: rank his best-received past lines (by reaction) and feed the winners back into the persona prompt.
   Reactions__ProvenBitsEnabled: "true"
   Reactions__ProvenBitsPoolSize: "10"

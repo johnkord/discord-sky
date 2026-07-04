@@ -6,6 +6,7 @@ using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Integrations;
 using DiscordSky.Bot.Integrations.Images;
 using DiscordSky.Bot.Integrations.LinkUnfurling;
+using DiscordSky.Bot.Integrations.Reactions;
 using DiscordSky.Bot.Integrations.Safety;
 using DiscordSky.Bot.Memory;
 using DiscordSky.Bot.Memory.Logging;
@@ -32,7 +33,9 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly IRandomProvider _randomProvider;
     private readonly IReactionSink _reactionSink;
     private readonly int _reactionExcerptLength;
-    private readonly double _emojiReactChance;
+    private readonly ReactionJudge? _reactionJudge;
+    private readonly bool _emojiReactEnabled;
+    private readonly int _maxCustomEmotes;
     private readonly TimeSpan _emojiReactCooldown;
     private readonly ConcurrentDictionary<ulong, DateTimeOffset> _reactCooldowns = new();
     private readonly ImageToolService? _imageToolService;
@@ -65,6 +68,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         IRandomProvider? randomProvider = null,
         IReactionSink? reactionSink = null,
         IOptions<ReactionOptions>? reactionOptions = null,
+        ReactionJudge? reactionJudge = null,
         ImageToolService? imageToolService = null,
         ImageRewriter? imageRewriter = null,
         IOptions<ScamGuardOptions>? scamGuardOptions = null,
@@ -86,8 +90,10 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _randomProvider = randomProvider ?? DefaultRandomProvider.Instance;
         _reactionSink = reactionSink ?? new NoOpReactionSink();
         _reactionExcerptLength = reactionOptions?.Value.ReplyExcerptLength ?? 200;
-        _emojiReactChance = reactionOptions?.Value.EmojiReactChance ?? 0.0;
-        _emojiReactCooldown = TimeSpan.FromSeconds(Math.Max(0, reactionOptions?.Value.EmojiReactCooldownSeconds ?? 90));
+        _reactionJudge = reactionJudge;
+        _emojiReactEnabled = reactionOptions?.Value.EmojiReactEnabled ?? false;
+        _maxCustomEmotes = Math.Max(0, reactionOptions?.Value.MaxCustomEmotes ?? 30);
+        _emojiReactCooldown = TimeSpan.FromSeconds(Math.Max(0, reactionOptions?.Value.EmojiReactCooldownSeconds ?? 150));
         _imageToolService = imageToolService;
         _imageRewriter = imageRewriter;
         _scamGuard = scamGuardOptions?.Value ?? new ScamGuardOptions { Enabled = false };
@@ -470,42 +476,122 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             }
         }
 
-        // He held his tongue this turn: maybe just editorialize with a single in-character emoji reaction.
-        // Cheap presence that costs no LLM call and does not dominate the channel.
+        // He held his tongue this turn: maybe editorialize with a single in-character emoji reaction, chosen
+        // by a cheap LLM. Rare, per-channel throttled, and off the reply path, so it stays presence-not-noise.
         await MaybeReactInCharacterAsync(message);
     }
 
     /// <summary>
-    /// When the bot chose not to reply, occasionally add a single in-character emoji reaction to the message.
-    /// Rate-limited per channel so he does not carpet-react. Fail-open: reaction failures are swallowed.
+    /// When the bot chose not to reply, occasionally add a single in-character emoji reaction, chosen by a
+    /// cheap LLM "reaction judge" that renders the persona's verdict on the message (or declines, the common
+    /// case). A per-channel cooldown bounds how often a judge call is spent (whether it reacts or declines),
+    /// so an active channel triggers at most one call per window. The judge's choice is validated against the
+    /// offered emoji set before reacting. Custom server emotes need a guild, so DMs get nothing. Fail-open.
     /// </summary>
     private async Task MaybeReactInCharacterAsync(SocketUserMessage message)
     {
-        if (_emojiReactChance <= 0.0 || _randomProvider.NextDouble() >= _emojiReactChance)
+        if (!_emojiReactEnabled || _reactionJudge is null)
+        {
+            return;
+        }
+
+        // Custom emotes (and the whole feature) need a guild; skip DMs and group channels.
+        if (message.Channel is not SocketGuildChannel guildChannel)
         {
             return;
         }
 
         var channelId = message.Channel.Id;
         var now = DateTimeOffset.UtcNow;
+        // The cooldown is the cost/spam guard, NOT the decision: it caps judge calls per channel. A react and a
+        // decline both start it, so a busy channel spends at most one cheap call per window.
         if (_reactCooldowns.TryGetValue(channelId, out var last) && now - last < _emojiReactCooldown)
         {
             return;
         }
-
         _reactCooldowns[channelId] = now;
+
         try
         {
-            var emoji = RobotnikReactions.Pick(_randomProvider);
-            await message.AddReactionAsync(new Emoji(emoji));
+            var (allowed, tokenToEmote) = BuildAllowedReactions(guildChannel.Guild);
+            if (allowed.Count == 0)
+            {
+                return;
+            }
+
+            var authorName = (message.Author as SocketGuildUser)?.DisplayName ?? message.Author.Username;
+            var request = new ReactionRequest(
+                PersonaName: GetDefaultPersona(),
+                AuthorDisplayName: authorName,
+                MessageText: message.Content ?? string.Empty,
+                Context: null,
+                Allowed: allowed);
+
+            var verdict = await _reactionJudge.JudgeAsync(request, _shutdownCts.Token);
+            if (verdict is null)
+            {
+                return; // he deigned not to react (the common, correct outcome)
+            }
+
+            // Defence in depth: only ever post an emote we actually offered.
+            if (!tokenToEmote.TryGetValue(verdict.Token, out var emote))
+            {
+                return;
+            }
+
+            await message.AddReactionAsync(emote);
             _logger.LogInformation(
-                "in_character_reaction emote={Emote} channel={Channel} message={MessageId}",
-                emoji, message.Channel.Name, message.Id);
+                "in_character_reaction emote={Emote} custom={Custom} channel={Channel} message={MessageId} why={Why}",
+                verdict.Token, emote is Emote, message.Channel.Name, message.Id, verdict.Rationale);
         }
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "In-character reaction failed; ignoring.");
         }
+    }
+
+    /// <summary>
+    /// Builds the emoji set offered to the reaction judge: the unicode palette plus up to
+    /// <see cref="_maxCustomEmotes"/> of the guild's custom emotes. Returns both the descriptors (for the
+    /// prompt) and a case-insensitive token-to-emote map (for validating and posting the choice). A custom
+    /// emote whose name collides with a unicode token is skipped so the unicode meaning stays intact.
+    /// </summary>
+    private (IReadOnlyList<AllowedEmote> Allowed, Dictionary<string, IEmote> Map) BuildAllowedReactions(SocketGuild guild)
+    {
+        var allowed = new List<AllowedEmote>(RobotnikReactions.Unicode.Count + _maxCustomEmotes);
+        var map = new Dictionary<string, IEmote>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var e in RobotnikReactions.Unicode)
+        {
+            if (map.TryAdd(e.Token, new Emoji(e.Emoji)))
+            {
+                allowed.Add(new AllowedEmote(e.Token, e.Meaning, IsCustom: false));
+            }
+        }
+
+        if (_maxCustomEmotes > 0 && guild is not null)
+        {
+            var count = 0;
+            foreach (var emote in guild.Emotes)
+            {
+                if (count >= _maxCustomEmotes)
+                {
+                    break;
+                }
+                if (string.IsNullOrWhiteSpace(emote.Name))
+                {
+                    continue;
+                }
+                // GuildEmote is an IEmote, usable directly for AddReactionAsync.
+                if (map.TryAdd(emote.Name, emote))
+                {
+                    allowed.Add(new AllowedEmote(emote.Name, string.Empty, IsCustom: true));
+                    count++;
+                }
+            }
+        }
+
+        return (allowed, map);
     }
 
     /// <summary>

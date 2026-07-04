@@ -5,6 +5,7 @@ using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Integrations.Images;
 using DiscordSky.Bot.Integrations.LinkUnfurling;
 using DiscordSky.Bot.Integrations.Members;
+using DiscordSky.Bot.Integrations.Reactions;
 using DiscordSky.Bot.Integrations.Safety;
 using DiscordSky.Bot.Memory;
 using DiscordSky.Bot.Memory.Logging;
@@ -183,6 +184,8 @@ builder.Services.AddSingleton<IImageGenerationLog>(sp => sp.GetRequiredService<F
 builder.Services.AddHostedService(sp => sp.GetRequiredService<FileBackedImageGenerationLog>());
 builder.Services.AddSingleton<ImageBudget>();
 builder.Services.AddSingleton<ImageRewriter>();
+// One cheap-LLM call decides Robotnik's in-character emoji reaction to messages he did NOT reply to.
+builder.Services.AddSingleton<ReactionJudge>();
 // The generator resolves the OpenAI image key independently of the active chat provider (images always
 // go through OpenAI). Falls back to a disabled NoOp when off or when no key is present.
 builder.Services.AddSingleton<IImageGenerator>(sp =>

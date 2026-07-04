@@ -146,23 +146,30 @@ public class GreatestHitsCacheTests
 
 public class RobotnikReactionsTests
 {
-    private sealed class FixedRng : IRandomProvider
+    [Fact]
+    public void Unicode_FirstEntry_IsEgg()
     {
-        private readonly double _value;
-        public FixedRng(double value) => _value = value;
-        public double NextDouble() => _value;
+        Assert.Equal("egg", RobotnikReactions.Unicode[0].Token);
+        Assert.Equal("\U0001F95A", RobotnikReactions.Unicode[0].Emoji);
     }
 
     [Fact]
-    public void Pick_FirstOfPalette_IsEgg()
+    public void Unicode_AllEntries_HaveTokenEmojiAndMeaning()
     {
-        Assert.Equal("\U0001F95A", RobotnikReactions.Pick(new FixedRng(0.0)));
+        Assert.NotEmpty(RobotnikReactions.Unicode);
+        Assert.All(RobotnikReactions.Unicode, e =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(e.Token));
+            Assert.False(string.IsNullOrWhiteSpace(e.Emoji));
+            Assert.False(string.IsNullOrWhiteSpace(e.Meaning));
+        });
     }
 
     [Fact]
-    public void Pick_TopOfRange_StaysInBounds()
+    public void Unicode_Tokens_AreUnique()
     {
-        Assert.False(string.IsNullOrEmpty(RobotnikReactions.Pick(new FixedRng(0.999999))));
+        var tokens = RobotnikReactions.Unicode.Select(e => e.Token).ToList();
+        Assert.Equal(tokens.Count, tokens.Distinct(StringComparer.OrdinalIgnoreCase).Count());
     }
 }
 

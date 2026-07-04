@@ -169,11 +169,14 @@ public sealed class ReactionOptions
     /// <summary>Max characters of the bot reply excerpt stored with each reaction (for join-free analysis).</summary>
     public int ReplyExcerptLength { get; set; } = 200;
 
-    /// <summary>Chance [0,1] that Robotnik adds a single in-character emoji reaction to a message he did NOT reply to. 0 disables.</summary>
-    public double EmojiReactChance { get; set; } = 0.0;
+    /// <summary>Whether Robotnik may add a single in-character emoji reaction (chosen by a cheap LLM judge) to a message he did NOT reply to.</summary>
+    public bool EmojiReactEnabled { get; set; } = false;
 
-    /// <summary>Per-channel cooldown (seconds) between in-character emoji reactions, so he does not carpet-react.</summary>
-    public int EmojiReactCooldownSeconds { get; set; } = 90;
+    /// <summary>Per-channel cooldown (seconds) between reaction-judge calls, bounding LLM cost and stopping carpet-reacting. Applies whether he reacts or declines.</summary>
+    public int EmojiReactCooldownSeconds { get; set; } = 150;
+
+    /// <summary>Max number of the guild's custom emotes offered to the reaction judge (bounds prompt size and cost). 0 = unicode palette only.</summary>
+    public int MaxCustomEmotes { get; set; } = 30;
 
     /// <summary>Whether to inject "proven bits" (the bot's best-received past lines, ranked by reaction) into the persona prompt.</summary>
     public bool ProvenBitsEnabled { get; set; } = true;
