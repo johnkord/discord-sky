@@ -33,8 +33,8 @@ public sealed class EmpireStateOptions
     /// <summary>His resting valence (defeated -1 to triumphant +1); mood decays toward this.</summary>
     public double BaselineValence { get; set; } = 0.3;
 
-    /// <summary>His resting arousal (sulking -1 to manic-scheming +1); mood decays toward this.</summary>
-    public double BaselineArousal { get; set; } = 0.5;
+    /// <summary>His resting arousal (sulking -1 to manic-scheming +1); mood decays toward this. Kept moderate (not pinned high) so both energetic and calm moods stay reachable. Tunable on live data.</summary>
+    public double BaselineArousal { get; set; } = 0.2;
 
     /// <summary>Max remembered ranks (titles he has bestowed) before the freshest are kept and the rest dropped.</summary>
     public int RanksMax { get; set; } = 40;

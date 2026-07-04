@@ -80,7 +80,7 @@ data:
   EmpireState__MinBodyRetainFraction: "0.5"
   EmpireState__MoodRetain: "0.7"
   EmpireState__BaselineValence: "0.3"
-  EmpireState__BaselineArousal: "0.5"
+  EmpireState__BaselineArousal: "0.2"
   EmpireState__RanksMax: "40"
   EmpireState__RankIdleTicksMax: "8"
   EmpireState__MaxRankOpsPerTick: "2"

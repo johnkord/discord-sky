@@ -46,7 +46,7 @@ public sealed class EmpireBodyConsolidator
             {
                 ModelId = ResolveUtilityModel(),
                 Instructions = BuildSystemPrompt(options),
-                MaxOutputTokens = 1500,
+                MaxOutputTokens = 2000,
             };
             var response = await _chatClient.GetResponseAsync(messages, chatOptions, cancellationToken);
             return Parse(response.Text, state.Body, candidates, options);

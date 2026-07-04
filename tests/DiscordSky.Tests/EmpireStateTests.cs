@@ -64,7 +64,7 @@ public class EmpireTickTests
     public void Advance_DecaysMoodAndAgesRanks()
     {
         var s = State(EmpireMood.Make(-1.0, 1.0), new Rank("A", "Egg-Polisher", 0));
-        var (mood, ranks) = EmpireTick.Advance(s, Opts(), pending: null);
+        var (mood, ranks) = EmpireTick.Advance(s, Opts());
         Assert.True(mood.Valence > -1.0); // decayed toward +0.3
         Assert.Single(ranks);
         Assert.Equal(1, ranks[0].IdleTicks);
@@ -75,7 +75,7 @@ public class EmpireTickTests
     {
         var o = Opts();
         var s = State(EmpireMood.Make(0.3, 0.5), new Rank("Stale", "Old Title", o.RankIdleTicksMax));
-        var (_, ranks) = EmpireTick.Advance(s, o, pending: null);
+        var (_, ranks) = EmpireTick.Advance(s, o);
         Assert.Empty(ranks); // idle would exceed the max after aging
     }
 

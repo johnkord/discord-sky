@@ -3,24 +3,16 @@ using DiscordSky.Bot.Configuration;
 namespace DiscordSky.Bot.Orchestration.Empire;
 
 /// <summary>
-/// The pure deterministic half of the tick: decay mood toward baseline (with inertia), apply any pending
-/// appraisal deltas, and age and cap the ranks. No LLM, so the world always moves and mood stays reliable and
-/// testable even when the model call is disabled or fails. The LLM body rewrite is layered on top by the tick
-/// service through <see cref="MergeRankOps"/>.
+/// The pure deterministic half of the tick: decay mood toward baseline (with inertia) and age and cap the
+/// ranks. No LLM, so the world always moves and mood stays reliable and testable even when the model call is
+/// disabled or fails. Live appraisal nudges the mood immediately elsewhere (see EmpireStateStore.ApplyMoodDelta);
+/// the LLM body rewrite is layered on top by the tick service through <see cref="MergeRankOps"/>.
 /// </summary>
 public static class EmpireTick
 {
-    public static (Mood Mood, IReadOnlyList<Rank> Ranks) Advance(
-        EmpireState state, EmpireStateOptions options, IReadOnlyList<MoodDelta>? pending)
+    public static (Mood Mood, IReadOnlyList<Rank> Ranks) Advance(EmpireState state, EmpireStateOptions options)
     {
         var mood = EmpireMood.Decay(state.Mood, options.BaselineValence, options.BaselineArousal, options.MoodRetain);
-        if (pending is not null)
-        {
-            foreach (var d in pending)
-            {
-                mood = EmpireMood.Nudge(mood, d.Valence, d.Arousal);
-            }
-        }
 
         var ranks = new List<Rank>(state.Ranks.Count);
         foreach (var r in state.Ranks)

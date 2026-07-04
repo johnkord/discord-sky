@@ -5,9 +5,10 @@ using Microsoft.Extensions.Logging;
 namespace DiscordSky.Bot.Orchestration.Empire;
 
 /// <summary>
-/// The background heartbeat that acts like sleep: every TickIntervalHours it advances Robotnik's world a beat
-/// and consolidates his log. Mirrors GreatestHitsRefreshService (IHostedService plus PeriodicTimer, self-gating,
-/// fully fail-safe). It waits one interval before the first tick so a deploy does not tick immediately.
+/// The background heartbeat that acts like sleep: roughly every TickIntervalHours it advances Robotnik's world a
+/// beat and consolidates his log. Mirrors GreatestHitsRefreshService (IHostedService plus PeriodicTimer,
+/// self-gating, fully fail-safe). It ticks when the world is genuinely overdue (persisted LastTickAt), so it
+/// survives restarts and frequent deploys instead of being anchored to pod uptime.
 /// </summary>
 public sealed class EmpireTickService : IHostedService, IDisposable
 {
@@ -16,6 +17,7 @@ public sealed class EmpireTickService : IHostedService, IDisposable
     private readonly EmpireBodyConsolidator _consolidator;
     private readonly IRecallTelemetrySink _telemetry;
     private readonly ILogger<EmpireTickService> _logger;
+    private readonly SemaphoreSlim _tickLock = new(1, 1);
     private CancellationTokenSource? _cts;
     private Task? _loop;
 
@@ -65,14 +67,21 @@ public sealed class EmpireTickService : IHostedService, IDisposable
 
     private async Task RunLoopAsync(CancellationToken ct)
     {
-        var hours = Math.Max(1, _store.Options.TickIntervalHours);
+        var interval = TimeSpan.FromHours(Math.Max(1, _store.Options.TickIntervalHours));
+        // Check several times per interval and tick only when the world is genuinely overdue
+        // (now - LastTickAt >= interval). LastTickAt is persisted, so this survives restarts and frequent
+        // deploys: the tick fires when due rather than being anchored to pod uptime, and it will not fire on
+        // every deploy the way a fresh-from-startup timer would.
+        var checkEvery = TimeSpan.FromMinutes(Math.Clamp(_store.Options.TickIntervalHours * 60 / 4, 5, 30));
         try
         {
-            using var timer = new PeriodicTimer(TimeSpan.FromHours(hours));
-            // Wait one interval before the first tick so a restart does not tick immediately.
+            using var timer = new PeriodicTimer(checkEvery);
             while (await timer.WaitForNextTickAsync(ct))
             {
-                await TickAsync(ct);
+                if (DateTimeOffset.UtcNow - _store.Current.LastTickAt >= interval)
+                {
+                    await TickAsync(ct);
+                }
             }
         }
         catch (OperationCanceledException)
@@ -86,21 +95,26 @@ public sealed class EmpireTickService : IHostedService, IDisposable
 
     private async Task<string> TickAsync(CancellationToken ct, bool forced = false)
     {
+        // Serialize ticks so a forced (owner) tick cannot overlap the timer's tick (double LLM call and commit).
+        if (!await _tickLock.WaitAsync(0, ct))
+        {
+            return "busy";
+        }
         try
         {
             var state = _store.Current;
 
             // Activity gate: do not evolve a world nobody is watching. Do NOT stamp lastTickAt on a skip, so the
-            // next tick after any activity still fires. A forced (owner) tick bypasses the gate.
+            // next check that finds activity still ticks. A forced (owner) tick bypasses the gate. No telemetry
+            // on a skip: it would spam every check while a channel is idle.
             if (!forced && !_participants.AnyActivitySince(state.LastTickAt))
             {
-                Emit("skipped", state.Mood.Label, state.Body.Length);
-                _logger.LogInformation("empire_tick outcome=skipped mood={Mood} (no activity since last tick)", state.Mood.Label);
+                _logger.LogDebug("empire_tick skipped: no activity since last tick (mood {Mood}).", state.Mood.Label);
                 return "skipped";
             }
 
             var opts = _store.Options;
-            var (mood, agedRanks) = EmpireTick.Advance(state, opts, pending: null);
+            var (mood, agedRanks) = EmpireTick.Advance(state, opts);
             var body = state.Body;
             var ranks = agedRanks;
             var outcome = "committed";
@@ -144,6 +158,10 @@ public sealed class EmpireTickService : IHostedService, IDisposable
             _logger.LogWarning(ex, "Empire tick failed; state unchanged.");
             return "error";
         }
+        finally
+        {
+            _tickLock.Release();
+        }
     }
 
     private void Emit(string outcome, string moodLabel, int bodyLen)
@@ -154,5 +172,9 @@ public sealed class EmpireTickService : IHostedService, IDisposable
             Outcome: outcome,
             Count: bodyLen));
 
-    public void Dispose() => _cts?.Dispose();
+    public void Dispose()
+    {
+        _cts?.Dispose();
+        _tickLock.Dispose();
+    }
 }
