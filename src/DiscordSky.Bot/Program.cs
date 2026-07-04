@@ -12,6 +12,7 @@ using DiscordSky.Bot.Memory.Logging;
 using DiscordSky.Bot.Memory.Reception;
 using DiscordSky.Bot.Memory.Scoring;
 using DiscordSky.Bot.Orchestration;
+using DiscordSky.Bot.Orchestration.Empire;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
 using OpenAI;
@@ -32,6 +33,7 @@ builder.Services.Configure<TranscriptOptions>(builder.Configuration.GetSection(T
 builder.Services.Configure<ReactionOptions>(builder.Configuration.GetSection(ReactionOptions.SectionName));
 builder.Services.Configure<ImageOptions>(builder.Configuration.GetSection(ImageOptions.SectionName));
 builder.Services.Configure<ScamGuardOptions>(builder.Configuration.GetSection(ScamGuardOptions.SectionName));
+builder.Services.Configure<EmpireStateOptions>(builder.Configuration.GetSection(EmpireStateOptions.SectionName));
 
 // Phishing-domain feed (Sinking Yachts), opt-in. When enabled it doubles as the IPhishingDomainSource the scam
 // detector consults; otherwise the detector gets a no-op source and leans on its built-in heuristics.
@@ -186,6 +188,13 @@ builder.Services.AddSingleton<ImageBudget>();
 builder.Services.AddSingleton<ImageRewriter>();
 // One cheap-LLM call decides Robotnik's in-character emoji reaction to messages he did NOT reply to.
 builder.Services.AddSingleton<ReactionJudge>();
+// Empire State: Robotnik's persistent, evolving in-character world (mood + war-room log), advanced by a slow tick.
+builder.Services.AddSingleton<EmpireStateStore>();
+builder.Services.AddSingleton(sp => new RecentParticipants(
+    TimeSpan.FromHours(sp.GetRequiredService<IOptions<EmpireStateOptions>>().Value.RecentParticipantTtlHours)));
+builder.Services.AddSingleton<EmpireBodyConsolidator>();
+builder.Services.AddSingleton<EmpireTickService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<EmpireTickService>());
 // The generator resolves the OpenAI image key independently of the active chat provider (images always
 // go through OpenAI). Falls back to a disabled NoOp when off or when no key is present.
 builder.Services.AddSingleton<IImageGenerator>(sp =>

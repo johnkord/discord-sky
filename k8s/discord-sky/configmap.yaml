@@ -69,6 +69,24 @@ data:
   Reactions__EmojiReactMinIntervalSeconds: "15"
   Reactions__EmojiReactQuietSeconds: "90"
   Reactions__MaxCustomEmotes: "30"
+  # Empire State: Robotnik's persistent world (mood + war-room log), advanced by a slow verified sleep-tick.
+  # ENABLED: injection reads the log into every reply; the tick evolves it every N hours (skipped when idle).
+  # EnableLlmBody=false freezes the log to the seed body plus deterministic mood (kill switch). Path is on the PVC.
+  EmpireState__Enabled: "true"
+  EmpireState__Path: "/app/data/user_memories/empire_state.json"
+  EmpireState__TickIntervalHours: "6"
+  EmpireState__EnableLlmBody: "true"
+  EmpireState__BodyMaxChars: "1200"
+  EmpireState__MinBodyRetainFraction: "0.5"
+  EmpireState__MoodRetain: "0.7"
+  EmpireState__BaselineValence: "0.3"
+  EmpireState__BaselineArousal: "0.5"
+  EmpireState__RanksMax: "40"
+  EmpireState__RankIdleTicksMax: "8"
+  EmpireState__MaxRankOpsPerTick: "2"
+  EmpireState__MaxRankTitleLength: "40"
+  EmpireState__CandidateSampleSize: "10"
+  EmpireState__RecentParticipantTtlHours: "6"
   # Proven bits: rank his best-received past lines (by reaction) and feed the winners back into the persona prompt.
   Reactions__ProvenBitsEnabled: "true"
   Reactions__ProvenBitsPoolSize: "10"

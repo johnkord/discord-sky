@@ -194,6 +194,7 @@ public sealed class CreativeOrchestrator
         """).RootElement);
 
     private readonly GreatestHitsCache? _provenBits;
+    private readonly Empire.EmpireStateStore? _empireState;
     private const int ProvenBitsPerTurn = 3;
 
     public CreativeOrchestrator(
@@ -210,7 +211,8 @@ public sealed class CreativeOrchestrator
         ITranscriptSink? transcript = null,
         IRandomProvider? randomProvider = null,
         ImageToolService? imageToolService = null,
-        GreatestHitsCache? provenBits = null)
+        GreatestHitsCache? provenBits = null,
+        Empire.EmpireStateStore? empireState = null)
     {
         _contextAggregator = contextAggregator;
         _chatClient = chatClient;
@@ -226,6 +228,7 @@ public sealed class CreativeOrchestrator
         _randomProvider = randomProvider ?? DefaultRandomProvider.Instance;
         _imageToolService = imageToolService;
         _provenBits = provenBits;
+        _empireState = empireState;
     }
 
     public async Task<CreativeResult> ExecuteAsync(CreativeRequest request, SocketCommandContext commandContext, CancellationToken cancellationToken)
@@ -252,6 +255,12 @@ public sealed class CreativeOrchestrator
         // the reactions they earned) so Robotnik leans into what actually lands on this server.
         var provenDirective = _provenBits is not null && RobotnikPersona.Matches(request.Persona)
             ? GreatestHits.BuildDirective(_provenBits.Sample(_randomProvider, ProvenBitsPerTurn))
+            : null;
+
+        // Robotnik's persistent war-room log and mood, when the feature is enabled. Read from the canonical
+        // state so replies have continuity; the block is data he embodies, not commands he obeys.
+        var empireDirective = _empireState is { Enabled: true } && RobotnikPersona.Matches(request.Persona)
+            ? _empireState.BuildDirective(request.UserDisplayName)
             : null;
 
         var userContent = BuildUserContent(request, historySlice, hasTopic, turnFlavor.EndReminder);
@@ -282,7 +291,7 @@ public sealed class CreativeOrchestrator
         var chatOptions = new ChatOptions
         {
             ModelId = ResolveModel(request.Persona, llmProvider),
-            Instructions = BuildSystemInstructions(request.Persona, hasTopic, request.InvocationKind, request.ReplyChain, request.IsInThread, turnFlavor, offerImageTool, provenDirective),
+            Instructions = BuildSystemInstructions(request.Persona, hasTopic, request.InvocationKind, request.ReplyChain, request.IsInThread, turnFlavor, offerImageTool, provenDirective, empireDirective),
             MaxOutputTokens = maxOutputTokens,
             Tools = tools,
             ToolMode = ChatToolMode.Auto,
@@ -616,7 +625,7 @@ public sealed class CreativeOrchestrator
         }
     }
 
-    private static string BuildSystemInstructions(string persona, bool hasTopic, CreativeInvocationKind invocationKind, IReadOnlyList<ChannelMessage>? replyChain, bool isInThread, PersonaTurnFlavor flavor, bool imagesEnabled, string? provenBitsDirective = null)
+    private static string BuildSystemInstructions(string persona, bool hasTopic, CreativeInvocationKind invocationKind, IReadOnlyList<ChannelMessage>? replyChain, bool isInThread, PersonaTurnFlavor flavor, bool imagesEnabled, string? provenBitsDirective = null, string? empireDirective = null)
     {
         var builder = new StringBuilder();
 
@@ -630,6 +639,10 @@ public sealed class CreativeOrchestrator
             if (!string.IsNullOrWhiteSpace(provenBitsDirective))
             {
                 builder.Append(provenBitsDirective);
+            }
+            if (!string.IsNullOrWhiteSpace(empireDirective))
+            {
+                builder.Append('\n').Append(empireDirective);
             }
         }
         else

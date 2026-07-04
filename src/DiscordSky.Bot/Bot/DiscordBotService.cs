@@ -12,6 +12,7 @@ using DiscordSky.Bot.Memory;
 using DiscordSky.Bot.Memory.Logging;
 using DiscordSky.Bot.Models.Orchestration;
 using DiscordSky.Bot.Orchestration;
+using DiscordSky.Bot.Orchestration.Empire;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -34,6 +35,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly IReactionSink _reactionSink;
     private readonly int _reactionExcerptLength;
     private readonly ReactionJudge? _reactionJudge;
+    private readonly RecentParticipants? _recentParticipants;
     private readonly bool _emojiReactEnabled;
     private readonly int _maxCustomEmotes;
     private readonly TimeSpan _reactMinInterval;
@@ -79,7 +81,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         IPhishingDomainSource? phishingDomains = null,
         RaidTracker? raidTracker = null,
         LearnedScamStore? learnedScams = null,
-        NewAccountFlagLog? newAccountFlags = null)
+        NewAccountFlagLog? newAccountFlags = null,
+        RecentParticipants? recentParticipants = null)
     {
         _client = client;
         _options = options.Value;
@@ -106,6 +109,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _raidTracker = raidTracker ?? new RaidTracker();
         _learnedScams = learnedScams;
         _newAccountFlags = newAccountFlags ?? new NewAccountFlagLog();
+        _recentParticipants = recentParticipants;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -344,6 +348,9 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             _logger.LogDebug("Channel '{ChannelName}' is not allow-listed; ignoring message.", channelName ?? "<unknown>");
             return;
         }
+
+        // Feed the recent-participants tracker (empire state's razz candidates and activity gate). Harmless when disabled.
+        _recentParticipants?.Record(message.Author.Id, (message.Author as SocketGuildUser)?.DisplayName ?? message.Author.Username);
 
         // Conversation-window memory extraction: buffer messages and process in batches
         if (_options.EnableUserMemory && !string.IsNullOrWhiteSpace(message.Content))
