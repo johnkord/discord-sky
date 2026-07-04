@@ -172,8 +172,11 @@ public sealed class ReactionOptions
     /// <summary>Whether Robotnik may add a single in-character emoji reaction (chosen by a cheap LLM judge) to a message he did NOT reply to.</summary>
     public bool EmojiReactEnabled { get; set; } = false;
 
-    /// <summary>Per-channel cooldown (seconds) between reaction-judge calls, bounding LLM cost and stopping carpet-reacting. Applies whether he reacts or declines.</summary>
-    public int EmojiReactCooldownSeconds { get; set; } = 150;
+    /// <summary>Per-channel minimum seconds between reaction-judge calls (cost guard). Applies whether he reacts or declines, so a busy channel spends at most one cheap call per interval.</summary>
+    public int EmojiReactMinIntervalSeconds { get; set; } = 15;
+
+    /// <summary>Per-channel quiet period (seconds) after he ACTUALLY reacts, so he never carpet-reacts. A decline does not start it.</summary>
+    public int EmojiReactQuietSeconds { get; set; } = 90;
 
     /// <summary>Max number of the guild's custom emotes offered to the reaction judge (bounds prompt size and cost). 0 = unicode palette only.</summary>
     public int MaxCustomEmotes { get; set; } = 30;

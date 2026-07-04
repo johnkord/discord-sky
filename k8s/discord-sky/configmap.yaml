@@ -63,9 +63,11 @@ data:
   Reactions__RetentionDays: "30"
   # In-character emoji reactions: on a message he did NOT reply to, a cheap LLM (UtilityModel) decides whether
   # Robotnik renders a one-emoji verdict (from the unicode palette + the guild's custom emotes) or declines.
-  # The cooldown caps judge calls per channel (react OR decline), keeping it rare, tasteful, and cheap.
+  # Two throttles: MinInterval caps judge calls per channel (react OR decline = cost guard); Quiet is how long
+  # he stays silent AFTER an actual reaction so he never carpet-reacts (a decline does not start it).
   Reactions__EmojiReactEnabled: "true"
-  Reactions__EmojiReactCooldownSeconds: "150"
+  Reactions__EmojiReactMinIntervalSeconds: "15"
+  Reactions__EmojiReactQuietSeconds: "90"
   Reactions__MaxCustomEmotes: "30"
   # Proven bits: rank his best-received past lines (by reaction) and feed the winners back into the persona prompt.
   Reactions__ProvenBitsEnabled: "true"

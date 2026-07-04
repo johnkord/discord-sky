@@ -36,8 +36,10 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly ReactionJudge? _reactionJudge;
     private readonly bool _emojiReactEnabled;
     private readonly int _maxCustomEmotes;
-    private readonly TimeSpan _emojiReactCooldown;
-    private readonly ConcurrentDictionary<ulong, DateTimeOffset> _reactCooldowns = new();
+    private readonly TimeSpan _reactMinInterval;
+    private readonly TimeSpan _reactQuiet;
+    private readonly ConcurrentDictionary<ulong, DateTimeOffset> _lastJudgeCall = new();
+    private readonly ConcurrentDictionary<ulong, DateTimeOffset> _lastReaction = new();
     private readonly ImageToolService? _imageToolService;
     private readonly ImageRewriter? _imageRewriter;
     private readonly ScamGuardOptions _scamGuard;
@@ -93,7 +95,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _reactionJudge = reactionJudge;
         _emojiReactEnabled = reactionOptions?.Value.EmojiReactEnabled ?? false;
         _maxCustomEmotes = Math.Max(0, reactionOptions?.Value.MaxCustomEmotes ?? 30);
-        _emojiReactCooldown = TimeSpan.FromSeconds(Math.Max(0, reactionOptions?.Value.EmojiReactCooldownSeconds ?? 150));
+        _reactMinInterval = TimeSpan.FromSeconds(Math.Max(0, reactionOptions?.Value.EmojiReactMinIntervalSeconds ?? 15));
+        _reactQuiet = TimeSpan.FromSeconds(Math.Max(0, reactionOptions?.Value.EmojiReactQuietSeconds ?? 90));
         _imageToolService = imageToolService;
         _imageRewriter = imageRewriter;
         _scamGuard = scamGuardOptions?.Value ?? new ScamGuardOptions { Enabled = false };
@@ -503,13 +506,19 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
         var channelId = message.Channel.Id;
         var now = DateTimeOffset.UtcNow;
-        // The cooldown is the cost/spam guard, NOT the decision: it caps judge calls per channel. A react and a
-        // decline both start it, so a busy channel spends at most one cheap call per window.
-        if (_reactCooldowns.TryGetValue(channelId, out var last) && now - last < _emojiReactCooldown)
+        // Cost guard: spend at most one judge call per interval per channel (a react OR a decline both count),
+        // so a busy channel can't hammer the LLM.
+        if (_lastJudgeCall.TryGetValue(channelId, out var lastCall) && now - lastCall < _reactMinInterval)
         {
             return;
         }
-        _reactCooldowns[channelId] = now;
+        // Taste guard: after he ACTUALLY reacts, stay quiet a while so he never carpet-reacts. A decline does
+        // not start this, so passing on a mundane message never blinds him to a great one right after.
+        if (_lastReaction.TryGetValue(channelId, out var lastReact) && now - lastReact < _reactQuiet)
+        {
+            return;
+        }
+        _lastJudgeCall[channelId] = now;
 
         try
         {
@@ -524,13 +533,13 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 PersonaName: GetDefaultPersona(),
                 AuthorDisplayName: authorName,
                 MessageText: message.Content ?? string.Empty,
-                Context: null,
+                Context: BuildReactionContext(message),
                 Allowed: allowed);
 
             var verdict = await _reactionJudge.JudgeAsync(request, _shutdownCts.Token);
             if (verdict is null)
             {
-                return; // he deigned not to react (the common, correct outcome)
+                return; // he deigned not to react (a normal, common outcome)
             }
 
             // Defence in depth: only ever post an emote we actually offered.
@@ -539,6 +548,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 return;
             }
 
+            _lastReaction[channelId] = now;
             await message.AddReactionAsync(emote);
             _logger.LogInformation(
                 "in_character_reaction emote={Emote} custom={Custom} channel={Channel} message={MessageId} why={Why}",
@@ -548,6 +558,27 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         {
             _logger.LogDebug(ex, "In-character reaction failed; ignoring.");
         }
+    }
+
+    /// <summary>
+    /// One line of context for the judge: the message this one is replying to, if any (bounded downstream,
+    /// and clearly labelled as the referenced message, not the target). Null when it is not a reply or the
+    /// parent has no text. Helps him read "lol same" / "that's rough" against what it answers.
+    /// </summary>
+    private static string? BuildReactionContext(SocketUserMessage message)
+    {
+        var referenced = message.ReferencedMessage;
+        if (referenced is null)
+        {
+            return null;
+        }
+        var content = referenced.Content;
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return null;
+        }
+        var author = (referenced.Author as SocketGuildUser)?.DisplayName ?? referenced.Author?.Username ?? "someone";
+        return $"{author}: {content}";
     }
 
     /// <summary>

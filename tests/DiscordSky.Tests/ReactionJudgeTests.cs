@@ -126,6 +126,15 @@ public class ReactionJudgeTests
         Assert.Contains("none", prompt);
     }
 
+    [Fact]
+    public void BuildSystemPrompt_Robotnik_IsBroadenedNotRare()
+    {
+        // Guidance was widened away from "React RARELY / decline the vast majority" so he uses his full range.
+        var prompt = ReactionJudge.BuildSystemPrompt("Robotnik");
+        Assert.DoesNotContain("RARELY", prompt);
+        Assert.Contains("verdict", prompt);
+    }
+
     // ── BuildUserMessage ────────────────────────────────────────────────
 
     [Fact]
@@ -176,7 +185,7 @@ public class ReactionJudgeTests
             Allowed: new List<AllowedEmote> { new("eyes", "scheming", IsCustom: false) });
 
         var msg = ReactionJudge.BuildUserMessage(request);
-        Assert.Contains("Recent context", msg);
+        Assert.Contains("Context", msg);
         Assert.Contains("a plan was mentioned", msg);
     }
 }
