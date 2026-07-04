@@ -68,6 +68,20 @@ public sealed class EmpireStateStore
         }
     }
 
+    /// <summary>
+    /// Applies a small appraisal nudge to the mood immediately (in-memory only; the next tick's commit persists
+    /// it). Keeps mood responsive to live events without hammering the disk. No-op when disabled or a zero delta.
+    /// </summary>
+    public void ApplyMoodDelta(MoodDelta delta)
+    {
+        if (!_options.Enabled) return;
+        if (delta.Valence == 0.0 && delta.Arousal == 0.0) return;
+        lock (_lock)
+        {
+            _current = _current with { Mood = EmpireMood.Nudge(_current.Mood, delta.Valence, delta.Arousal) };
+        }
+    }
+
     /// <summary>Commits the next state: bumps the version, stamps the time, pushes the prior onto the rollback ring, and writes atomically.</summary>
     public void Commit(EmpireState next)
     {

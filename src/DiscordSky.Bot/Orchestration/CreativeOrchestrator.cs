@@ -248,7 +248,7 @@ public sealed class CreativeOrchestrator
         // Per-turn persona flavor (length roulette + improv move + rotating palette + end reminder)
         // for the default Robotnik character. Non-Robotnik personas get None and the generic prompt.
         var turnFlavor = RobotnikPersona.Matches(request.Persona)
-            ? RobotnikPersona.RollTurnFlavor(_randomProvider, request.InvocationKind)
+            ? RobotnikPersona.RollTurnFlavor(_randomProvider, request.InvocationKind, _empireState is { Enabled: true } ? _empireState.Current.Mood.Label : null)
             : PersonaTurnFlavor.None;
 
         // Reception-driven "proven bits": a rotating sample of the bot's best-received past lines (ranked by
@@ -636,6 +636,7 @@ public sealed class CreativeOrchestrator
             AppendDirective(builder, flavor.LengthDirective);
             AppendDirective(builder, flavor.MoveDirective);
             AppendDirective(builder, flavor.PaletteDirective);
+            AppendDirective(builder, flavor.MoodDirective);
             if (!string.IsNullOrWhiteSpace(provenBitsDirective))
             {
                 builder.Append(provenBitsDirective);

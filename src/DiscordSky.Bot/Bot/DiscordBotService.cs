@@ -10,6 +10,7 @@ using DiscordSky.Bot.Integrations.Reactions;
 using DiscordSky.Bot.Integrations.Safety;
 using DiscordSky.Bot.Memory;
 using DiscordSky.Bot.Memory.Logging;
+using DiscordSky.Bot.Memory.Reception;
 using DiscordSky.Bot.Models.Orchestration;
 using DiscordSky.Bot.Orchestration;
 using DiscordSky.Bot.Orchestration.Empire;
@@ -36,6 +37,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly int _reactionExcerptLength;
     private readonly ReactionJudge? _reactionJudge;
     private readonly RecentParticipants? _recentParticipants;
+    private readonly EmpireStateStore? _empireState;
+    private readonly EmpireTickService? _empireTickService;
     private readonly bool _emojiReactEnabled;
     private readonly int _maxCustomEmotes;
     private readonly TimeSpan _reactMinInterval;
@@ -82,7 +85,9 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         RaidTracker? raidTracker = null,
         LearnedScamStore? learnedScams = null,
         NewAccountFlagLog? newAccountFlags = null,
-        RecentParticipants? recentParticipants = null)
+        RecentParticipants? recentParticipants = null,
+        EmpireStateStore? empireState = null,
+        EmpireTickService? empireTickService = null)
     {
         _client = client;
         _options = options.Value;
@@ -110,6 +115,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _learnedScams = learnedScams;
         _newAccountFlags = newAccountFlags ?? new NewAccountFlagLog();
         _recentParticipants = recentParticipants;
+        _empireState = empireState;
+        _empireTickService = empireTickService;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -174,6 +181,14 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         {
             if (!_personaCache.TryGetValue(reaction.MessageId, out var cached)) return; // not our message
             if (_client.CurrentUser is not null && reaction.UserId == _client.CurrentUser.Id) return; // self-react
+
+            // Empire State appraisal: a laugh on one of his lines lifts his mood, a pan sours it. Add only.
+            if (action == "add" && _empireState is not null)
+            {
+                var sentiment = ReactionSentiment.Score(reaction.Emote.Name);
+                if (sentiment > 0) _empireState.ApplyMoodDelta(EmpireAppraisal.LaughAtHim);
+                else if (sentiment < 0) _empireState.ApplyMoodDelta(EmpireAppraisal.Panned);
+            }
 
             string? excerpt = null;
             if (message.HasValue && !string.IsNullOrWhiteSpace(message.Value.Content))
@@ -433,6 +448,14 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 return;
             }
 
+            if (payload.Equals("empire", StringComparison.OrdinalIgnoreCase)
+                || payload.StartsWith("empire ", StringComparison.OrdinalIgnoreCase)
+                || payload.StartsWith("empire-", StringComparison.OrdinalIgnoreCase))
+            {
+                await HandleEmpireCommandAsync(context, message, payload);
+                return;
+            }
+
             await HandlePersonaAsync(context, content, message, CreativeInvocationKind.Command);
             return;
         }
@@ -580,6 +603,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             _lastReaction[channelId] = now;
             RecordRecentEmoji(channelId, verdict!.Token);
             await message.AddReactionAsync(emote!);
+            _empireState?.ApplyMoodDelta(EmpireAppraisal.FromReaction(verdict!.Token));
             _logger.LogInformation(
                 "in_character_reaction emote={Emote} custom={Custom} channel={Channel} message={MessageId} mem={Mem} why={Why}",
                 verdict!.Token, emote is Emote, message.Channel.Name, message.Id, authorMemories?.Count ?? 0, verdict!.Rationale);
@@ -618,6 +642,42 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             channelId,
             _ => new[] { token },
             (_, existing) => new[] { token }.Concat(existing).Take(RecentEmojiMemory).ToArray());
+    }
+
+    /// <summary>Owner/mod-only Empire State observability: `!sky empire` inspects the live log and mood; `!sky empire-tick` forces a tick now.</summary>
+    private async Task HandleEmpireCommandAsync(SocketCommandContext context, SocketUserMessage message, string payload)
+    {
+        if ((message.Author as SocketGuildUser)?.GuildPermissions.ManageMessages != true)
+        {
+            return; // silently ignore for non-mods
+        }
+        if (_empireState is null || !_empireState.Enabled)
+        {
+            await context.Channel.SendMessageAsync("Empire state is not enabled.");
+            return;
+        }
+
+        var arg = payload.Length > "empire".Length ? payload["empire".Length..].TrimStart(' ', '-') : string.Empty;
+        if (arg.Equals("tick", StringComparison.OrdinalIgnoreCase))
+        {
+            if (_empireTickService is null)
+            {
+                await context.Channel.SendMessageAsync("Tick service unavailable.");
+                return;
+            }
+            var outcome = await _empireTickService.ForceTickAsync(_shutdownCts.Token);
+            await context.Channel.SendMessageAsync($"Forced a tick: **{outcome}** (mood now: {_empireState.Current.Mood.Label}).");
+            return;
+        }
+
+        var s = _empireState.Current;
+        var ranks = s.Ranks.Count == 0 ? "none" : string.Join(", ", s.Ranks.Select(r => $"{r.Name}={r.Title}"));
+        var body = s.Body.Length > 1400 ? s.Body[..1400] + " [...]" : s.Body;
+        var summary =
+            $"**Empire State v{s.Version}** | mood: **{s.Mood.Label}** (v={s.Mood.Valence:F2}, a={s.Mood.Arousal:F2}) | ranks: {ranks}\n" +
+            $"```\n{body}\n```";
+        if (summary.Length > 1900) summary = summary[..1900];
+        await context.Channel.SendMessageAsync(summary);
     }
 
     /// <summary>
@@ -1928,6 +1988,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             _logger.LogInformation(
                 "scam_warned channel={Channel} author={Author} reason={Reason} bot={Bot}",
                 message.Channel.Name, message.Author.Id, detection.Reason, message.Author.IsBot);
+            _empireState?.ApplyMoodDelta(EmpireAppraisal.ScamFoiled);
         }
         catch (Exception ex)
         {

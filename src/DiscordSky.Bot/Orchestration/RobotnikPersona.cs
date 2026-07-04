@@ -104,11 +104,39 @@ internal static class RobotnikPersona
     /// direct replies), one improv move, a rotating slice of the palette, and the end-of-prompt
     /// re-assertion that mitigates instruction drift (3.4).
     /// </summary>
-    public static PersonaTurnFlavor RollTurnFlavor(IRandomProvider rng, CreativeInvocationKind kind)
+    public static PersonaTurnFlavor RollTurnFlavor(IRandomProvider rng, CreativeInvocationKind kind, string? moodLabel = null)
     {
         // 3.2 length roulette. Ambient leans shortest; direct replies keep more room to riff.
         var shortCut = kind == CreativeInvocationKind.Ambient ? 0.45 : 0.25;
         var mediumCut = kind == CreativeInvocationKind.Ambient ? 0.85 : 0.80;
+
+        // Empire State phase 4: his current mood biases the length distribution and adds a mood cue, so the mood
+        // is not just a label he can ignore. An enraged villain rants; a smug one zings; a sulking one is terse.
+        var moodDirective = string.Empty;
+        switch ((moodLabel ?? string.Empty).ToLowerInvariant())
+        {
+            case "seething":
+                shortCut *= 0.4;
+                mediumCut = Math.Min(mediumCut, 0.55);
+                moodDirective = "MOOD RIGHT NOW: seething. Let the reply crackle with indignation and wounded ego.";
+                break;
+            case "gloating":
+                shortCut *= 0.7;
+                mediumCut = Math.Min(mediumCut, 0.70);
+                moodDirective = "MOOD RIGHT NOW: gloating. Savor it and twist the knife with theatrical delight.";
+                break;
+            case "smug":
+                shortCut = Math.Min(0.6, shortCut + 0.3);
+                mediumCut = Math.Max(mediumCut, 0.92);
+                moodDirective = "MOOD RIGHT NOW: smug. A clipped, superior one-liner suits you best.";
+                break;
+            case "sulking":
+                shortCut = Math.Min(0.6, shortCut + 0.3);
+                mediumCut = Math.Max(mediumCut, 0.90);
+                moodDirective = "MOOD RIGHT NOW: sulking. Terse and put-upon, dripping with self-pity you would never admit.";
+                break;
+        }
+
         var lengthRoll = rng.NextDouble();
 
         string lengthDirective;
@@ -142,7 +170,7 @@ internal static class RobotnikPersona
             "and amuse yourself at others' expense. Be vain, be a menace, do not lecture, do not end " +
             "on earnest advice, and do not reuse a bit you just used. " + lengthEcho;
 
-        return new PersonaTurnFlavor(lengthDirective, moveDirective, paletteDirective, endReminder);
+        return new PersonaTurnFlavor(lengthDirective, moveDirective, paletteDirective, endReminder, moodDirective);
     }
 
     private static string PickOne(string[] options, IRandomProvider rng)
@@ -175,7 +203,8 @@ internal readonly record struct PersonaTurnFlavor(
     string LengthDirective,
     string MoveDirective,
     string PaletteDirective,
-    string EndReminder)
+    string EndReminder,
+    string MoodDirective = "")
 {
     public static PersonaTurnFlavor None { get; } = new(string.Empty, string.Empty, string.Empty, string.Empty);
 }

@@ -81,19 +81,22 @@ public sealed class EmpireTickService : IHostedService, IDisposable
         }
     }
 
-    private async Task TickAsync(CancellationToken ct)
+    /// <summary>Runs one tick immediately for owner validation, bypassing the interval and the activity gate. Returns the outcome.</summary>
+    public Task<string> ForceTickAsync(CancellationToken ct) => TickAsync(ct, forced: true);
+
+    private async Task<string> TickAsync(CancellationToken ct, bool forced = false)
     {
         try
         {
             var state = _store.Current;
 
             // Activity gate: do not evolve a world nobody is watching. Do NOT stamp lastTickAt on a skip, so the
-            // next tick after any activity still fires.
-            if (!_participants.AnyActivitySince(state.LastTickAt))
+            // next tick after any activity still fires. A forced (owner) tick bypasses the gate.
+            if (!forced && !_participants.AnyActivitySince(state.LastTickAt))
             {
                 Emit("skipped", state.Mood.Label, state.Body.Length);
                 _logger.LogInformation("empire_tick outcome=skipped mood={Mood} (no activity since last tick)", state.Mood.Label);
-                return;
+                return "skipped";
             }
 
             var opts = _store.Options;
@@ -130,6 +133,7 @@ public sealed class EmpireTickService : IHostedService, IDisposable
             Emit(outcome, mood.Label, body.Length);
             _logger.LogInformation("empire_tick outcome={Outcome} mood={Mood} bodyLen={Len} ranks={Ranks} version={Version}",
                 outcome, mood.Label, body.Length, ranks.Count, _store.Current.Version);
+            return outcome;
         }
         catch (OperationCanceledException)
         {
@@ -138,6 +142,7 @@ public sealed class EmpireTickService : IHostedService, IDisposable
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Empire tick failed; state unchanged.");
+            return "error";
         }
     }
 

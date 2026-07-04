@@ -1,6 +1,9 @@
 using System.Collections.Generic;
 using System.IO;
+using DiscordSky.Bot.Bot;
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Models.Orchestration;
+using DiscordSky.Bot.Orchestration;
 using DiscordSky.Bot.Orchestration.Empire;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -268,5 +271,80 @@ public class RecentParticipantsTests
         now = now.AddMinutes(5);
         rp.Record(1, "Alice");
         Assert.True(rp.AnyActivitySince(mark));
+    }
+}
+
+public class EmpireAppraisalTests
+{
+    [Fact]
+    public void FromReaction_MapsSentiment()
+    {
+        Assert.True(EmpireAppraisal.FromReaction("anger").Valence < 0);      // irritated
+        Assert.True(EmpireAppraisal.FromReaction("laughing").Valence > 0);   // gloating
+        Assert.Equal(0.0, EmpireAppraisal.FromReaction("some_custom_emote").Valence);
+        Assert.Equal(0.0, EmpireAppraisal.FromReaction(null).Valence);
+    }
+
+    [Fact]
+    public void SignalConstants_HaveExpectedSign()
+    {
+        Assert.True(EmpireAppraisal.LaughAtHim.Valence > 0);
+        Assert.True(EmpireAppraisal.Panned.Valence < 0);
+        Assert.True(EmpireAppraisal.ScamFoiled.Valence > 0);
+    }
+}
+
+public class EmpireMoodDeltaStoreTests
+{
+    private static EmpireStateStore NewStore(string path, bool enabled) =>
+        new(Options.Create(new EmpireStateOptions { Path = path, Enabled = enabled }), NullLogger<EmpireStateStore>.Instance);
+
+    [Fact]
+    public void ApplyMoodDelta_NudgesMood_WhenEnabled()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "empire_mood_" + Guid.NewGuid() + ".json");
+        var store = NewStore(path, enabled: true);
+        var before = store.Current.Mood.Valence;
+        store.ApplyMoodDelta(new MoodDelta(-0.5, 0.0));
+        Assert.True(store.Current.Mood.Valence < before);
+    }
+
+    [Fact]
+    public void ApplyMoodDelta_NoOp_WhenDisabled()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "empire_mood_off_" + Guid.NewGuid() + ".json");
+        var store = NewStore(path, enabled: false);
+        var before = store.Current.Mood.Valence;
+        store.ApplyMoodDelta(new MoodDelta(-0.5, 0.0));
+        Assert.Equal(before, store.Current.Mood.Valence);
+    }
+}
+
+public class EmpireFlavorTests
+{
+    private sealed class FixedRng : IRandomProvider
+    {
+        private readonly double _v;
+        public FixedRng(double v) => _v = v;
+        public double NextDouble() => _v;
+    }
+
+    [Fact]
+    public void RollTurnFlavor_Seething_FavorsRantAndAddsMoodCue()
+    {
+        // Non-ambient baseline cuts are 0.25/0.80; a roll of 0.6 is "medium" at baseline but "rant" when seething.
+        var baseline = RobotnikPersona.RollTurnFlavor(new FixedRng(0.6), CreativeInvocationKind.Command, "scheming");
+        var seething = RobotnikPersona.RollTurnFlavor(new FixedRng(0.6), CreativeInvocationKind.Command, "seething");
+        Assert.NotEqual(baseline.LengthDirective, seething.LengthDirective);
+        Assert.Contains("rant", seething.LengthDirective);
+        Assert.Contains("seething", seething.MoodDirective);
+        Assert.Equal(string.Empty, baseline.MoodDirective); // scheming (baseline) adds no bias
+    }
+
+    [Fact]
+    public void RollTurnFlavor_NullMood_NoBias()
+    {
+        var f = RobotnikPersona.RollTurnFlavor(new FixedRng(0.6), CreativeInvocationKind.Command, null);
+        Assert.Equal(string.Empty, f.MoodDirective);
     }
 }
