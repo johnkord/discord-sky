@@ -40,6 +40,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly TimeSpan _reactQuiet;
     private readonly ConcurrentDictionary<ulong, DateTimeOffset> _lastJudgeCall = new();
     private readonly ConcurrentDictionary<ulong, DateTimeOffset> _lastReaction = new();
+    private readonly ConcurrentDictionary<ulong, string[]> _recentEmojis = new();
+    private const int RecentEmojiMemory = 5;
     private readonly ImageToolService? _imageToolService;
     private readonly ImageRewriter? _imageRewriter;
     private readonly ScamGuardOptions _scamGuard;
@@ -528,31 +530,52 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 return;
             }
 
+            IReadOnlyList<UserMemory>? authorMemories = null;
+            if (_options.EnableUserMemory)
+            {
+                // Personalize: hand the cheap judge what Robotnik knows about this author so it can react to the
+                // person, not just the words (running gags, roastable facts). Ranked to the message downstream.
+                authorMemories = await _memoryStore.GetAdmissibleMemoriesAsync(
+                    message.Author.Id, _memoryRelevanceMonitor, _shutdownCts.Token);
+            }
+            _recentEmojis.TryGetValue(channelId, out var recentEmojis);
+
             var authorName = (message.Author as SocketGuildUser)?.DisplayName ?? message.Author.Username;
             var request = new ReactionRequest(
                 PersonaName: GetDefaultPersona(),
                 AuthorDisplayName: authorName,
                 MessageText: message.Content ?? string.Empty,
                 Context: BuildReactionContext(message),
-                Allowed: allowed);
+                Allowed: allowed,
+                AuthorMemories: authorMemories,
+                RecentEmojis: recentEmojis);
 
             var verdict = await _reactionJudge.JudgeAsync(request, _shutdownCts.Token);
-            if (verdict is null)
-            {
-                return; // he deigned not to react (a normal, common outcome)
-            }
 
-            // Defence in depth: only ever post an emote we actually offered.
-            if (!tokenToEmote.TryGetValue(verdict.Token, out var emote))
+            IEmote? emote = null;
+            var reacted = verdict is not null && tokenToEmote.TryGetValue(verdict.Token, out emote);
+
+            // Durable, restart-proof signal so react/decline rate and emoji spread are measurable for tuning.
+            _telemetry.Emit(new TelemetryEvent(
+                Timestamp: DateTimeOffset.UtcNow,
+                EventType: TelemetryEventTypes.ReactionJudged,
+                UserHash: UserIdHash.Hash(message.Author.Id),
+                Channel: message.Channel.Name,
+                Kind: reacted ? verdict!.Token : null,
+                Outcome: reacted ? "react" : "decline",
+                MessageId: message.Id));
+
+            if (!reacted)
             {
-                return;
+                return; // he deigned not to react (a normal, common outcome), or the token was unknown
             }
 
             _lastReaction[channelId] = now;
-            await message.AddReactionAsync(emote);
+            RecordRecentEmoji(channelId, verdict!.Token);
+            await message.AddReactionAsync(emote!);
             _logger.LogInformation(
-                "in_character_reaction emote={Emote} custom={Custom} channel={Channel} message={MessageId} why={Why}",
-                verdict.Token, emote is Emote, message.Channel.Name, message.Id, verdict.Rationale);
+                "in_character_reaction emote={Emote} custom={Custom} channel={Channel} message={MessageId} mem={Mem} why={Why}",
+                verdict!.Token, emote is Emote, message.Channel.Name, message.Id, authorMemories?.Count ?? 0, verdict!.Rationale);
         }
         catch (Exception ex)
         {
@@ -579,6 +602,15 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         }
         var author = (referenced.Author as SocketGuildUser)?.DisplayName ?? referenced.Author?.Username ?? "someone";
         return $"{author}: {content}";
+    }
+
+    /// <summary>Remembers the last few emojis he used in a channel (most recent first) so the judge can be nudged toward variety.</summary>
+    private void RecordRecentEmoji(ulong channelId, string token)
+    {
+        _recentEmojis.AddOrUpdate(
+            channelId,
+            _ => new[] { token },
+            (_, existing) => new[] { token }.Concat(existing).Take(RecentEmojiMemory).ToArray());
     }
 
     /// <summary>

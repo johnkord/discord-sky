@@ -1,6 +1,8 @@
 using System.Text;
 using System.Text.Json;
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Memory.Scoring;
+using DiscordSky.Bot.Models.Orchestration;
 using DiscordSky.Bot.Orchestration;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -17,7 +19,9 @@ public sealed record ReactionRequest(
     string AuthorDisplayName,
     string MessageText,
     string? Context,
-    IReadOnlyList<AllowedEmote> Allowed);
+    IReadOnlyList<AllowedEmote> Allowed,
+    IReadOnlyList<UserMemory>? AuthorMemories = null,
+    IReadOnlyList<string>? RecentEmojis = null);
 
 /// <summary>The judge's decision: which allowed token to react with, plus a one-line (logged, never posted) rationale.</summary>
 public sealed record ReactionVerdict(string Token, string Rationale);
@@ -37,15 +41,19 @@ public sealed class ReactionJudge
 {
     private const int MaxMessageChars = 500;
     private const int MaxContextChars = 400;
+    private const int MaxMemoryChars = 200;
+    private const int MaxInlineMemories = 4;
 
     private readonly IChatClient _chatClient;
     private readonly IOptionsMonitor<LlmOptions> _llmOptions;
+    private readonly IMemoryScorer _memoryScorer;
     private readonly ILogger<ReactionJudge> _logger;
 
-    public ReactionJudge(IChatClient chatClient, IOptionsMonitor<LlmOptions> llmOptions, ILogger<ReactionJudge> logger)
+    public ReactionJudge(IChatClient chatClient, IOptionsMonitor<LlmOptions> llmOptions, IMemoryScorer memoryScorer, ILogger<ReactionJudge> logger)
     {
         _chatClient = chatClient;
         _llmOptions = llmOptions;
+        _memoryScorer = memoryScorer;
         _logger = logger;
     }
 
@@ -56,9 +64,10 @@ public sealed class ReactionJudge
 
         try
         {
+            var memoryLines = RankMemoryLines(request);
             var messages = new List<ChatMessage>
             {
-                new(ChatRole.User, BuildUserMessage(request)),
+                new(ChatRole.User, BuildUserMessage(request, memoryLines)),
             };
 
             // Mirror ImageRewriter: set the model explicitly and do NOT use a structured ResponseFormat
@@ -106,6 +115,29 @@ public sealed class ReactionJudge
         return !string.IsNullOrWhiteSpace(provider.UtilityModel)
             ? provider.UtilityModel!
             : provider.ChatModel;
+    }
+
+    /// <summary>
+    /// Ranks the author's memories against the message (reusing the recall scorer) and returns the top few as
+    /// short lines. Lets the cheap model react to the person, not just the words: running gags, roastable facts
+    /// (arXiv:2603.19313 shows persona-memory lets small models match much larger ones). Empty when memory is
+    /// off or nothing fits.
+    /// </summary>
+    private IReadOnlyList<string> RankMemoryLines(ReactionRequest request)
+    {
+        if (request.AuthorMemories is not { Count: > 0 }) return Array.Empty<string>();
+
+        var ranked = _memoryScorer.RankForRecall(request.AuthorMemories, request.MessageText, DateTimeOffset.UtcNow);
+        if (ranked.Count == 0) return Array.Empty<string>();
+
+        var lines = new List<string>(MaxInlineMemories);
+        foreach (var scored in ranked.Take(MaxInlineMemories))
+        {
+            var content = scored.Memory.Content?.Trim();
+            if (string.IsNullOrEmpty(content)) continue;
+            lines.Add(content.Length > MaxMemoryChars ? content[..MaxMemoryChars] : content);
+        }
+        return lines;
     }
 
     /// <summary>
@@ -171,7 +203,8 @@ public sealed class ReactionJudge
             "scheme to grudgingly respect, someone's misfortune or an embarrassing L to gloat over, sappiness or " +
             "virtue-signalling to sneer at, a spicy hot take he would contest, a genuinely funny line, or a jab at " +
             "him to answer. His range is wide (mockery, grudging approval, intrigue, gloating, rage), not just " +
-            "insults. Decline only when a message is purely functional, logistical, or forgettable small-talk that " +
+            "insults; pick the most specific fit and vary your reactions over time rather than defaulting to one. " +
+            "Decline only when a message is purely functional, logistical, or forgettable small-talk that " +
             "would not move him either way, and never force a reaction onto a message that has not earned one. Do " +
             "not react merely to be friendly or to mirror the sender's mood; react only with his own opinion. ");
 
@@ -183,8 +216,8 @@ public sealed class ReactionJudge
         return sb.ToString();
     }
 
-    /// <summary>Builds the user turn: the target message, optional light context, and the allowed reactions. Public for tests.</summary>
-    public static string BuildUserMessage(ReactionRequest request)
+    /// <summary>Builds the user turn: the target message, optional context/memories/variety, and the allowed reactions. Public for tests.</summary>
+    public static string BuildUserMessage(ReactionRequest request, IReadOnlyList<string> memoryLines)
     {
         var sb = new StringBuilder();
         sb.Append("Message from ").Append(Sanitize(request.AuthorDisplayName)).Append(": ")
@@ -193,6 +226,22 @@ public sealed class ReactionJudge
         if (!string.IsNullOrWhiteSpace(request.Context))
         {
             sb.Append("Context (react to the message above, not this):\n").Append(Truncate(request.Context!, MaxContextChars)).Append('\n');
+        }
+
+        if (memoryLines is { Count: > 0 })
+        {
+            sb.Append("\nWhat you know about ").Append(Sanitize(request.AuthorDisplayName))
+              .Append(" (use only if it sharpens your reaction; do not force it):\n");
+            foreach (var line in memoryLines)
+            {
+                sb.Append("- ").Append(Sanitize(line)).Append('\n');
+            }
+        }
+
+        if (request.RecentEmojis is { Count: > 0 })
+        {
+            sb.Append("\nYou recently reacted with: ").Append(string.Join(", ", request.RecentEmojis))
+              .Append(". Prefer a different, more specific reaction unless one is clearly the best fit.\n");
         }
 
         sb.Append("\nAllowed reactions (choose exactly one token, or \"none\"):\n");

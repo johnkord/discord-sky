@@ -151,7 +151,7 @@ public class ReactionJudgeTests
                 new("kekw", string.Empty, IsCustom: true),
             });
 
-        var msg = ReactionJudge.BuildUserMessage(request);
+        var msg = ReactionJudge.BuildUserMessage(request, Array.Empty<string>());
         Assert.Contains("Sonic", msg);
         Assert.Contains("gotta go fast", msg);
         Assert.Contains("- egg:", msg);
@@ -170,7 +170,7 @@ public class ReactionJudgeTests
             Context: null,
             Allowed: new List<AllowedEmote> { new("egg", "sig", IsCustom: false) });
 
-        var msg = ReactionJudge.BuildUserMessage(request);
+        var msg = ReactionJudge.BuildUserMessage(request, Array.Empty<string>());
         Assert.True(msg.Length < 2000, $"expected truncation, got length {msg.Length}");
     }
 
@@ -184,8 +184,61 @@ public class ReactionJudgeTests
             Context: "earlier: a plan was mentioned",
             Allowed: new List<AllowedEmote> { new("eyes", "scheming", IsCustom: false) });
 
-        var msg = ReactionJudge.BuildUserMessage(request);
+        var msg = ReactionJudge.BuildUserMessage(request, Array.Empty<string>());
         Assert.Contains("Context", msg);
         Assert.Contains("a plan was mentioned", msg);
+    }
+
+    [Fact]
+    public void BuildUserMessage_WithMemories_IncludesMemoryBlock()
+    {
+        var request = new ReactionRequest(
+            PersonaName: "Robotnik",
+            AuthorDisplayName: "Curlyquote",
+            MessageText: "lost again",
+            Context: null,
+            Allowed: new List<AllowedEmote> { new("chartdown", "mocking failure", IsCustom: false) });
+
+        var msg = ReactionJudge.BuildUserMessage(request, new[] { "always loses at chess", "obsessed with eggs" });
+        Assert.Contains("What you know about Curlyquote", msg);
+        Assert.Contains("always loses at chess", msg);
+        Assert.Contains("obsessed with eggs", msg);
+    }
+
+    [Fact]
+    public void BuildUserMessage_NoMemories_OmitsMemoryBlock()
+    {
+        var request = new ReactionRequest(
+            PersonaName: "Robotnik",
+            AuthorDisplayName: "Curlyquote",
+            MessageText: "hi",
+            Context: null,
+            Allowed: new List<AllowedEmote> { new("egg", "sig", IsCustom: false) });
+
+        var msg = ReactionJudge.BuildUserMessage(request, Array.Empty<string>());
+        Assert.DoesNotContain("What you know about", msg);
+    }
+
+    [Fact]
+    public void BuildUserMessage_WithRecentEmojis_IncludesVarietyNudge()
+    {
+        var request = new ReactionRequest(
+            PersonaName: "Robotnik",
+            AuthorDisplayName: "Sonic",
+            MessageText: "gotta go fast",
+            Context: null,
+            Allowed: new List<AllowedEmote> { new("anger", "rage", IsCustom: false), new("clown", "fool", IsCustom: false) },
+            RecentEmojis: new[] { "anger", "clown" });
+
+        var msg = ReactionJudge.BuildUserMessage(request, Array.Empty<string>());
+        Assert.Contains("recently reacted with", msg);
+        Assert.Contains("anger", msg);
+    }
+
+    [Fact]
+    public void BuildSystemPrompt_Robotnik_EncouragesVariety()
+    {
+        var prompt = ReactionJudge.BuildSystemPrompt("Robotnik");
+        Assert.Contains("vary your reactions", prompt);
     }
 }

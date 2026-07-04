@@ -65,6 +65,7 @@ public static class TelemetryEventTypes
     public const string AutoModAction = "automod_action";
     public const string NewAccountFlag = "new_account_flag";
     public const string BanObserved = "ban_observed";
+    public const string ReactionJudged = "reaction_judged";
 }
 
 /// <summary>Test/CI default. Discards events.</summary>
