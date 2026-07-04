@@ -188,6 +188,8 @@ builder.Services.AddSingleton<ImageBudget>();
 builder.Services.AddSingleton<ImageRewriter>();
 // One cheap-LLM call decides Robotnik's in-character emoji reaction to messages he did NOT reply to.
 builder.Services.AddSingleton<ReactionJudge>();
+// The inner-thought worth gate: one cheap-LLM call scores whether an ambient candidate is worth a real reply.
+builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.ImpulseJudge>();
 // Empire State: Robotnik's persistent, evolving in-character world (mood + war-room log), advanced by a slow tick.
 builder.Services.AddSingleton<EmpireStateStore>();
 builder.Services.AddSingleton(sp => new RecentParticipants(

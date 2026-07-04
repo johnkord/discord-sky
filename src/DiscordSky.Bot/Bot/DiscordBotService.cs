@@ -14,6 +14,7 @@ using DiscordSky.Bot.Memory.Reception;
 using DiscordSky.Bot.Models.Orchestration;
 using DiscordSky.Bot.Orchestration;
 using DiscordSky.Bot.Orchestration.Empire;
+using DiscordSky.Bot.Orchestration.Impulse;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -36,6 +37,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly IReactionSink _reactionSink;
     private readonly int _reactionExcerptLength;
     private readonly ReactionJudge? _reactionJudge;
+    private readonly ImpulseJudge? _impulseJudge;
     private readonly RecentParticipants? _recentParticipants;
     private readonly EmpireStateStore? _empireState;
     private readonly EmpireTickService? _empireTickService;
@@ -87,7 +89,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         NewAccountFlagLog? newAccountFlags = null,
         RecentParticipants? recentParticipants = null,
         EmpireStateStore? empireState = null,
-        EmpireTickService? empireTickService = null)
+        EmpireTickService? empireTickService = null,
+        ImpulseJudge? impulseJudge = null)
     {
         _client = client;
         _options = options.Value;
@@ -117,6 +120,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _recentParticipants = recentParticipants;
         _empireState = empireState;
         _empireTickService = empireTickService;
+        _impulseJudge = impulseJudge;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -503,17 +507,76 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             if (roll < effectiveChance)
             {
                 _logger.LogInformation(
-                    "Ambient reply triggered (roll={Roll:F3} < effective={Eff:F3}, base={Base:F3}, botSpokeRecently={Recent}, mentionsBot={Mention}) for message {MessageId} in channel {Channel}.",
+                    "Ambient roll passed (roll={Roll:F3} < effective={Eff:F3}, base={Base:F3}, botSpokeRecently={Recent}, mentionsBot={Mention}) for message {MessageId} in channel {Channel}.",
                     roll, effectiveChance, chaosSettings.AmbientReplyChance, botSpokeRecently, mentionsBot, message.Id, channelName);
-                // Pass prefix + message content so HandlePersonaAsync can extract the user's text as the topic
-                await HandlePersonaAsync(context, _options.CommandPrefix + " " + content, message, CreativeInvocationKind.Ambient);
-                return;
+                if (await PassesAmbientWorthGateAsync(message, content, chaosSettings))
+                {
+                    // Pass prefix + message content so HandlePersonaAsync can extract the user's text as the topic
+                    await HandlePersonaAsync(context, _options.CommandPrefix + " " + content, message, CreativeInvocationKind.Ambient);
+                    return;
+                }
+                // The worth gate judged this moment not worth a full reply; fall through to a possible reaction.
             }
         }
 
         // He held his tongue this turn: maybe editorialize with a single in-character emoji reaction, chosen
         // by a cheap LLM. Rare, per-channel throttled, and off the reply path, so it stays presence-not-noise.
         await MaybeReactInCharacterAsync(message);
+    }
+
+    /// <summary>
+    /// The inner-thought worth gate for ambient replies. When enabled, an ambient candidate that has already
+    /// passed the cheap probability roll is scored by one cheap LLM call: it becomes a reply only if the
+    /// character genuinely has a good line (worth >= threshold). This replaces the blind dice with a quality
+    /// judgment (Inner Thoughts, arXiv:2501.00383); the roll stays as the cost bound and MaxPromptsPerHour as
+    /// the hard frequency cap downstream. Fail-open: a disabled or broken judge never suppresses a reply the
+    /// roll already granted. Emits an impulse_judged telemetry row per real judgment so the threshold can be
+    /// tuned on live data.
+    /// </summary>
+    private async Task<bool> PassesAmbientWorthGateAsync(SocketUserMessage message, string content, ChaosSettings chaos)
+    {
+        if (!chaos.UseWorthGate || _impulseJudge is null || string.IsNullOrWhiteSpace(content))
+        {
+            return true;
+        }
+
+        try
+        {
+            var authorName = (message.Author as SocketGuildUser)?.DisplayName ?? message.Author.Username;
+            var request = new AmbientImpulseRequest(
+                PersonaName: GetDefaultPersona(),
+                AuthorDisplayName: authorName,
+                MessageText: content,
+                Context: BuildReactionContext(message),
+                MoodLabel: _empireState is { Enabled: true } ? _empireState.Current.Mood.Label : null);
+
+            var verdict = await _impulseJudge.JudgeAmbientAsync(request, _shutdownCts.Token);
+            if (verdict is null)
+            {
+                // Judge failed or returned nothing usable: fail open (do not swallow a granted reply).
+                return true;
+            }
+
+            var spoke = verdict.Worth >= chaos.AmbientWorthThreshold;
+            _telemetry.Emit(new TelemetryEvent(
+                Timestamp: DateTimeOffset.UtcNow,
+                EventType: TelemetryEventTypes.ImpulseJudged,
+                UserHash: UserIdHash.Hash(message.Author.Id),
+                Channel: message.Channel.Name,
+                Outcome: spoke ? "spoke" : "held",
+                TopScore: verdict.Worth,
+                MessageId: message.Id));
+            _logger.LogInformation("impulse_judged outcome={Outcome} worth={Worth:F2} thought={Thought} channel={Channel}",
+                spoke ? "spoke" : "held", verdict.Worth, string.IsNullOrEmpty(verdict.Thought) ? "(none)" : verdict.Thought, message.Channel.Name);
+
+            return spoke;
+        }
+        catch (Exception ex)
+        {
+            // Fail-open: a broken gate should never silence a reply the roll already granted.
+            _logger.LogDebug(ex, "Ambient worth gate failed; allowing the reply.");
+            return true;
+        }
     }
 
     /// <summary>

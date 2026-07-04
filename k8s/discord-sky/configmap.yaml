@@ -44,6 +44,11 @@ data:
   LLM__Providers__xAI__UseResponsesApi: "false"
   Chaos__AmbientReplyChance: "0.25"
   Chaos__MaxPromptsPerHour: "20"
+  # Inner-thought worth gate. Shipped in data-collection mode: the gate is on, but a 0.0 threshold means every
+  # rolled ambient candidate still replies (behavior-neutral), while impulse_judged telemetry records the worth
+  # score of each. Raise AmbientWorthThreshold (e.g. 0.5) later to actually gate on the observed distribution.
+  Chaos__UseWorthGate: "true"
+  Chaos__AmbientWorthThreshold: "0.0"
   # Telemetry sink path. MUST live inside the PVC mount; the PVC is mounted at
   # /app/data/user_memories so we nest telemetry there. Without this override the
   # default would resolve to /app/data/telemetry which is on ephemeral storage and
