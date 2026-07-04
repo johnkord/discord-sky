@@ -38,6 +38,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly int _reactionExcerptLength;
     private readonly ReactionJudge? _reactionJudge;
     private readonly ImpulseJudge? _impulseJudge;
+    private readonly ChannelPulseTracker? _channelPulse;
     private readonly RecentParticipants? _recentParticipants;
     private readonly EmpireStateStore? _empireState;
     private readonly EmpireTickService? _empireTickService;
@@ -90,7 +91,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         RecentParticipants? recentParticipants = null,
         EmpireStateStore? empireState = null,
         EmpireTickService? empireTickService = null,
-        ImpulseJudge? impulseJudge = null)
+        ImpulseJudge? impulseJudge = null,
+        ChannelPulseTracker? channelPulse = null)
     {
         _client = client;
         _options = options.Value;
@@ -121,6 +123,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _empireState = empireState;
         _empireTickService = empireTickService;
         _impulseJudge = impulseJudge;
+        _channelPulse = channelPulse;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -334,6 +337,17 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         // vector, and the earlier placement (below this gate) meant automated spam was never scanned. We still
         // skip our own messages and any trusted bots, and the persona flow below still ignores bots entirely.
         var isSelfMessage = _client.CurrentUser is not null && message.Author.Id == _client.CurrentUser.Id;
+
+        // Impulse pipeline: track per-channel activity for the cold-open never-into-silence gate. Record the bot's
+        // own messages (self, seen via the gateway echo) and humans; skip other bots. Cheap, in-memory, and for
+        // every channel, so an opted-in cold-open channel is tracked even if it is not on the reply allow-list.
+        if (_channelPulse is not null)
+        {
+            var pulseNow = DateTimeOffset.UtcNow;
+            if (isSelfMessage) _channelPulse.RecordBot(message.Channel.Id, pulseNow);
+            else if (!message.Author.IsBot) _channelPulse.RecordHuman(message.Channel.Id, message.Author.Id, pulseNow);
+        }
+
         if (_scamGuard.Enabled && !isSelfMessage
             && (_scamGuard.ScanBotMessages || !message.Author.IsBot)
             && !_scamGuard.TrustedBotIds.Contains(message.Author.Id)

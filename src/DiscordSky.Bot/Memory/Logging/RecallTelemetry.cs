@@ -68,6 +68,7 @@ public static class TelemetryEventTypes
     public const string ReactionJudged = "reaction_judged";
     public const string EmpireTick = "empire_tick";
     public const string ImpulseJudged = "impulse_judged";
+    public const string ColdOpen = "cold_open";
 }
 
 /// <summary>Test/CI default. Discards events.</summary>

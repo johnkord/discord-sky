@@ -26,6 +26,7 @@ builder.WebHost.UseUrls("http://+:8080");
 
 builder.Services.Configure<BotOptions>(builder.Configuration.GetSection(BotOptions.SectionName));
 builder.Services.Configure<ChaosSettings>(builder.Configuration.GetSection("Chaos"));
+builder.Services.Configure<ColdOpenOptions>(builder.Configuration.GetSection(ColdOpenOptions.SectionName));
 builder.Services.Configure<LlmOptions>(builder.Configuration.GetSection(LlmOptions.SectionName));
 builder.Services.Configure<MemoryRelevanceOptions>(builder.Configuration.GetSection(MemoryRelevanceOptions.SectionName));
 builder.Services.Configure<TelemetryOptions>(builder.Configuration.GetSection(TelemetryOptions.SectionName));
@@ -190,6 +191,11 @@ builder.Services.AddSingleton<ImageRewriter>();
 builder.Services.AddSingleton<ReactionJudge>();
 // The inner-thought worth gate: one cheap-LLM call scores whether an ambient candidate is worth a real reply.
 builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.ImpulseJudge>();
+// Proactive cold opens: per-channel activity tracker (never-into-silence gate), the composer, and the polling service.
+builder.Services.AddSingleton(new DiscordSky.Bot.Orchestration.Impulse.ChannelPulseTracker());
+builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.ColdOpenComposer>();
+builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.ColdOpenService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<DiscordSky.Bot.Orchestration.Impulse.ColdOpenService>());
 // Empire State: Robotnik's persistent, evolving in-character world (mood + war-room log), advanced by a slow tick.
 builder.Services.AddSingleton<EmpireStateStore>();
 builder.Services.AddSingleton(sp => new RecentParticipants(
