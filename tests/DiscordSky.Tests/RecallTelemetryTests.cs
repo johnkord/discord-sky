@@ -78,6 +78,41 @@ public sealed class RecallTelemetryTests : IDisposable
     }
 
     [Fact]
+    public async Task Emit_ColdOpen_PersistsRoomTextLineAndCritic()
+    {
+        var sink = BuildSink();
+        await sink.StartAsync(CancellationToken.None);
+
+        var ts = new DateTimeOffset(2026, 7, 5, 6, 0, 0, TimeSpan.Zero);
+        sink.Emit(new TelemetryEvent(
+            Timestamp: ts,
+            EventType: TelemetryEventTypes.ColdOpen,
+            Channel: "secret-chat",
+            Kind: "bot cunty",
+            Outcome: "shadow",
+            TopScore: 0.86,
+            Note: "alascene, my bot being cunty is precision engineering.",
+            Reason: "critic 0.84 clean",
+            Room: new[] { "alascene: Why is your bot so cunty to me yano", "curlyquote: who isn't he cunty to" }));
+
+        await sink.StopAsync(CancellationToken.None);
+
+        var path = Path.Combine(_tempDir, "recall-2026-07-05.jsonl");
+        Assert.True(File.Exists(path), $"expected {path}");
+        var line = (await File.ReadAllTextAsync(path)).TrimEnd('\n');
+        using var doc = JsonDocument.Parse(line);
+        var root = doc.RootElement;
+
+        // The raw room context (real display names + message text) is durably stored for owner review.
+        var room = root.GetProperty("room").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.Contains("alascene: Why is your bot so cunty to me yano", room);
+        Assert.Contains("curlyquote: who isn't he cunty to", room);
+        // The bot's own drafted line and the advisory critic verdict are stored alongside it.
+        Assert.Contains("precision engineering", root.GetProperty("note").GetString());
+        Assert.Equal("critic 0.84 clean", root.GetProperty("reason").GetString());
+    }
+
+    [Fact]
     public async Task StartAsync_PrunesFilesOlderThanRetention()
     {
         // Pre-seed: one old (>30d) and one fresh.

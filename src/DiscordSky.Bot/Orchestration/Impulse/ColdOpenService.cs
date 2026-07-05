@@ -156,17 +156,25 @@ public sealed class ColdOpenService : IHostedService, IDisposable
             var recentLines = await GatherRecentLinesAsync(channel);
             var context = BuildContext(recentLines);
             var draft = await _composer.ComposeAsync(context, ct);
-            draft = await ApplyCriticAsync(context, draft, ct);
             if (draft is null || draft.Worth < opts.WorthThreshold)
             {
-                Emit("declined", channel.Name, draft?.Hook, draft?.Worth, draft?.Line);
+                Emit("declined", channel.Name, draft?.Hook, draft?.Worth, draft?.Line, recentLines, null);
                 _logger.LogInformation("cold_open outcome=declined worth={Worth:F2} channel={Channel}", draft?.Worth ?? 0.0, channel.Name);
                 continue; // a decline does NOT consume the fire cooldown or the daily cap, only the judge cooldown
             }
 
+            // The critic is ADVISORY now (round-5 eval: as a hard gate it killed the best line and passed cringe).
+            // It runs only on a would-fire draft and its verdict is logged for later review; it never blocks a post.
+            var critique = _critic is not null ? await _critic.ReviewAsync(context, draft, ct) : null;
+            if (critique is not null)
+            {
+                _logger.LogInformation("cold_open_critic composer={Composer:F2} critic={Critic:F2} flaw={Flaw}",
+                    draft.Worth, critique.Worth, string.IsNullOrWhiteSpace(critique.Flaw) ? "-" : critique.Flaw);
+            }
+
             if (opts.ShadowMode)
             {
-                Emit("shadow", channel.Name, draft.Hook, draft.Worth, draft.Line);
+                Emit("shadow", channel.Name, draft.Hook, draft.Worth, draft.Line, recentLines, critique);
                 _logger.LogInformation("cold_open outcome=shadow worth={Worth:F2} hook={Hook} channel={Channel} line={Line}",
                     draft.Worth, draft.Hook, channel.Name, draft.Line);
             }
@@ -174,7 +182,7 @@ public sealed class ColdOpenService : IHostedService, IDisposable
             {
                 await channel.SendMessageAsync(draft.Line, allowedMentions: AllowedMentions.None);
                 _pulse.RecordBot(channel.Id, DateTimeOffset.UtcNow);
-                Emit("fired", channel.Name, draft.Hook, draft.Worth, draft.Line);
+                Emit("fired", channel.Name, draft.Hook, draft.Worth, draft.Line, recentLines, critique);
                 _logger.LogInformation("cold_open outcome=fired worth={Worth:F2} hook={Hook} channel={Channel}",
                     draft.Worth, draft.Hook, channel.Name);
             }
@@ -192,27 +200,6 @@ public sealed class ColdOpenService : IHostedService, IDisposable
         var situation = state?.Body ?? string.Empty;
         var people = _recentParticipants?.Names(6) ?? Array.Empty<string>();
         return new ColdOpenContext(GetPersona(), mood, situation, people, recentLines);
-    }
-
-    /// <summary>
-    /// Runs the skeptical critic over a drafted cold open and folds its verdict in by taking the MIN of the
-    /// composer's and the critic's postability score, so a checkable flaw the composer missed (an inaccuracy, a
-    /// generic frame) still drags the line under the bar. No critic wired, no draft, or a failed/empty critique
-    /// leaves the draft unchanged (fail-open).
-    /// </summary>
-    private async Task<ColdOpenDraft?> ApplyCriticAsync(ColdOpenContext context, ColdOpenDraft? draft, CancellationToken ct)
-    {
-        if (_critic is null || draft is null) return draft;
-
-        var critique = await _critic.ReviewAsync(context, draft, ct);
-        if (critique is null) return draft; // fail-open: keep the composer's draft unchanged
-
-        var effective = Math.Min(draft.Worth, critique.Worth);
-        _logger.LogInformation(
-            "cold_open_critic composer={Composer:F2} critic={Critic:F2} effective={Effective:F2} flaw={Flaw}",
-            draft.Worth, critique.Worth, effective, string.IsNullOrWhiteSpace(critique.Flaw) ? "-" : critique.Flaw);
-
-        return effective < draft.Worth ? draft with { Worth = effective } : draft;
     }
 
     /// <summary>
@@ -295,7 +282,8 @@ public sealed class ColdOpenService : IHostedService, IDisposable
         }
     }
 
-    private void Emit(string outcome, string channel, string? hook, double? worth, string? line)
+    private void Emit(string outcome, string channel, string? hook, double? worth, string? line,
+        IReadOnlyList<string>? roomLines, ColdOpenCritique? critique)
     {
         _telemetry.Emit(new TelemetryEvent(
             Timestamp: DateTimeOffset.UtcNow,
@@ -304,7 +292,9 @@ public sealed class ColdOpenService : IHostedService, IDisposable
             Kind: string.IsNullOrWhiteSpace(hook) ? null : hook,
             Outcome: outcome,
             TopScore: worth,
-            Note: string.IsNullOrWhiteSpace(line) ? null : (line!.Length > 240 ? line[..240] : line)));
+            Note: string.IsNullOrWhiteSpace(line) ? null : line,
+            Reason: critique is null ? null : $"critic {critique.Worth:F2} {(string.IsNullOrWhiteSpace(critique.Flaw) ? "-" : critique.Flaw)}",
+            Room: roomLines is { Count: > 0 } ? roomLines : null));
     }
 
     public void Dispose()

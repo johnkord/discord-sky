@@ -13,8 +13,12 @@ namespace DiscordSky.Bot.Memory.Logging;
 /// Purpose: capture recall-feature events to disk so they survive pod rotation.
 /// `kubectl logs` evaporates on every deploy; the PVC does not.
 ///
-/// PII policy (see review §10 #6): event payloads include hashed user IDs (via <see cref="UserIdHash"/>)
-/// and counts. They MUST NOT include raw note content. Content hashes and 40-char prefixes are acceptable.
+/// Data policy (owner decision, 2026-07-05): this telemetry is the bot OWNER's private record, kept on
+/// the owner's own PVC and pruned after <see cref="TelemetryOptions.RetentionDays"/> days, used to review
+/// and improve the bot's interactions. Event payloads MAY include real display names and raw message text
+/// (for example, the room context a cold open reacted to and the line it drafted). Hashed user IDs (via
+/// <see cref="UserIdHash"/>) remain available for events that do not need raw identities. This supersedes
+/// the earlier hashed-only rule.
 /// </summary>
 public interface IRecallTelemetrySink
 {
@@ -46,7 +50,8 @@ public sealed record TelemetryEvent(
     [property: JsonPropertyName("note")] string? Note = null,
     [property: JsonPropertyName("reason")] string? Reason = null,
     [property: JsonPropertyName("before")] int? Before = null,
-    [property: JsonPropertyName("after")] int? After = null
+    [property: JsonPropertyName("after")] int? After = null,
+    [property: JsonPropertyName("room")] IReadOnlyList<string>? Room = null
 );
 
 /// <summary>Canonical event-type string constants. Use these instead of string literals at call sites.</summary>

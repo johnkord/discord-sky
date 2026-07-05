@@ -134,15 +134,14 @@ foreach (var s in scenarios)
         var draft = await composer.ComposeAsync(ctx, CancellationToken.None);
         var declined = draft is null || string.IsNullOrWhiteSpace(draft.Line);
 
-        // Second pass: the skeptical critic audits any real draft for checkable flaws; the service posts on the
-        // MIN of composer and critic, so replicate that here to show what would actually clear the bar.
+        // Second pass: the critic is ADVISORY now (mirrors the bot, which logs its verdict but no longer
+        // gates on it). Shown for information; the composer's worth is what would decide a post.
         ColdOpenCritique? critique = null;
-        double? effectiveWorth = draft?.Worth;
         if (!declined && draft is not null)
         {
             critique = await critic.ReviewAsync(ctx, draft, CancellationToken.None);
-            if (critique is not null) effectiveWorth = Math.Min(draft.Worth, critique.Worth);
         }
+        double? effectiveWorth = draft?.Worth;
 
         records.Add(new OutputRecord(
             s.Name ?? "(unnamed)", run, draft?.Worth, draft?.Hook, draft?.Line, declined,
@@ -173,7 +172,7 @@ foreach (var group in records.GroupBy(r => r.Scenario))
             Console.WriteLine($"{tag}worth {r.Worth:0.00}  hook {r.Hook}");
             Console.WriteLine($"{tag}  {r.Line}");
             if (r.CriticWorth is { } cw)
-                Console.WriteLine($"{tag}  critic {cw:0.00} ({r.CriticFlaw}) -> effective {r.EffectiveWorth:0.00}");
+                Console.WriteLine($"{tag}  critic (advisory) {cw:0.00} ({r.CriticFlaw})");
         }
     }
 }

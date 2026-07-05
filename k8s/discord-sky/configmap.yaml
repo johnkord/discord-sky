@@ -57,6 +57,12 @@ data:
   ColdOpen__Channels__0__Channel: "secret-chat"
   ColdOpen__WorthThreshold: "0.6"
   ColdOpen__MinDistinctHumans: "1"
+  # Harvest cadence (shadow only, so it is safe to be generous since nothing is ever sent): sample moments
+  # more often and keep daily headroom so a rare personal-hook fire is not throttled away while we collect
+  # review data. Decline discipline means most cycles will (correctly) log a decline, which is also useful data.
+  ColdOpen__MaxPerDay: "8"
+  ColdOpen__CooldownMinutes: "90"
+  ColdOpen__JudgeCooldownMinutes: "15"
   # Telemetry sink path. MUST live inside the PVC mount; the PVC is mounted at
   # /app/data/user_memories so we nest telemetry there. Without this override the
   # default would resolve to /app/data/telemetry which is on ephemeral storage and
