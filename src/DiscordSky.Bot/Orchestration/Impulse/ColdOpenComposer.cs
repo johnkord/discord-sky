@@ -133,14 +133,18 @@ public sealed class ColdOpenComposer
             "was not inside your head finds a bulletin about your private plans baffling, not funny. If the only " +
             "thing you have is your own agenda with no hook into this room, that is noise, not comedy. Score it " +
             "LOW and stay silent; that is the honest answer most of the time. " +
-            "When you DO have a real hook, write ONE short, punchy line (a single sentence is best, two at most) " +
-            "that reacts to it exactly as your character would: twist their topic into fuel for your ego and " +
-            "worldview. Season it with your own lore ONLY where it lands on their actual topic, the way a good " +
-            "roast stays about its target. Never merely friendly, never narrate or recite your notes, do not @ " +
-            "or ping anyone, and keep it tight. " +
-            "Score worth 0.0 to 1.0: high only when the line is genuinely funny AND unmistakably about what this " +
-            "room is discussing; low the moment it drifts into your own lore or would read as random to someone " +
-            "here. Respond with ONLY a compact JSON object " +
+            "When you DO have a real hook, write ONE short line (one sentence; you tend to overwrite, so cut it " +
+            "back hard) that reacts to it exactly as your character would: twist their topic into fuel for your " +
+            "ego and worldview, ideally landing on a vivid, specific image rather than a general sneer. Season it " +
+            "with your own lore ONLY where it lands on their actual topic, the way a good roast stays about its " +
+            "target. Write plainly: NO stylized stutters or rolled-out letters (no \"prrr\", no stretched " +
+            "consonants); the wit carries it, not verbal tics. Never merely friendly, never narrate or recite " +
+            "your notes, do not @ or ping anyone. " +
+            "Then score worth 0.0 to 1.0 STRICTLY and honestly, because this score alone decides whether the " +
+            "line is good enough to post. Calibrate hard: a merely on-topic, mildly amusing line is 0.5 to 0.6, " +
+            "not higher; reserve 0.8 and above for a line you are genuinely confident would make THIS room laugh " +
+            "out loud; when unsure, it is a 0.5. Most lines are ordinary, so let the rare great one stand out. " +
+            "Respond with ONLY a compact JSON object " +
             "{\"worth\":<number 0.0-1.0>,\"hook\":\"<one or two words naming the REAL thing in the room you seized on>\",\"line\":\"<the message, or empty to stay silent>\"}. " +
             "No markdown, no prose outside the JSON.");
 
