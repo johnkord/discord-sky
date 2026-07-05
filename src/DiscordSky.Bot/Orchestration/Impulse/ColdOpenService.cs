@@ -190,14 +190,16 @@ public sealed class ColdOpenService : IHostedService, IDisposable
     }
 
     /// <summary>
-    /// Reads the last few human lines in the channel so the composer can seize a live topical hook (B-what-4,
-    /// added after shadow validation showed pure-internal-state cold opens miss the room). Bounded, and the
-    /// bot's own and other bots' messages are skipped. Marked untrusted downstream. Fail-open to empty.
+    /// Reads the recent human lines in the channel: this is the cold open's PRIMARY material, since a cold open
+    /// must hook onto what the room actually cares about (round 1 eval: pure-internal-scheme cold opens read as
+    /// detached noise). A slightly wider window than the first cut, to give a real topical hook or a genuine
+    /// callback to catch. Bounded; the bot's own and other bots' messages are skipped; marked untrusted
+    /// downstream. Fail-open to empty, in which case the composer has no hook and should stay silent.
     /// </summary>
     private async Task<IReadOnlyList<string>> GatherRecentLinesAsync(SocketTextChannel channel)
     {
-        const int Fetch = 10;
-        const int MaxLines = 5;
+        const int Fetch = 16;
+        const int MaxLines = 8;
         const int MaxLineChars = 200;
         try
         {
