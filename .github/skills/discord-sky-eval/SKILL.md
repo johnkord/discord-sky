@@ -127,7 +127,9 @@ behaviors, and the pairwise-queue plumbing).
 4. Judge the checkable axes; pre-filter the obviously-broken.
 5. Build the blind pairwise humor queue from the survivors, slipping in the occasional real human line
    from the same moment (the equal-severity check) and the occasional repeat (self-consistency).
-6. Present the queue to the human. Collect funnier-or-not plus mechanism tags plus optional text.
+6. Present the queue to the human IN A REVIEW DOC under docs/eval/ (the owner's standing rule; see the
+   elicitation protocol), with inline answer slots and your mechanical read. Ask them to fill it in and
+   wait for their go-ahead, then read back their funnier-or-not calls, mechanism tags, and notes.
 7. Append every human call to the why-corpus.
 8. Draft a targeted prompt edit from the failure reasons; validate pairwise on held-out scenarios.
 9. Report metrics and the proposed edit. Ship only with human sign-off, then follow the normal
@@ -136,6 +138,14 @@ behaviors, and the pairwise-queue plumbing).
 ---
 
 ## Human elicitation protocol
+
+How to ask (the owner's standing rule, always): NEVER put eval-judgment questions to the owner inline in
+chat. Write the full context and the questions into a review doc under `docs/eval/` (local and
+untracked, since it quotes real messages), with an inline "Your answer:" slot under each question, plus
+your own mechanical-axis read for reference. Then ask the owner to fill it in and WAIT: they will
+complete it and tell you when they are ready, and only then do you read it back and act. This is how
+every human eval judgment is collected. The bullets below are how to shape the questions inside that
+doc.
 
 - Pairwise, not absolute scoring. "Which is funnier, A or B, and one reason." Pairwise is steadier for
   humor and far lighter for the human.
