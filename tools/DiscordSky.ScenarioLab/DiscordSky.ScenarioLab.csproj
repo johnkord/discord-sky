@@ -7,6 +7,9 @@
     <Nullable>enable</Nullable>
     <RootNamespace>DiscordSky.ScenarioLab</RootNamespace>
     <AssemblyName>DiscordSky.ScenarioLab</AssemblyName>
+    <!-- Stores the OpenAI key OUTSIDE the repo (in the user-secrets store) so it can never be committed.
+         Set it once with dotnet user-secrets (see the discord-sky-eval skill for the exact command). -->
+    <UserSecretsId>discord-sky-scenariolab</UserSecretsId>
     <!-- OPENAI001: the Responses API surface is marked experimental in the SDK; the bot uses it for gpt-5.5. -->
     <NoWarn>$(NoWarn);OPENAI001</NoWarn>
   </PropertyGroup>

@@ -68,11 +68,13 @@ var repoRoot = FindRepoRoot();
 var appsettings = Path.Combine(repoRoot, "src", "DiscordSky.Bot", "appsettings.json");
 if (!File.Exists(appsettings)) { Console.Error.WriteLine($"Could not find bot config at {appsettings}"); return 1; }
 
-// Base config: the bot's appsettings + its Development overlay + environment (so LLM__... env overrides apply,
-// exactly like the bot). Then overlay the API key (from OPENAI_API_KEY) and any --model override.
+// Base config: the bot's appsettings + its Development overlay + local user-secrets (the API key, stored OUTSIDE
+// the repo so it is never committed) + environment (so LLM__... env vars still override, exactly like the bot).
+// Later sources win, so env beats user-secrets beats appsettings. Then overlay the resolved key and --model.
 var baseCfg = new ConfigurationBuilder()
     .AddJsonFile(appsettings, optional: false)
     .AddJsonFile(Path.Combine(repoRoot, "src", "DiscordSky.Bot", "appsettings.Development.json"), optional: true)
+    .AddUserSecrets(System.Reflection.Assembly.GetExecutingAssembly(), optional: true)
     .AddEnvironmentVariables()
     .Build();
 
@@ -81,7 +83,9 @@ var apiKey = baseCfg[$"LLM:Providers:{activeProvider}:ApiKey"];
 if (string.IsNullOrWhiteSpace(apiKey)) apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
 if (string.IsNullOrWhiteSpace(apiKey))
 {
-    Console.Error.WriteLine($"No API key for provider '{activeProvider}'. Set OPENAI_API_KEY (or LLM__Providers__{activeProvider}__ApiKey).");
+    Console.Error.WriteLine($"No API key for provider '{activeProvider}'. Store it once (outside the repo) with:");
+    Console.Error.WriteLine($"  dotnet user-secrets --project tools/DiscordSky.ScenarioLab set \"LLM:Providers:{activeProvider}:ApiKey\" \"sk-...\"");
+    Console.Error.WriteLine("or set OPENAI_API_KEY in the environment.");
     return 1;
 }
 
