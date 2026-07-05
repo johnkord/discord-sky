@@ -147,6 +147,11 @@ complete it and tell you when they are ready, and only then do you read it back 
 every human eval judgment is collected. The bullets below are how to shape the questions inside that
 doc.
 
+- One slot per item, not a batch question. When several drafts are on the table, give EACH its own
+  inline slot with its context (the room), its worth, and its hook, rather than a single "which of
+  these land" question, which is hard to answer. The owner reads and reacts to each; a light shorthand
+  (score 0 to 3, post or cut, a few words) keeps it fast. Keep only the genuinely cross-cutting
+  questions (calibration, voice, deploy) as aggregate at the end.
 - Pairwise, not absolute scoring. "Which is funnier, A or B, and one reason." Pairwise is steadier for
   humor and far lighter for the human.
 - Blind. Hide the source and the session's opinion until after the human answers, so the human is not
