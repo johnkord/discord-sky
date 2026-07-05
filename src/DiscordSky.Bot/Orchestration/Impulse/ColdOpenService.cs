@@ -35,6 +35,7 @@ public sealed class ColdOpenService : IHostedService, IDisposable
     private readonly ILogger<ColdOpenService> _logger;
     private readonly EmpireStateStore? _empireState;
     private readonly RecentParticipants? _recentParticipants;
+    private readonly ColdOpenCritic? _critic;
 
     private readonly SemaphoreSlim _lock = new(1, 1);
     private readonly Dictionary<ulong, ChannelBudget> _budgets = new();
@@ -49,7 +50,8 @@ public sealed class ColdOpenService : IHostedService, IDisposable
         IRecallTelemetrySink telemetry,
         ILogger<ColdOpenService> logger,
         EmpireStateStore? empireState = null,
-        RecentParticipants? recentParticipants = null)
+        RecentParticipants? recentParticipants = null,
+        ColdOpenCritic? critic = null)
     {
         _client = client;
         _options = options;
@@ -59,6 +61,7 @@ public sealed class ColdOpenService : IHostedService, IDisposable
         _logger = logger;
         _empireState = empireState;
         _recentParticipants = recentParticipants;
+        _critic = critic;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -151,7 +154,9 @@ public sealed class ColdOpenService : IHostedService, IDisposable
             budget.LastJudgedAt = now;
 
             var recentLines = await GatherRecentLinesAsync(channel);
-            var draft = await _composer.ComposeAsync(BuildContext(recentLines), ct);
+            var context = BuildContext(recentLines);
+            var draft = await _composer.ComposeAsync(context, ct);
+            draft = await ApplyCriticAsync(context, draft, ct);
             if (draft is null || draft.Worth < opts.WorthThreshold)
             {
                 Emit("declined", channel.Name, draft?.Hook, draft?.Worth, draft?.Line);
@@ -187,6 +192,27 @@ public sealed class ColdOpenService : IHostedService, IDisposable
         var situation = state?.Body ?? string.Empty;
         var people = _recentParticipants?.Names(6) ?? Array.Empty<string>();
         return new ColdOpenContext(GetPersona(), mood, situation, people, recentLines);
+    }
+
+    /// <summary>
+    /// Runs the skeptical critic over a drafted cold open and folds its verdict in by taking the MIN of the
+    /// composer's and the critic's postability score, so a checkable flaw the composer missed (an inaccuracy, a
+    /// generic frame) still drags the line under the bar. No critic wired, no draft, or a failed/empty critique
+    /// leaves the draft unchanged (fail-open).
+    /// </summary>
+    private async Task<ColdOpenDraft?> ApplyCriticAsync(ColdOpenContext context, ColdOpenDraft? draft, CancellationToken ct)
+    {
+        if (_critic is null || draft is null) return draft;
+
+        var critique = await _critic.ReviewAsync(context, draft, ct);
+        if (critique is null) return draft; // fail-open: keep the composer's draft unchanged
+
+        var effective = Math.Min(draft.Worth, critique.Worth);
+        _logger.LogInformation(
+            "cold_open_critic composer={Composer:F2} critic={Critic:F2} effective={Effective:F2} flaw={Flaw}",
+            draft.Worth, critique.Worth, effective, string.IsNullOrWhiteSpace(critique.Flaw) ? "-" : critique.Flaw);
+
+        return effective < draft.Worth ? draft with { Worth = effective } : draft;
     }
 
     /// <summary>

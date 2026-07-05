@@ -194,6 +194,9 @@ builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.ImpulseJudge>
 // Proactive cold opens: per-channel activity tracker (never-into-silence gate), the composer, and the polling service.
 builder.Services.AddSingleton(new DiscordSky.Bot.Orchestration.Impulse.ChannelPulseTracker());
 builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.ColdOpenComposer>();
+// A skeptical second pass that audits a drafted cold open for checkable flaws (inaccuracy, generic framing) and,
+// via a MIN-combine in the service, drags an over-scored miss under the bar that the composer could not self-catch.
+builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.ColdOpenCritic>();
 builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.ColdOpenService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DiscordSky.Bot.Orchestration.Impulse.ColdOpenService>());
 // Empire State: Robotnik's persistent, evolving in-character world (mood + war-room log), advanced by a slow tick.

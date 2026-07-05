@@ -49,7 +49,7 @@ public sealed class ColdOpenComposer
             {
                 ModelId = ResolveChatModel(),
                 Instructions = BuildSystemPrompt(context.PersonaName),
-                MaxOutputTokens = 500,
+                MaxOutputTokens = 900,
             };
 
             var response = await _chatClient.GetResponseAsync(messages, options, cancellationToken);
@@ -133,16 +133,22 @@ public sealed class ColdOpenComposer
 
             "AIM AT THE ROOM. The best target is a person here or the exact thing they just said, and the " +
             "sharpest opening is usually the most personal, cocky, or provocative line in the log. A jab at you " +
-            "or at this bot is a gift: seize it and turn it straight back on them. A safe, general observation " +
-            "about some news item they mentioned is the WEAKEST kind of cold open. Go for something real and " +
-            "close to the bone.\n\n" +
+            "or at this bot is a gift: seize it, OWN the meanness, and turn it UP; do not defend, explain, or " +
+            "justify yourself, because a villain caught being cruel doubles down, he does not make excuses. A " +
+            "safe, general observation about some news item they mentioned is the WEAKEST kind of cold open. Go " +
+            "for something real and close to the bone.\n\n" +
 
-            "MAKE IT COHERE. The line has to land as one clear thought, not a pile of in-character words that " +
-            "sound witty but do not add up. The logic must hold, and it must stay true to what your character " +
-            "actually wants: do not invert your own motives or values for a cheap line. If you name something " +
-            "(from the room OR from your own world), it has to power the joke; a reference dropped in only so " +
-            "people recognize it is not a punchline, it is name-dropping, and it reads as try-hard. Land on one " +
-            "vivid, specific image, not a vague put-down.\n\n" +
+            "MAKE IT COHERE AND ACCURATE. The line has to land as one clear thought, not a pile of in-character " +
+            "words that sound witty but do not add up. The logic must hold, and it must stay true to what your " +
+            "character actually wants: do not invert your own motives or values for a cheap line. Every claim " +
+            "must be TRUE to what was actually said: never invent a detail the room did not mention, and never " +
+            "weld two separate things they said into one false claim. An inaccurate line reads as you not " +
+            "listening, and it is dead on arrival. If you name something (from the room OR from your own world), " +
+            "it has to power the joke; a reference dropped in only so people recognize it is not a punchline, it " +
+            "is name-dropping, and it reads as try-hard. Land on one vivid image that is specific and apt to THIS " +
+            "exact topic, not reach-for-any-villain filler that would fit any chat (a generic 'conquer' this or a " +
+            "gadget that 'blushes'); if your metaphor could be pasted onto an unrelated conversation, it is too " +
+            "generic. Vary your shape; do not keep reusing one template.\n\n" +
 
             "STAY OUT OF YOUR OWN HEAD. Your schemes, backstory, and lore are private flavor, never the subject: " +
             "a bulletin about your private plans baffles people who were not inside it, and it is noise, not " +

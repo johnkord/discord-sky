@@ -9,8 +9,9 @@ using OpenAI;
 using OpenAI.Responses;
 
 // ScenarioLab: Phase 0 of the eval harness (docs/scenario_eval_harness_design_2026-07-04.md).
-// Runs the REAL ColdOpenComposer over scenario fixtures and dumps its raw output. It does NOT judge;
-// judging is the session's and the human's job (see the discord-sky-eval skill). Nothing is posted to Discord.
+// Runs the REAL ColdOpenComposer (and the ColdOpenCritic second pass) over scenario fixtures and dumps the raw
+// output plus the critic's verdict. It does NOT judge; judging is the session's and the human's job (see the
+// discord-sky-eval skill). Nothing is posted to Discord.
 //
 // Fidelity: loads the bot's REAL LlmOptions from src/DiscordSky.Bot/appsettings.json (plus env overrides) and
 // builds the IChatClient the same way Program.cs does, so it exercises official bot code and config, not a
@@ -111,11 +112,12 @@ var chatClient = provider.UseResponsesApi
     : openAiClient.GetChatClient(model).AsIChatClient();
 
 var composer = new ColdOpenComposer(chatClient, new StaticOptionsMonitor<LlmOptions>(llm), NullLogger<ColdOpenComposer>.Instance);
+var critic = new ColdOpenCritic(chatClient, new StaticOptionsMonitor<LlmOptions>(llm), NullLogger<ColdOpenCritic>.Instance);
 
 var sourceSha = GitStamp(repoRoot);
 if (sourceSha.EndsWith("-dirty", StringComparison.Ordinal))
     Console.Error.WriteLine("warning: working tree is dirty; this eval reflects uncommitted changes, not a committed/deployed state.");
-Console.Error.WriteLine($"Composing {scenarios.Count} scenario(s) x {runs} run(s) | provider {llm.ActiveProvider} | model {model} | bot source {sourceSha}");
+Console.Error.WriteLine($"Composing + critiquing {scenarios.Count} scenario(s) x {runs} run(s) | provider {llm.ActiveProvider} | model {model} | bot source {sourceSha}");
 
 var records = new List<OutputRecord>();
 foreach (var s in scenarios)
@@ -131,7 +133,20 @@ foreach (var s in scenarios)
     {
         var draft = await composer.ComposeAsync(ctx, CancellationToken.None);
         var declined = draft is null || string.IsNullOrWhiteSpace(draft.Line);
-        records.Add(new OutputRecord(s.Name ?? "(unnamed)", run, draft?.Worth, draft?.Hook, draft?.Line, declined));
+
+        // Second pass: the skeptical critic audits any real draft for checkable flaws; the service posts on the
+        // MIN of composer and critic, so replicate that here to show what would actually clear the bar.
+        ColdOpenCritique? critique = null;
+        double? effectiveWorth = draft?.Worth;
+        if (!declined && draft is not null)
+        {
+            critique = await critic.ReviewAsync(ctx, draft, CancellationToken.None);
+            if (critique is not null) effectiveWorth = Math.Min(draft.Worth, critique.Worth);
+        }
+
+        records.Add(new OutputRecord(
+            s.Name ?? "(unnamed)", run, draft?.Worth, draft?.Hook, draft?.Line, declined,
+            critique?.Worth, critique?.Flaw, effectiveWorth));
     }
 }
 
@@ -157,6 +172,8 @@ foreach (var group in records.GroupBy(r => r.Scenario))
         {
             Console.WriteLine($"{tag}worth {r.Worth:0.00}  hook {r.Hook}");
             Console.WriteLine($"{tag}  {r.Line}");
+            if (r.CriticWorth is { } cw)
+                Console.WriteLine($"{tag}  critic {cw:0.00} ({r.CriticFlaw}) -> effective {r.EffectiveWorth:0.00}");
         }
     }
 }
@@ -215,7 +232,9 @@ internal sealed record Scenario(
     List<string>? RecentPeople,
     List<string>? RecentLines);
 
-internal sealed record OutputRecord(string Scenario, int Run, double? Worth, string? Hook, string? Line, bool Declined);
+internal sealed record OutputRecord(
+    string Scenario, int Run, double? Worth, string? Hook, string? Line, bool Declined,
+    double? CriticWorth, string? CriticFlaw, double? EffectiveWorth);
 
 /// <summary>Fixed-value IOptionsMonitor, matching the repo's test double signature so it builds warning-free.</summary>
 internal sealed class StaticOptionsMonitor<T> : IOptionsMonitor<T>
