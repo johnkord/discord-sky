@@ -199,7 +199,8 @@ static string GitStamp(string repoRoot)
 
     var sha = Run("rev-parse --short HEAD");
     if (string.IsNullOrEmpty(sha)) return "unknown";
-    return string.IsNullOrWhiteSpace(Run("status --porcelain")) ? sha : sha + "-dirty";
+    // Untracked files (local eval scratch, fixtures, docs) do not make the committed bot source dirty.
+    return string.IsNullOrWhiteSpace(Run("status --porcelain --untracked-files=no")) ? sha : sha + "-dirty";
 }
 
 // --- types (fixtures schema + output record + a minimal options monitor) ---
