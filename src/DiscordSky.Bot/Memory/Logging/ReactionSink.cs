@@ -179,7 +179,7 @@ public sealed class ReactionOptions
     public int EmojiReactQuietSeconds { get; set; } = 90;
 
     /// <summary>Max number of the guild's custom emotes offered to the reaction judge (bounds prompt size and cost). 0 = unicode palette only.</summary>
-    public int MaxCustomEmotes { get; set; } = 30;
+    public int MaxCustomEmotes { get; set; } = 40;
 
     /// <summary>Whether to inject "proven bits" (the bot's best-received past lines, ranked by reaction) into the persona prompt.</summary>
     public bool ProvenBitsEnabled { get; set; } = true;

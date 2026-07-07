@@ -25,5 +25,7 @@ public static class RobotnikReactions
         new ReactionEmote("thumbsdown", "\U0001F44E", "flat dismissal; \"pathetic\""),
         new ReactionEmote("lying", "\U0001F925", "he thinks it is a lie, a cope, or a scam"),
         new ReactionEmote("chartdown", "\U0001F4C9", "mocking someone's failure or decline"),
+        new ReactionEmote("skull", "\U0001F480", "brutal; that killed him, dead, dark delight at something savage"),
+        new ReactionEmote("deadpan", "\U0001F5FF", "a stone-faced, unimpressed, flatly judgmental stare"),
     };
 }

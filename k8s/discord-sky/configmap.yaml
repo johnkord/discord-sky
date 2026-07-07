@@ -87,7 +87,7 @@ data:
   Reactions__EmojiReactEnabled: "true"
   Reactions__EmojiReactMinIntervalSeconds: "15"
   Reactions__EmojiReactQuietSeconds: "90"
-  Reactions__MaxCustomEmotes: "30"
+  Reactions__MaxCustomEmotes: "40"
   # Empire State: Robotnik's persistent world (mood + war-room log), advanced by a slow verified sleep-tick.
   # ENABLED: injection reads the log into every reply; the tick evolves it every N hours (skipped when idle).
   # EnableLlmBody=false freezes the log to the seed body plus deterministic mood (kill switch). Path is on the PVC.

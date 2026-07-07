@@ -156,8 +156,8 @@ public class ReactionJudgeTests
         Assert.Contains("gotta go fast", msg);
         Assert.Contains("- egg:", msg);
         Assert.Contains("his signature", msg);
-        Assert.Contains("- kekw:", msg);
-        Assert.Contains("custom emote", msg); // custom hint used instead of a meaning
+        Assert.Contains("- kekw", msg);          // the custom emote is listed (by name, under a culture header)
+        Assert.Contains("custom emote", msg);    // the server-emotes section header
     }
 
     [Fact]

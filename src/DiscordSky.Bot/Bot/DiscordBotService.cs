@@ -109,7 +109,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _reactionExcerptLength = reactionOptions?.Value.ReplyExcerptLength ?? 200;
         _reactionJudge = reactionJudge;
         _emojiReactEnabled = reactionOptions?.Value.EmojiReactEnabled ?? false;
-        _maxCustomEmotes = Math.Max(0, reactionOptions?.Value.MaxCustomEmotes ?? 30);
+        _maxCustomEmotes = Math.Max(0, reactionOptions?.Value.MaxCustomEmotes ?? 40);
         _reactMinInterval = TimeSpan.FromSeconds(Math.Max(0, reactionOptions?.Value.EmojiReactMinIntervalSeconds ?? 15));
         _reactQuiet = TimeSpan.FromSeconds(Math.Max(0, reactionOptions?.Value.EmojiReactQuietSeconds ?? 90));
         _imageToolService = imageToolService;
@@ -631,7 +631,11 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
         try
         {
-            var (allowed, tokenToEmote) = BuildAllowedReactions(guildChannel.Guild);
+            var authorName = (message.Author as SocketGuildUser)?.DisplayName ?? message.Author.Username;
+            _recentEmojis.TryGetValue(channelId, out var recentEmojis);
+
+            var (allowed, tokenToEmote) = BuildAllowedReactions(
+                guildChannel.Guild, authorName, message.Content ?? string.Empty, recentEmojis);
             if (allowed.Count == 0)
             {
                 return;
@@ -645,9 +649,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 authorMemories = await _memoryStore.GetAdmissibleMemoriesAsync(
                     message.Author.Id, _memoryRelevanceMonitor, _shutdownCts.Token);
             }
-            _recentEmojis.TryGetValue(channelId, out var recentEmojis);
 
-            var authorName = (message.Author as SocketGuildUser)?.DisplayName ?? message.Author.Username;
             var request = new ReactionRequest(
                 PersonaName: GetDefaultPersona(),
                 AuthorDisplayName: authorName,
@@ -763,7 +765,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     /// prompt) and a case-insensitive token-to-emote map (for validating and posting the choice). A custom
     /// emote whose name collides with a unicode token is skipped so the unicode meaning stays intact.
     /// </summary>
-    private (IReadOnlyList<AllowedEmote> Allowed, Dictionary<string, IEmote> Map) BuildAllowedReactions(SocketGuild guild)
+    private (IReadOnlyList<AllowedEmote> Allowed, Dictionary<string, IEmote> Map) BuildAllowedReactions(
+        SocketGuild guild, string authorName, string messageText, IReadOnlyCollection<string>? recentTokens)
     {
         var allowed = new List<AllowedEmote>(RobotnikReactions.Unicode.Count + _maxCustomEmotes);
         var map = new Dictionary<string, IEmote>(StringComparer.OrdinalIgnoreCase);
@@ -778,22 +781,26 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
         if (_maxCustomEmotes > 0 && guild is not null)
         {
-            var count = 0;
+            // Index the guild's customs by name, skipping blanks and any that collide with a unicode token.
+            var byName = new Dictionary<string, IEmote>(StringComparer.OrdinalIgnoreCase);
             foreach (var emote in guild.Emotes)
             {
-                if (count >= _maxCustomEmotes)
-                {
-                    break;
-                }
-                if (string.IsNullOrWhiteSpace(emote.Name))
+                if (string.IsNullOrWhiteSpace(emote.Name) || map.ContainsKey(emote.Name))
                 {
                     continue;
                 }
-                // GuildEmote is an IEmote, usable directly for AddReactionAsync.
-                if (map.TryAdd(emote.Name, emote))
+                byName.TryAdd(emote.Name, emote); // GuildEmote is an IEmote, usable directly for AddReactionAsync.
+            }
+
+            // Surface a small, varied, author/message-relevant slice instead of the arbitrary first N (round-6
+            // telemetry: 138 customs offered undescribed -> the judge picked zero; now the candidates rotate).
+            var selected = ReactionSelection.SelectCustomEmoteNames(
+                new List<string>(byName.Keys), authorName, messageText, recentTokens, _maxCustomEmotes, _randomProvider.NextDouble);
+            foreach (var name in selected)
+            {
+                if (byName.TryGetValue(name, out var emote) && map.TryAdd(name, emote))
                 {
-                    allowed.Add(new AllowedEmote(emote.Name, string.Empty, IsCustom: true));
-                    count++;
+                    allowed.Add(new AllowedEmote(name, string.Empty, IsCustom: true));
                 }
             }
         }
