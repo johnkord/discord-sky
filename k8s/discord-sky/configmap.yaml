@@ -44,11 +44,11 @@ data:
   LLM__Providers__xAI__UseResponsesApi: "false"
   Chaos__AmbientReplyChance: "0.25"
   Chaos__MaxPromptsPerHour: "20"
-  # Inner-thought worth gate. Shipped in data-collection mode: the gate is on, but a 0.0 threshold means every
-  # rolled ambient candidate still replies (behavior-neutral), while impulse_judged telemetry records the worth
-  # score of each. Raise AmbientWorthThreshold (e.g. 0.5) later to actually gate on the observed distribution.
+  # Inner-thought worth gate. The roll remains the cost/opportunity sampler; the media-aware utility judge is
+  # the quality gate. A non-queuing per-channel lease plus post-send quiet prevents burst replies.
   Chaos__UseWorthGate: "true"
-  Chaos__AmbientWorthThreshold: "0.0"
+  Chaos__AmbientWorthThreshold: "0.5"
+  Chaos__AmbientReplyQuietSeconds: "90"
   # Proactive cold opens: LIVE TRIAL as of 2026-07-06 (2-day shadow harvest reviewed; owner cleared going live).
   # It now POSTS unprompted lines into secret-chat on Trump's Ballroom. KILL SWITCH: flip ColdOpen__ShadowMode
   # back to "true" (draft + log, never send), or ColdOpen__Enabled "false" to stop entirely.
@@ -179,7 +179,7 @@ data:
   MemberEvents__JoinRaidThreshold: "5"
   # Recall-tool config (replaces implicit memory relevance gating).
   # See docs/recall_tool_design.md §3 and §4.2.
-  MemoryRelevance__RecallTopK: "20"
+  MemoryRelevance__RecallTopK: "8"
   MemoryRelevance__MaxRecallsPerReply: "3"
   MemoryRelevance__MaxRecallsPerAmbientReply: "1"
   MemoryRelevance__SuppressionOverlapThreshold: "0.3"

@@ -82,10 +82,13 @@ public static class GreatestHits
         }
 
         var sb = new StringBuilder();
-        sb.Append("\nReception intel (THIS server): these past lines of yours drew the biggest laughs. Do NOT reuse them, but bring the same energy that landed (the specificity, the cruelty, the timing):\n");
+        sb.Append("\nReception intel (THIS server): this past line drew laughs. Treat it as evidence, not a template. " +
+                  "First abstract the MECHANISM that landed (specific target, status inversion, sharp timing); " +
+                  "never borrow its nouns, lore props, catchphrases, named target, or sentence shape. Use the " +
+                  "mechanism only if it fits the room right now:\n");
         foreach (var h in hits)
         {
-            var line = h.Length > 180 ? h[..180] : h;
+            var line = h.Length > 120 ? h[..120] : h;
             sb.Append("- \"").Append(line).Append("\"\n");
         }
 

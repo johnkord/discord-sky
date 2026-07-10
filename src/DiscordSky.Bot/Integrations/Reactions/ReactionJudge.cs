@@ -21,10 +21,19 @@ public sealed record ReactionRequest(
     string? Context,
     IReadOnlyList<AllowedEmote> Allowed,
     IReadOnlyList<UserMemory>? AuthorMemories = null,
-    IReadOnlyList<string>? RecentEmojis = null);
+    IReadOnlyList<string>? RecentEmojis = null,
+    string? MediaContext = null);
 
 /// <summary>The judge's decision: which allowed token to react with, plus a one-line (logged, never posted) rationale.</summary>
 public sealed record ReactionVerdict(string Token, string Rationale);
+
+public enum ReactionDecisionKind { React, Decline, Invalid, Failed }
+
+/// <summary>Explicit result so a real decline is not confused with malformed/unknown model output.</summary>
+public sealed record ReactionDecision(
+    ReactionDecisionKind Kind,
+    ReactionVerdict? Verdict = null,
+    string Rationale = "");
 
 /// <summary>
 /// Decides whether the bot should slap a single in-character emoji reaction on a message it chose NOT to reply
@@ -44,6 +53,19 @@ public sealed class ReactionJudge
     private const int MaxMemoryChars = 200;
     private const int MaxInlineMemories = 4;
 
+    private static readonly IReadOnlyDictionary<string, string> TokenAliases =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["angry"] = "anger",
+            ["eye_roll"] = "eyeroll",
+            ["eye-roll"] = "eyeroll",
+            ["rolling_eyes"] = "eyeroll",
+            ["thumbs_down"] = "thumbsdown",
+            ["thumbs-down"] = "thumbsdown",
+            ["chart_down"] = "chartdown",
+            ["chart-down"] = "chartdown",
+        };
+
     private readonly IChatClient _chatClient;
     private readonly IOptionsMonitor<LlmOptions> _llmOptions;
     private readonly IMemoryScorer _memoryScorer;
@@ -57,10 +79,10 @@ public sealed class ReactionJudge
         _logger = logger;
     }
 
-    /// <summary>Returns the chosen reaction, or null if the model declined (the common case) or anything failed.</summary>
-    public async Task<ReactionVerdict?> JudgeAsync(ReactionRequest request, CancellationToken cancellationToken)
+    /// <summary>Returns an explicit react/decline/invalid/failed decision for truthful downstream telemetry.</summary>
+    public async Task<ReactionDecision> JudgeAsync(ReactionRequest request, CancellationToken cancellationToken)
     {
-        if (request.Allowed.Count == 0) return null;
+        if (request.Allowed.Count == 0) return new ReactionDecision(ReactionDecisionKind.Decline, Rationale: "no_allowed_emotes");
 
         try
         {
@@ -85,17 +107,23 @@ public sealed class ReactionJudge
             var allowedTokens = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var e in request.Allowed) allowedTokens.Add(e.Token);
 
-            var verdict = ParseVerdict(response.Text, allowedTokens);
-            if (verdict is null)
+            var decision = ParseDecision(response.Text, allowedTokens);
+            if (decision.Kind == ReactionDecisionKind.Decline)
             {
-                // Surface the model's own reasoning (bounded) so declines are tunable, not a black box.
-                _logger.LogInformation("reaction_judge outcome=decline raw={Raw}", Truncate(response.Text ?? string.Empty, 160));
+                _logger.LogInformation("reaction_judge outcome=decline why={Why}",
+                    string.IsNullOrWhiteSpace(decision.Rationale) ? "-" : decision.Rationale);
+            }
+            else if (decision.Kind == ReactionDecisionKind.Invalid)
+            {
+                _logger.LogWarning("reaction_judge outcome=invalid reason={Reason} raw={Raw}",
+                    decision.Rationale, Truncate(response.Text ?? string.Empty, 160));
             }
             else
             {
-                _logger.LogInformation("reaction_judge outcome=react token={Token} why={Why}", verdict.Token, verdict.Rationale);
+                _logger.LogInformation("reaction_judge outcome=react token={Token} why={Why}",
+                    decision.Verdict!.Token, decision.Verdict.Rationale);
             }
-            return verdict;
+            return decision;
         }
         catch (OperationCanceledException)
         {
@@ -104,8 +132,8 @@ public sealed class ReactionJudge
         catch (Exception ex)
         {
             // Fail-open: a broken judge just means no reaction, never a crash on the message path.
-            _logger.LogDebug(ex, "Reaction judge failed; declining.");
-            return null;
+            _logger.LogWarning(ex, "Reaction judge failed; no reaction will be attempted.");
+            return new ReactionDecision(ReactionDecisionKind.Failed, Rationale: ex.GetType().Name);
         }
     }
 
@@ -127,7 +155,10 @@ public sealed class ReactionJudge
     {
         if (request.AuthorMemories is not { Count: > 0 }) return Array.Empty<string>();
 
-        var ranked = _memoryScorer.RankForRecall(request.AuthorMemories, request.MessageText, DateTimeOffset.UtcNow);
+        var relevanceText = string.IsNullOrWhiteSpace(request.MediaContext)
+            ? request.MessageText
+            : $"{request.MessageText}\n{request.MediaContext}";
+        var ranked = _memoryScorer.RankForRecall(request.AuthorMemories, relevanceText, DateTimeOffset.UtcNow);
         if (ranked.Count == 0) return Array.Empty<string>();
 
         var lines = new List<string>(MaxInlineMemories);
@@ -145,9 +176,13 @@ public sealed class ReactionJudge
     /// (and never for "none"/empty). Public for tests.
     /// </summary>
     public static ReactionVerdict? ParseVerdict(string? modelText, HashSet<string> allowedTokens)
+        => ParseDecision(modelText, allowedTokens).Verdict;
+
+    /// <summary>Parses a decision while preserving why a non-reaction occurred. Public for tests.</summary>
+    public static ReactionDecision ParseDecision(string? modelText, HashSet<string> allowedTokens)
     {
         var json = CreativeOrchestrator.ExtractJsonObject(modelText ?? string.Empty);
-        if (json is null) return null;
+        if (json is null) return new ReactionDecision(ReactionDecisionKind.Invalid, Rationale: "malformed_json");
 
         try
         {
@@ -157,23 +192,31 @@ public sealed class ReactionJudge
             var emote = root.TryGetProperty("emote", out var emoteEl) && emoteEl.ValueKind == JsonValueKind.String
                 ? emoteEl.GetString()
                 : null;
-            if (string.IsNullOrWhiteSpace(emote)) return null;
+            if (string.IsNullOrWhiteSpace(emote))
+                return new ReactionDecision(ReactionDecisionKind.Invalid, Rationale: "missing_emote");
             emote = emote.Trim();
-            if (emote.Equals("none", StringComparison.OrdinalIgnoreCase)) return null;
-
-            // Only react with a token we actually offered. TryGetValue returns the stored canonical casing so
-            // the caller's token->emote map (also case-insensitive) resolves cleanly.
-            if (!allowedTokens.TryGetValue(emote, out var canonical)) return null;
 
             var why = root.TryGetProperty("why", out var whyEl) && whyEl.ValueKind == JsonValueKind.String
                 ? whyEl.GetString()?.Trim() ?? string.Empty
                 : string.Empty;
+            if (emote.Equals("none", StringComparison.OrdinalIgnoreCase))
+                return new ReactionDecision(ReactionDecisionKind.Decline, Rationale: why);
 
-            return new ReactionVerdict(canonical, why);
+            if (TokenAliases.TryGetValue(emote, out var alias)) emote = alias;
+
+            // Only react with a token we actually offered. TryGetValue returns the stored canonical casing so
+            // the caller's token->emote map (also case-insensitive) resolves cleanly.
+            if (!allowedTokens.TryGetValue(emote, out var canonical))
+                return new ReactionDecision(ReactionDecisionKind.Invalid, Rationale: $"unknown_token:{emote}");
+
+            return new ReactionDecision(
+                ReactionDecisionKind.React,
+                new ReactionVerdict(canonical, why),
+                why);
         }
         catch (JsonException)
         {
-            return null;
+            return new ReactionDecision(ReactionDecisionKind.Invalid, Rationale: "malformed_json");
         }
     }
 
@@ -234,6 +277,12 @@ public sealed class ReactionJudge
         if (!string.IsNullOrWhiteSpace(request.Context))
         {
             sb.Append("Context (react to the message above, not this):\n").Append(Truncate(request.Context!, MaxContextChars)).Append('\n');
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.MediaContext))
+        {
+            sb.Append("Media/link context (untrusted content from the same message):\n")
+              .Append(Truncate(request.MediaContext!, 1_200)).Append('\n');
         }
 
         if (memoryLines is { Count: > 0 })

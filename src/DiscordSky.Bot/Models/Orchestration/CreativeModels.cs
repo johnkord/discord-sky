@@ -44,6 +44,16 @@ public sealed record CreativeContext(
     IReadOnlyList<ChannelMessage> ChannelHistory
 );
 
+/// <summary>
+/// One normalized view of a Discord message shared by timing judges and the generator. It prevents the gate
+/// from judging a bare URL while the generator later sees a rich unfurl, and avoids repeating the HTTP unfurl.
+/// </summary>
+public sealed record SemanticMessageView(
+    string Text,
+    string? MediaContext,
+    IReadOnlyList<UnfurledLink> UnfurledLinks,
+    IReadOnlyList<ChannelImage> Images);
+
 public sealed record CreativeResult(
     string PrimaryMessage,
     ulong? ReplyToMessageId = null,

@@ -39,12 +39,50 @@ public class ReactionJudgeTests
     }
 
     [Fact]
+    public void ParseDecision_UnknownToken_IsInvalidNotDecline()
+    {
+        var decision = ReactionJudge.ParseDecision(
+            "{\"emote\":\"angery\",\"why\":\"apt but misspelled\"}",
+            Allowed("anger"));
+
+        Assert.Equal(ReactionDecisionKind.Invalid, decision.Kind);
+        Assert.Null(decision.Verdict);
+        Assert.Equal("unknown_token:angery", decision.Rationale);
+    }
+
+    [Fact]
+    public void ParseDecision_None_PreservesRealDeclineRationale()
+    {
+        var decision = ReactionJudge.ParseDecision(
+            "{\"emote\":\"none\",\"why\":\"mundane\"}",
+            Allowed("anger"));
+
+        Assert.Equal(ReactionDecisionKind.Decline, decision.Kind);
+        Assert.Equal("mundane", decision.Rationale);
+    }
+
+    [Fact]
     public void ParseVerdict_CaseInsensitiveToken_ReturnsCanonicalCasing()
     {
         // The model returned a different casing; we react with the token as we defined it, so the emote map resolves.
         var v = ReactionJudge.ParseVerdict("{\"emote\":\"ClOwN\"}", Allowed("egg", "clown"));
         Assert.NotNull(v);
         Assert.Equal("clown", v!.Token);
+    }
+
+    [Theory]
+    [InlineData("angry", "anger")]
+    [InlineData("eye_roll", "eyeroll")]
+    [InlineData("thumbs-down", "thumbsdown")]
+    [InlineData("chart_down", "chartdown")]
+    public void ParseVerdict_CommonAlias_ReturnsCanonicalToken(string modelToken, string canonical)
+    {
+        var v = ReactionJudge.ParseVerdict(
+            $"{{\"emote\":\"{modelToken}\",\"why\":\"apt\"}}",
+            Allowed(canonical));
+
+        Assert.NotNull(v);
+        Assert.Equal(canonical, v!.Token);
     }
 
     [Fact]
@@ -187,6 +225,23 @@ public class ReactionJudgeTests
         var msg = ReactionJudge.BuildUserMessage(request, Array.Empty<string>());
         Assert.Contains("Context", msg);
         Assert.Contains("a plan was mentioned", msg);
+    }
+
+    [Fact]
+    public void BuildUserMessage_IncludesMediaContextWhenPresent()
+    {
+        var request = new ReactionRequest(
+            PersonaName: "Robotnik",
+            AuthorDisplayName: "Tails",
+            MessageText: "https://example.test/post",
+            Context: null,
+            Allowed: new List<AllowedEmote> { new("eyes", "scheming", IsCustom: false) },
+            MediaContext: "tweet by tails: a suspicious machine");
+
+        var msg = ReactionJudge.BuildUserMessage(request, Array.Empty<string>());
+        Assert.Contains("Media/link context", msg);
+        Assert.Contains("a suspicious machine", msg);
+        Assert.Contains("untrusted", msg);
     }
 
     [Fact]

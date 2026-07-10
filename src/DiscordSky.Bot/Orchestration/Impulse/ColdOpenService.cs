@@ -2,6 +2,7 @@ using Discord;
 using Discord.WebSocket;
 using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Memory.Logging;
+using DiscordSky.Bot.Memory.Reception;
 using DiscordSky.Bot.Orchestration.Empire;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -36,6 +37,7 @@ public sealed class ColdOpenService : IHostedService, IDisposable
     private readonly EmpireStateStore? _empireState;
     private readonly RecentParticipants? _recentParticipants;
     private readonly ColdOpenCritic? _critic;
+    private readonly SentMessageRegistry? _sentMessages;
 
     private readonly SemaphoreSlim _lock = new(1, 1);
     private readonly Dictionary<ulong, ChannelBudget> _budgets = new();
@@ -51,7 +53,8 @@ public sealed class ColdOpenService : IHostedService, IDisposable
         ILogger<ColdOpenService> logger,
         EmpireStateStore? empireState = null,
         RecentParticipants? recentParticipants = null,
-        ColdOpenCritic? critic = null)
+        ColdOpenCritic? critic = null,
+        SentMessageRegistry? sentMessages = null)
     {
         _client = client;
         _options = options;
@@ -62,6 +65,7 @@ public sealed class ColdOpenService : IHostedService, IDisposable
         _empireState = empireState;
         _recentParticipants = recentParticipants;
         _critic = critic;
+        _sentMessages = sentMessages;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -163,26 +167,22 @@ public sealed class ColdOpenService : IHostedService, IDisposable
                 continue; // a decline does NOT consume the fire cooldown or the daily cap, only the judge cooldown
             }
 
-            // The critic is ADVISORY now (round-5 eval: as a hard gate it killed the best line and passed cringe).
-            // It runs only on a would-fire draft and its verdict is logged for later review; it never blocks a post.
-            var critique = _critic is not null ? await _critic.ReviewAsync(context, draft, ct) : null;
-            if (critique is not null)
-            {
-                _logger.LogInformation("cold_open_critic composer={Composer:F2} critic={Critic:F2} flaw={Flaw}",
-                    draft.Worth, critique.Worth, string.IsNullOrWhiteSpace(critique.Flaw) ? "-" : critique.Flaw);
-            }
+            // The critic is advisory and cannot block the line. Audit in the background so a second main-model
+            // call does not delay a time-sensitive interruption; its result gets a separate durable event.
+            if (_critic is not null) _ = ReviewCritiqueAsync(context, draft, channel.Name, recentLines, ct);
 
             if (opts.ShadowMode)
             {
-                Emit("shadow", channel.Name, draft.Hook, draft.Worth, draft.Line, recentLines, critique);
+                Emit("shadow", channel.Name, draft.Hook, draft.Worth, draft.Line, recentLines, null);
                 _logger.LogInformation("cold_open outcome=shadow worth={Worth:F2} hook={Hook} channel={Channel} line={Line}",
                     draft.Worth, draft.Hook, channel.Name, draft.Line);
             }
             else
             {
-                await channel.SendMessageAsync(draft.Line, allowedMentions: AllowedMentions.None);
+                var sent = await channel.SendMessageAsync(draft.Line, allowedMentions: AllowedMentions.None);
+                _sentMessages?.Register(sent.Id, GetPersona(), "cold_open");
                 _pulse.RecordBot(channel.Id, DateTimeOffset.UtcNow);
-                Emit("fired", channel.Name, draft.Hook, draft.Worth, draft.Line, recentLines, critique);
+                Emit("fired", channel.Name, draft.Hook, draft.Worth, draft.Line, recentLines, null);
                 _logger.LogInformation("cold_open outcome=fired worth={Worth:F2} hook={Hook} channel={Channel}",
                     draft.Worth, draft.Hook, channel.Name);
             }
@@ -200,6 +200,43 @@ public sealed class ColdOpenService : IHostedService, IDisposable
         var situation = state?.Body ?? string.Empty;
         var people = _recentParticipants?.Names(6) ?? Array.Empty<string>();
         return new ColdOpenContext(GetPersona(), mood, situation, people, recentLines);
+    }
+
+    private async Task ReviewCritiqueAsync(
+        ColdOpenContext context,
+        ColdOpenDraft draft,
+        string channel,
+        IReadOnlyList<string> roomLines,
+        CancellationToken ct)
+    {
+        try
+        {
+            var critique = await _critic!.ReviewAsync(context, draft, ct);
+            if (critique is null) return;
+
+            var flaw = string.IsNullOrWhiteSpace(critique.Flaw) ? "-" : critique.Flaw;
+            _logger.LogInformation(
+                "cold_open_critic composer={Composer:F2} critic={Critic:F2} flaw={Flaw}",
+                draft.Worth, critique.Worth, flaw);
+            _telemetry.Emit(new TelemetryEvent(
+                Timestamp: DateTimeOffset.UtcNow,
+                EventType: TelemetryEventTypes.ColdOpenCritique,
+                Channel: channel,
+                Kind: string.IsNullOrWhiteSpace(draft.Hook) ? null : draft.Hook,
+                Outcome: flaw.Equals("clean", StringComparison.OrdinalIgnoreCase) ? "clean" : "flagged",
+                TopScore: critique.Worth,
+                Note: draft.Line,
+                Reason: flaw,
+                Room: roomLines));
+        }
+        catch (OperationCanceledException)
+        {
+            // Service shutdown; the line was already sent/logged and critique is advisory.
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Cold-open advisory critique failed after send.");
+        }
     }
 
     /// <summary>

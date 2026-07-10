@@ -106,6 +106,8 @@ public class GreatestHitsTests
         Assert.NotNull(directive);
         Assert.Contains("damp sock", directive);
         Assert.Contains("laughs", directive);
+        Assert.Contains("MECHANISM", directive);
+        Assert.Contains("not a template", directive);
     }
 }
 

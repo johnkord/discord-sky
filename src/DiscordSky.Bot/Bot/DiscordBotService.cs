@@ -38,6 +38,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly int _reactionExcerptLength;
     private readonly ReactionJudge? _reactionJudge;
     private readonly ImpulseJudge? _impulseJudge;
+    private readonly AmbientChannelCoordinator _ambientCoordinator;
+    private readonly TimeSpan _ambientReplyQuiet;
     private readonly ChannelPulseTracker? _channelPulse;
     private readonly RecentParticipants? _recentParticipants;
     private readonly EmpireStateStore? _empireState;
@@ -58,13 +60,13 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly LearnedScamStore? _learnedScams;
     private readonly NewAccountFlagLog _newAccountFlags;
     private readonly ConcurrentDictionary<ulong, DateTimeOffset> _scamWarnCooldown = new();
-    private readonly ConcurrentDictionary<ulong, (string Persona, DateTimeOffset CreatedAt)> _personaCache = new();
+    private readonly SentMessageRegistry _sentMessages;
     private readonly ConcurrentDictionary<ulong, ChannelMessageBuffer> _channelBuffers = new();
     private readonly ConcurrentDictionary<ulong, SemaphoreSlim> _userMemoryLocks = new();
     private readonly CancellationTokenSource _shutdownCts = new();
-    private readonly object _evictionLock = new();
-    private const int MaxPersonaCacheSize = 500;
     internal const int DiscordMaxMessageLength = 2000;
+
+    private sealed record AmbientGateDecision(bool Pass, SemanticMessageView? MessageView);
 
     public DiscordBotService(
         DiscordSocketClient client,
@@ -92,7 +94,9 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         EmpireStateStore? empireState = null,
         EmpireTickService? empireTickService = null,
         ImpulseJudge? impulseJudge = null,
-        ChannelPulseTracker? channelPulse = null)
+        ChannelPulseTracker? channelPulse = null,
+        SentMessageRegistry? sentMessages = null,
+        AmbientChannelCoordinator? ambientCoordinator = null)
     {
         _client = client;
         _options = options.Value;
@@ -124,6 +128,9 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _empireTickService = empireTickService;
         _impulseJudge = impulseJudge;
         _channelPulse = channelPulse;
+        _sentMessages = sentMessages ?? new SentMessageRegistry();
+        _ambientCoordinator = ambientCoordinator ?? new AmbientChannelCoordinator();
+        _ambientReplyQuiet = TimeSpan.FromSeconds(Math.Max(0, chaosSettings.CurrentValue.AmbientReplyQuietSeconds));
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -186,7 +193,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     {
         try
         {
-            if (!_personaCache.TryGetValue(reaction.MessageId, out var cached)) return; // not our message
+            if (!_sentMessages.TryGet(reaction.MessageId, out var cached)) return; // not our message
             if (_client.CurrentUser is not null && reaction.UserId == _client.CurrentUser.Id) return; // self-react
 
             // Empire State appraisal: a laugh on one of his lines lifts his mood, a pan sours it. Add only.
@@ -215,7 +222,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 GuildId: guildId,
                 MessageId: reaction.MessageId,
                 Persona: cached.Persona,
-                ReplyExcerpt: excerpt));
+                ReplyExcerpt: excerpt,
+                Source: cached.Source));
         }
         catch (Exception ex)
         {
@@ -247,14 +255,24 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
     private Task OnLogAsync(LogMessage message)
     {
-        _logger.Log(MapLogSeverity(message.Severity), message.Exception, message.Message ?? "<no message>");
+        var exType = message.Exception?.GetType().Name;
+        var isExpectedReconnect = exType?.Contains("Reconnect", StringComparison.OrdinalIgnoreCase) == true
+            || exType?.Contains("WebSocket", StringComparison.OrdinalIgnoreCase) == true;
+        var level = isExpectedReconnect && message.Severity == LogSeverity.Warning
+            ? LogLevel.Information
+            : MapLogSeverity(message.Severity);
+        var text = message.Message
+            ?? message.Exception?.Message
+            ?? exType
+            ?? "<no message>";
+        _logger.Log(level, message.Exception, "Discord gateway: {Message}", text);
 
         // Emit telemetry for gateway disconnects so we can distinguish normal reconnects (~10/day, Discord
         // proactively rotates) from a real problem (auth revoked, network partition). Without this signal
         // a real outage looks identical to housekeeping in kubectl logs.
         if (message.Exception is not null)
         {
-            var exType = message.Exception.GetType().Name;
+            exType = message.Exception.GetType().Name;
             if (exType.Contains("Reconnect", StringComparison.OrdinalIgnoreCase)
                 || exType.Contains("WebSocket", StringComparison.OrdinalIgnoreCase)
                 || message.Exception.Message?.Contains("WebSocket", StringComparison.OrdinalIgnoreCase) == true)
@@ -508,6 +526,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         // Ambient reply chance — modulated by context so the bot interjects at better moments and
         // does not dominate a channel. See docs/improvement_opportunities_2026-06-10.md F7.
         var chaosSettings = _chaosSettingsMonitor.CurrentValue;
+        SemanticMessageView? semanticView = null;
         if (chaosSettings.AmbientReplyChance > 0)
         {
             var botSpokeRecently = DidBotSpeakRecently(context.Channel, TimeSpan.FromMinutes(2));
@@ -523,11 +542,38 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 _logger.LogInformation(
                     "Ambient roll passed (roll={Roll:F3} < effective={Eff:F3}, base={Base:F3}, botSpokeRecently={Recent}, mentionsBot={Mention}) for message {MessageId} in channel {Channel}.",
                     roll, effectiveChance, chaosSettings.AmbientReplyChance, botSpokeRecently, mentionsBot, message.Id, channelName);
-                if (await PassesAmbientWorthGateAsync(message, content, chaosSettings))
+
+                if (!_ambientCoordinator.TryAcquire(
+                        message.Channel.Id, DateTimeOffset.UtcNow, _ambientReplyQuiet,
+                        out var ambientLease, out var veto))
                 {
-                    // Pass prefix + message content so HandlePersonaAsync can extract the user's text as the topic
-                    await HandlePersonaAsync(context, _options.CommandPrefix + " " + content, message, CreativeInvocationKind.Ambient);
-                    return;
+                    _logger.LogInformation(
+                        "ambient outcome=held reason={Reason} channel={Channel} message={MessageId}",
+                        veto, channelName, message.Id);
+                    _telemetry.Emit(new TelemetryEvent(
+                        Timestamp: DateTimeOffset.UtcNow,
+                        EventType: TelemetryEventTypes.ImpulseJudged,
+                        UserHash: UserIdHash.Hash(message.Author.Id),
+                        Channel: channelName,
+                        Outcome: "held",
+                        MessageId: message.Id,
+                        Reason: veto));
+                    return; // one action budget: do not pile an emoji onto an in-flight/recent ambient reply
+                }
+
+                var lease = ambientLease!;
+                using (lease)
+                {
+                    var gate = await EvaluateAmbientWorthGateAsync(message, chaosSettings);
+                    semanticView = gate.MessageView;
+                    if (gate.Pass)
+                    {
+                        var sent = await HandlePersonaAsync(
+                            context, _options.CommandPrefix + " " + content, message,
+                            CreativeInvocationKind.Ambient, semanticView);
+                        if (sent) lease.MarkSent(DateTimeOffset.UtcNow);
+                        return;
+                    }
                 }
                 // The worth gate judged this moment not worth a full reply; fall through to a possible reaction.
             }
@@ -535,7 +581,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
         // He held his tongue this turn: maybe editorialize with a single in-character emoji reaction, chosen
         // by a cheap LLM. Rare, per-channel throttled, and off the reply path, so it stays presence-not-noise.
-        await MaybeReactInCharacterAsync(message);
+        await MaybeReactInCharacterAsync(message, semanticView);
     }
 
     /// <summary>
@@ -547,28 +593,33 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     /// roll already granted. Emits an impulse_judged telemetry row per real judgment so the threshold can be
     /// tuned on live data.
     /// </summary>
-    private async Task<bool> PassesAmbientWorthGateAsync(SocketUserMessage message, string content, ChaosSettings chaos)
+    private async Task<AmbientGateDecision> EvaluateAmbientWorthGateAsync(
+        SocketUserMessage message, ChaosSettings chaos)
     {
-        if (!chaos.UseWorthGate || _impulseJudge is null || string.IsNullOrWhiteSpace(content))
+        if (!chaos.UseWorthGate || _impulseJudge is null)
         {
-            return true;
+            return new AmbientGateDecision(true, null);
         }
 
+        SemanticMessageView? messageView = null;
         try
         {
+            messageView = await _contextAggregator.BuildMessageViewAsync(
+                message, includeHttpUnfurls: true, _shutdownCts.Token);
             var authorName = (message.Author as SocketGuildUser)?.DisplayName ?? message.Author.Username;
             var request = new AmbientImpulseRequest(
                 PersonaName: GetDefaultPersona(),
                 AuthorDisplayName: authorName,
-                MessageText: content,
+                MessageText: messageView.Text,
                 Context: BuildReactionContext(message),
-                MoodLabel: _empireState is { Enabled: true } ? _empireState.Current.Mood.Label : null);
+                MoodLabel: _empireState is { Enabled: true } ? _empireState.Current.Mood.Label : null,
+                MediaContext: messageView.MediaContext);
 
             var verdict = await _impulseJudge.JudgeAmbientAsync(request, _shutdownCts.Token);
             if (verdict is null)
             {
                 // Judge failed or returned nothing usable: fail open (do not swallow a granted reply).
-                return true;
+                return new AmbientGateDecision(true, messageView);
             }
 
             var spoke = verdict.Worth >= chaos.AmbientWorthThreshold;
@@ -583,13 +634,17 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             _logger.LogInformation("impulse_judged outcome={Outcome} worth={Worth:F2} thought={Thought} channel={Channel}",
                 spoke ? "spoke" : "held", verdict.Worth, string.IsNullOrEmpty(verdict.Thought) ? "(none)" : verdict.Thought, message.Channel.Name);
 
-            return spoke;
+            return new AmbientGateDecision(spoke, messageView);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
             // Fail-open: a broken gate should never silence a reply the roll already granted.
             _logger.LogDebug(ex, "Ambient worth gate failed; allowing the reply.");
-            return true;
+            return new AmbientGateDecision(true, messageView);
         }
     }
 
@@ -600,7 +655,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     /// so an active channel triggers at most one call per window. The judge's choice is validated against the
     /// offered emoji set before reacting. Custom server emotes need a guild, so DMs get nothing. Fail-open.
     /// </summary>
-    private async Task MaybeReactInCharacterAsync(SocketUserMessage message)
+    private async Task MaybeReactInCharacterAsync(
+        SocketUserMessage message, SemanticMessageView? semanticView = null)
     {
         if (!_emojiReactEnabled || _reactionJudge is null)
         {
@@ -631,11 +687,13 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
         try
         {
+            semanticView ??= await _contextAggregator.BuildMessageViewAsync(
+                message, includeHttpUnfurls: false, _shutdownCts.Token);
             var authorName = (message.Author as SocketGuildUser)?.DisplayName ?? message.Author.Username;
             _recentEmojis.TryGetValue(channelId, out var recentEmojis);
 
             var (allowed, tokenToEmote) = BuildAllowedReactions(
-                guildChannel.Guild, authorName, message.Content ?? string.Empty, recentEmojis);
+                guildChannel.Guild, authorName, semanticView.Text, recentEmojis);
             if (allowed.Count == 0)
             {
                 return;
@@ -653,36 +711,77 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             var request = new ReactionRequest(
                 PersonaName: GetDefaultPersona(),
                 AuthorDisplayName: authorName,
-                MessageText: message.Content ?? string.Empty,
+                MessageText: semanticView.Text,
                 Context: BuildReactionContext(message),
                 Allowed: allowed,
                 AuthorMemories: authorMemories,
-                RecentEmojis: recentEmojis);
+                RecentEmojis: recentEmojis,
+                MediaContext: semanticView.MediaContext);
 
-            var verdict = await _reactionJudge.JudgeAsync(request, _shutdownCts.Token);
+            var decision = await _reactionJudge.JudgeAsync(request, _shutdownCts.Token);
+            var verdict = decision.Verdict;
 
             IEmote? emote = null;
-            var reacted = verdict is not null && tokenToEmote.TryGetValue(verdict.Token, out emote);
+            var reacted = decision.Kind == ReactionDecisionKind.React
+                && verdict is not null
+                && tokenToEmote.TryGetValue(verdict.Token, out emote);
 
-            // Durable, restart-proof signal so react/decline rate and emoji spread are measurable for tuning.
+            if (!reacted)
+            {
+                var outcome = decision.Kind switch
+                {
+                    ReactionDecisionKind.Decline => "decline",
+                    ReactionDecisionKind.Invalid => "invalid_token",
+                    ReactionDecisionKind.Failed => "failed",
+                    _ => "invalid_token", // valid judge token missing from the runtime map
+                };
+                _telemetry.Emit(new TelemetryEvent(
+                    Timestamp: DateTimeOffset.UtcNow,
+                    EventType: TelemetryEventTypes.ReactionJudged,
+                    UserHash: UserIdHash.Hash(message.Author.Id),
+                    Channel: message.Channel.Name,
+                    Kind: verdict?.Token,
+                    Outcome: outcome,
+                    MessageId: message.Id,
+                    Reason: decision.Kind == ReactionDecisionKind.React
+                        ? "token_not_mapped"
+                        : decision.Rationale));
+                return; // he deigned not to react (a normal, common outcome), or the token was unknown
+            }
+
+            try
+            {
+                await message.AddReactionAsync(emote!);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _telemetry.Emit(new TelemetryEvent(
+                    Timestamp: DateTimeOffset.UtcNow,
+                    EventType: TelemetryEventTypes.ReactionJudged,
+                    UserHash: UserIdHash.Hash(message.Author.Id),
+                    Channel: message.Channel.Name,
+                    Kind: verdict!.Token,
+                    Outcome: "failed",
+                    MessageId: message.Id,
+                    Reason: ex.GetType().Name));
+                _logger.LogWarning(ex,
+                    "In-character reaction delivery failed: emote={Emote} channel={Channel} message={MessageId}",
+                    verdict.Token, message.Channel.Name, message.Id);
+                return;
+            }
+
+            _lastReaction[channelId] = now;
+            RecordRecentEmoji(channelId, verdict!.Token);
             _telemetry.Emit(new TelemetryEvent(
                 Timestamp: DateTimeOffset.UtcNow,
                 EventType: TelemetryEventTypes.ReactionJudged,
                 UserHash: UserIdHash.Hash(message.Author.Id),
                 Channel: message.Channel.Name,
-                Kind: reacted ? verdict!.Token : null,
-                Outcome: reacted ? "react" : "decline",
+                Kind: verdict.Token,
+                Outcome: "react",
                 MessageId: message.Id));
 
-            if (!reacted)
-            {
-                return; // he deigned not to react (a normal, common outcome), or the token was unknown
-            }
-
-            _lastReaction[channelId] = now;
-            RecordRecentEmoji(channelId, verdict!.Token);
-            await message.AddReactionAsync(emote!);
-            _empireState?.ApplyMoodDelta(EmpireAppraisal.FromReaction(verdict!.Token));
+            // Human reception changes Empire mood. Robotnik's own editorial choice does not reward itself.
             _logger.LogInformation(
                 "in_character_reaction emote={Emote} custom={Custom} channel={Channel} message={MessageId} mem={Mem} why={Why}",
                 verdict!.Token, emote is Emote, message.Channel.Name, message.Id, authorMemories?.Count ?? 0, verdict!.Rationale);
@@ -946,12 +1045,17 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         return $"{who}: {text}";
     }
 
-    private async Task HandlePersonaAsync(SocketCommandContext context, string content, SocketUserMessage message, CreativeInvocationKind invocationKind)
+    private async Task<bool> HandlePersonaAsync(
+        SocketCommandContext context,
+        string content,
+        SocketUserMessage message,
+        CreativeInvocationKind invocationKind,
+        SemanticMessageView? semanticView = null)
     {
         var prefix = _options.CommandPrefix;
         if (string.IsNullOrWhiteSpace(prefix))
         {
-            return;
+            return false;
         }
 
         // Traffic visibility: invocation_kind + author + channel. One log line per orchestrated reply,
@@ -991,7 +1095,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             if (closingParenthesisIndex < 0)
             {
                 await context.Channel.SendMessageAsync($"Usage: {prefix}(persona) [topic]");
-                return;
+                return true;
             }
 
             var extractedPersona = payload[1..closingParenthesisIndex].Trim();
@@ -1031,17 +1135,13 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 context.User.Id, _memoryRelevanceMonitor, _shutdownCts.Token);
         }
 
-        // Collect images from the triggering message
-        var triggerImages = _contextAggregator.CollectImages(message);
-        IReadOnlyList<ChannelImage>? triggerImagesParam = triggerImages.Count > 0 ? triggerImages : null;
-
-        // Unfurl links (e.g. tweets) from the triggering message
-        IReadOnlyList<UnfurledLink>? unfurledLinks = null;
-        if (_options.EnableLinkUnfurling && !string.IsNullOrWhiteSpace(topic))
-        {
-            unfurledLinks = await _linkUnfurler.UnfurlAsync(topic, DateTimeOffset.UtcNow, _shutdownCts.Token);
-            if (unfurledLinks.Count == 0) unfurledLinks = null;
-        }
+        // Use the exact semantic view the worth gate judged. Explicit invocations build it here once.
+        semanticView ??= await _contextAggregator.BuildMessageViewAsync(
+            message, includeHttpUnfurls: true, _shutdownCts.Token);
+        IReadOnlyList<ChannelImage>? triggerImagesParam = semanticView.Images.Count > 0 ? semanticView.Images : null;
+        IReadOnlyList<UnfurledLink>? unfurledLinks = semanticView.UnfurledLinks.Count > 0
+            ? semanticView.UnfurledLinks
+            : null;
 
         var request = new CreativeRequest(
             persona,
@@ -1065,7 +1165,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         if (string.IsNullOrWhiteSpace(reply))
         {
             _logger.LogDebug("Invocation {InvocationKind} produced no reply for persona {Persona}; suppressing send.", invocationKind, persona);
-            return;
+            return false;
         }
         MessageReference? reference = null;
         if (result.ReplyToMessageId.HasValue)
@@ -1073,7 +1173,10 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             reference = new MessageReference(result.ReplyToMessageId.Value);
         }
 
-        await SendChunkedAsync(context.Channel, reply, reference, persona, result.AttachmentBytes, result.AttachmentFileName);
+        await SendChunkedAsync(
+            context.Channel, reply, reference, persona, result.AttachmentBytes, result.AttachmentFileName,
+            invocationKind.ToString(), message.Id);
+        return true;
     }
 
     private async Task HandleDirectReplyAsync(SocketCommandContext context, SocketUserMessage message)
@@ -1098,7 +1201,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         // Look up the persona from the original bot message, falling back to default
         var persona = GetDefaultPersona();
         if (message.Reference?.MessageId.IsSpecified == true
-            && _personaCache.TryGetValue(message.Reference.MessageId.Value, out var cached))
+            && _sentMessages.TryGet(message.Reference.MessageId.Value, out var cached))
         {
             persona = cached.Persona;
         }
@@ -1185,12 +1288,15 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             ? new MessageReference(result.ReplyToMessageId.Value)
             : new MessageReference(message.Id);
 
-        await SendChunkedAsync(context.Channel, reply, reference, persona, result.AttachmentBytes, result.AttachmentFileName);
+        await SendChunkedAsync(
+            context.Channel, reply, reference, persona, result.AttachmentBytes, result.AttachmentFileName,
+            CreativeInvocationKind.DirectReply.ToString(), message.Id);
     }
 
     private async Task SendChunkedAsync(
         ISocketMessageChannel channel, string text, MessageReference? reference, string persona,
-        byte[]? attachmentBytes = null, string? attachmentFileName = null)
+        byte[]? attachmentBytes = null, string? attachmentFileName = null,
+        string source = "reply", ulong? triggerMessageId = null)
     {
         var hasAttachment = attachmentBytes is { Length: > 0 } && !string.IsNullOrWhiteSpace(attachmentFileName);
 
@@ -1203,11 +1309,11 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         {
             using var stream = new MemoryStream(attachmentBytes!);
             var sentFile = await channel.SendFileAsync(stream, attachmentFileName, text: chunks[0], messageReference: reference);
-            CachePersona(sentFile.Id, persona);
+            _sentMessages.Register(sentFile.Id, persona, source, triggerMessageId);
             for (int i = 1; i < chunks.Count; i++)
             {
                 var more = await channel.SendMessageAsync(chunks[i]);
-                CachePersona(more.Id, persona);
+                _sentMessages.Register(more.Id, persona, source, triggerMessageId);
             }
             return;
         }
@@ -1216,66 +1322,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         for (int i = 0; i < chunks.Count; i++)
         {
             var sent = await channel.SendMessageAsync(chunks[i], messageReference: i == 0 ? reference : null);
-            // Cache persona for every chunk so replies to any part preserve character continuity
-            CachePersona(sent.Id, persona);
-        }
-    }
-
-    private void CachePersona(ulong messageId, string persona)
-    {
-        _personaCache[messageId] = (persona, DateTimeOffset.UtcNow);
-        EvictStalePersonas();
-    }
-
-    private void EvictStalePersonas()
-    {
-        if (_personaCache.Count <= MaxPersonaCacheSize)
-        {
-            return;
-        }
-
-        // Use TryEnter so concurrent callers skip eviction instead of blocking
-        if (!Monitor.TryEnter(_evictionLock))
-        {
-            return;
-        }
-
-        try
-        {
-            // Double-check after acquiring lock
-            if (_personaCache.Count <= MaxPersonaCacheSize)
-            {
-                return;
-            }
-
-            // First pass: remove entries older than 24 hours
-            var cutoff = DateTimeOffset.UtcNow.AddHours(-24);
-            foreach (var key in _personaCache.Keys)
-            {
-                if (_personaCache.TryGetValue(key, out var entry) && entry.CreatedAt < cutoff)
-                {
-                    _personaCache.TryRemove(key, out _);
-                }
-            }
-
-            // Second pass: if still over cap, evict oldest entries until at the limit
-            if (_personaCache.Count > MaxPersonaCacheSize)
-            {
-                var excess = _personaCache
-                    .OrderBy(kvp => kvp.Value.CreatedAt)
-                    .Take(_personaCache.Count - MaxPersonaCacheSize)
-                    .Select(kvp => kvp.Key)
-                    .ToList();
-
-                foreach (var key in excess)
-                {
-                    _personaCache.TryRemove(key, out _);
-                }
-            }
-        }
-        finally
-        {
-            Monitor.Exit(_evictionLock);
+            // Register every chunk so replies and human reactions preserve source/persona continuity.
+            _sentMessages.Register(sent.Id, persona, source, triggerMessageId);
         }
     }
 
@@ -1983,7 +2031,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 await placeholder.ModifyAsync(m => m.Content = content);
             }
 
-            CachePersona(placeholder.Id, persona);
+            _sentMessages.Register(placeholder.Id, persona, "image");
             return true;
         }
         catch (Exception ex)

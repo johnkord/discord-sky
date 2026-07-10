@@ -1,3 +1,4 @@
+using Discord;
 using DiscordSky.Bot.Models.Orchestration;
 using DiscordSky.Bot.Orchestration;
 
@@ -84,5 +85,46 @@ public class ContextAggregatorTests
 
         Assert.Single(trimmed);
         Assert.Empty(trimmed[0].Images);
+    }
+
+    [Fact]
+    public void BuildJudgeMediaContext_LinkAndImage_SurfacesBoundedEvidence()
+    {
+        var links = new[]
+        {
+            new UnfurledLink
+            {
+                SourceType = "tweet",
+                OriginalUrl = new Uri("https://x.com/example/status/1"),
+                Author = "alice",
+                Text = new string('x', 800)
+            }
+        };
+        var images = new[]
+        {
+            new ChannelImage
+            {
+                Url = new Uri("https://cdn.discordapp.com/image.png"),
+                Filename = "image.png",
+                Source = "embed-image",
+                Timestamp = DateTimeOffset.UtcNow
+            }
+        };
+
+        var result = ContextAggregator.BuildJudgeMediaContext(
+            Array.Empty<IAttachment>(), links, images);
+
+        Assert.NotNull(result);
+        Assert.Contains("tweet by alice", result);
+        Assert.Contains("Visual media present: 1", result);
+        Assert.True(result!.Length <= 1_200);
+        Assert.DoesNotContain(new string('x', 451), result);
+    }
+
+    [Fact]
+    public void BuildJudgeMediaContext_NoMedia_ReturnsNull()
+    {
+        Assert.Null(ContextAggregator.BuildJudgeMediaContext(
+            Array.Empty<IAttachment>(), Array.Empty<UnfurledLink>(), Array.Empty<ChannelImage>()));
     }
 }

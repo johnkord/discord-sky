@@ -35,7 +35,8 @@ public sealed record ReactionEvent(
     [property: JsonPropertyName("guild_id")] ulong? GuildId,
     [property: JsonPropertyName("message_id")] ulong MessageId,
     [property: JsonPropertyName("persona")] string? Persona,
-    [property: JsonPropertyName("reply_excerpt")] string? ReplyExcerpt);
+    [property: JsonPropertyName("reply_excerpt")] string? ReplyExcerpt,
+    [property: JsonPropertyName("source")] string? Source = null);
 
 /// <summary>Default sink used when reaction logging is disabled or in tests. Discards entries.</summary>
 public sealed class NoOpReactionSink : IReactionSink

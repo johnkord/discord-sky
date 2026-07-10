@@ -214,6 +214,11 @@ public class EmpireStateStoreTests
 
             var withoutRank = store.BuildDirective("Nobody");
             Assert.DoesNotContain("Junior Egg-Polisher", withoutRank);
+
+            var ambientRankOnly = store.BuildDirective("Curlyquote", includeBody: false);
+            Assert.Contains("Junior Egg-Polisher", ambientRankOnly);
+            Assert.DoesNotContain("Mood:", ambientRankOnly);
+            Assert.DoesNotContain("Operation Eggshell Dawn", ambientRankOnly);
         }
         finally { File.Delete(path); }
     }
@@ -276,15 +281,6 @@ public class RecentParticipantsTests
 
 public class EmpireAppraisalTests
 {
-    [Fact]
-    public void FromReaction_MapsSentiment()
-    {
-        Assert.True(EmpireAppraisal.FromReaction("anger").Valence < 0);      // irritated
-        Assert.True(EmpireAppraisal.FromReaction("laughing").Valence > 0);   // gloating
-        Assert.Equal(0.0, EmpireAppraisal.FromReaction("some_custom_emote").Valence);
-        Assert.Equal(0.0, EmpireAppraisal.FromReaction(null).Valence);
-    }
-
     [Fact]
     public void SignalConstants_HaveExpectedSign()
     {

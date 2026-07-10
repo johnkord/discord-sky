@@ -145,6 +145,18 @@ public class ImpulseJudgeTests
     }
 
     [Fact]
+    public void BuildUserMessage_MediaOnly_IncludesUntrustedMediaContext()
+    {
+        var m = ImpulseJudge.BuildUserMessage(new AmbientImpulseRequest(
+            "Robotnik", "bob", string.Empty, null, null, "tweet by alice: a foolish boast"));
+
+        Assert.Contains("no text", m);
+        Assert.Contains("Media/link context", m);
+        Assert.Contains("a foolish boast", m);
+        Assert.Contains("untrusted", m);
+    }
+
+    [Fact]
     public void BuildUserMessage_TruncatesLongMessage()
     {
         var longMsg = new string('x', 900);

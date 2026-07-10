@@ -98,23 +98,33 @@ public sealed class EmpireStateStore
         }
     }
 
-    /// <summary>Renders the spotlighted, data-marked prompt block: the mood line, the freeform log, and a rank line for the current speaker if they have one.</summary>
-    public string BuildDirective(string? speakerDisplayName)
+    /// <summary>
+    /// Renders the spotlighted prompt block. Explicit turns can receive the full narrative body; ambient turns
+    /// request rank-only continuity so private war-room vocabulary does not swamp the live room's actual topic.
+    /// </summary>
+    public string BuildDirective(string? speakerDisplayName, bool includeBody = true)
     {
         var s = _current;
         var sb = new StringBuilder();
-        sb.Append("=== YOUR WAR-ROOM LOG (your own notes; canonical, stay consistent, do NOT read it aloud) ===\n");
-        sb.Append("Mood: ").Append(s.Mood.Label).Append(".\n\n");
-        sb.Append(s.Body.Trim()).Append('\n');
+        if (includeBody)
+        {
+            sb.Append("=== YOUR WAR-ROOM LOG (your own notes; canonical, stay consistent, do NOT read it aloud) ===\n");
+            sb.Append("Mood: ").Append(s.Mood.Label).Append(".\n\n");
+            sb.Append(s.Body.Trim()).Append('\n');
+        }
 
         var rank = RankFor(speakerDisplayName);
         if (rank is not null)
         {
-            sb.Append("\nYou have dubbed ").Append(Sanitize(rank.Name)).Append(" your ").Append(Sanitize(rank.Title)).Append(".\n");
+            if (includeBody) sb.Append('\n');
+            sb.Append("You have dubbed ").Append(Sanitize(rank.Name)).Append(" your ").Append(Sanitize(rank.Title)).Append(".\n");
             TouchRank(rank.Name);
         }
 
-        sb.Append("Do not recite this log. Let it set your mood and let a detail surface only when it fits.");
+        if (includeBody)
+        {
+            sb.Append("Do not recite this log. Let it set your mood and let a detail surface only when it fits.");
+        }
         return sb.ToString();
     }
 

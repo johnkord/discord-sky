@@ -180,6 +180,9 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<FileBackedTranscri
 builder.Services.AddSingleton<FileBackedReactionSink>();
 builder.Services.AddSingleton<IReactionSink>(sp => sp.GetRequiredService<FileBackedReactionSink>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<FileBackedReactionSink>());
+// Shared ownership registry for every message the bot sends. Reception logging and reply-chain persona
+// continuity use this rather than a private cache, so background senders (cold opens, future minions) participate.
+builder.Services.AddSingleton<SentMessageRegistry>();
 // Image generation (docs/image_generation_design.md). Off by default (Image:Enabled). The durable log
 // both records spend and backs the budget's restart-surviving daily cap and monthly guard.
 builder.Services.AddSingleton<FileBackedImageGenerationLog>();
@@ -191,11 +194,12 @@ builder.Services.AddSingleton<ImageRewriter>();
 builder.Services.AddSingleton<ReactionJudge>();
 // The inner-thought worth gate: one cheap-LLM call scores whether an ambient candidate is worth a real reply.
 builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.ImpulseJudge>();
+builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.AmbientChannelCoordinator>();
 // Proactive cold opens: per-channel activity tracker (never-into-silence gate), the composer, and the polling service.
 builder.Services.AddSingleton(new DiscordSky.Bot.Orchestration.Impulse.ChannelPulseTracker());
 builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.ColdOpenComposer>();
-// A skeptical second pass that audits a drafted cold open for checkable flaws (inaccuracy, generic framing) and,
-// via a MIN-combine in the service, drags an over-scored miss under the bar that the composer could not self-catch.
+// A skeptical advisory pass that audits checkable flaws after the time-sensitive send and records a separate
+// telemetry event. It never gates humor (round-5 eval showed it killed the owner's best line when used as a gate).
 builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.ColdOpenCritic>();
 builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.ColdOpenService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DiscordSky.Bot.Orchestration.Impulse.ColdOpenService>());

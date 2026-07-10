@@ -79,6 +79,59 @@ public sealed class ContextAggregator
         return new CreativeContext(history);
     }
 
+    /// <summary>
+    /// Builds the trigger-message view used by timing/reaction judges and generation. HTTP unfurling can be
+    /// disabled for high-frequency reaction decisions; Discord's already-cached embeds are always included.
+    /// </summary>
+    public async Task<SemanticMessageView> BuildMessageViewAsync(
+        IMessage message,
+        bool includeHttpUnfurls,
+        CancellationToken cancellationToken = default)
+    {
+        var text = message.TextWithForwarded().Trim();
+        var images = _allowImageContext ? CollectImages(message) : Array.Empty<ChannelImage>();
+        var embedLinks = ExtractEmbedsAsUnfurledLinks(message.Embeds, message.Timestamp);
+        IReadOnlyList<UnfurledLink> httpLinks = Array.Empty<UnfurledLink>();
+        if (includeHttpUnfurls && _enableLinkUnfurling && !string.IsNullOrWhiteSpace(text))
+        {
+            httpLinks = await _linkUnfurler.UnfurlAsync(text, message.Timestamp, cancellationToken);
+        }
+        var links = MergeUnfurledLinks(httpLinks, embedLinks);
+        return new SemanticMessageView(text, BuildJudgeMediaContext(message.Attachments, links, images), links, images);
+    }
+
+    /// <summary>Renders media/link evidence into bounded untrusted text suitable for cheap decision models.</summary>
+    internal static string? BuildJudgeMediaContext(
+        IReadOnlyCollection<IAttachment> attachments,
+        IReadOnlyList<UnfurledLink> links,
+        IReadOnlyList<ChannelImage> images)
+    {
+        const int maxChars = 1_200;
+        const int maxLinkText = 450;
+        var lines = new List<string>();
+
+        if (attachments is { Count: > 0 })
+        {
+            var names = attachments.Take(4).Select(a =>
+                string.IsNullOrWhiteSpace(a.ContentType) ? a.Filename : $"{a.Filename} ({a.ContentType})");
+            lines.Add($"Attachments: {string.Join(", ", names)}");
+        }
+
+        foreach (var link in links.Take(2))
+        {
+            var body = (link.Text ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Trim();
+            if (body.Length > maxLinkText) body = body[..maxLinkText];
+            var author = string.IsNullOrWhiteSpace(link.Author) ? string.Empty : $" by {link.Author}";
+            lines.Add($"{link.SourceType}{author}: {body}");
+        }
+
+        if (images.Count > 0) lines.Add($"Visual media present: {images.Count} image(s).");
+        if (lines.Count == 0) return null;
+
+        var result = string.Join("\n", lines);
+        return result.Length <= maxChars ? result : result[..maxChars];
+    }
+
     private async Task<IReadOnlyList<ChannelMessage>> GatherHistoryAsync(SocketCommandContext commandContext, CancellationToken cancellationToken)
     {
         var messages = new List<ChannelMessage>();

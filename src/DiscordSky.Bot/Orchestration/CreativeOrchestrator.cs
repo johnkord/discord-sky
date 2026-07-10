@@ -195,7 +195,7 @@ public sealed class CreativeOrchestrator
 
     private readonly GreatestHitsCache? _provenBits;
     private readonly Empire.EmpireStateStore? _empireState;
-    private const int ProvenBitsPerTurn = 3;
+    private const int ProvenBitsPerTurn = 1;
 
     public CreativeOrchestrator(
         ContextAggregator contextAggregator,
@@ -257,10 +257,12 @@ public sealed class CreativeOrchestrator
             ? GreatestHits.BuildDirective(_provenBits.Sample(_randomProvider, ProvenBitsPerTurn))
             : null;
 
-        // Robotnik's persistent war-room log and mood, when the feature is enabled. Read from the canonical
-        // state so replies have continuity; the block is data he embodies, not commands he obeys.
+        // Robotnik's persistent war-room log and mood, when the feature is enabled. Ambient turns get only
+        // speaker-rank continuity; the full body was overpowering room-grounded one-liners with private lore.
         var empireDirective = _empireState is { Enabled: true } && RobotnikPersona.Matches(request.Persona)
-            ? _empireState.BuildDirective(request.UserDisplayName)
+            ? _empireState.BuildDirective(
+                request.UserDisplayName,
+                includeBody: request.InvocationKind != CreativeInvocationKind.Ambient)
             : null;
 
         var userContent = BuildUserContent(request, historySlice, hasTopic, turnFlavor.EndReminder);

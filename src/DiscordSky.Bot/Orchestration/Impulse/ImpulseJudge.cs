@@ -14,7 +14,8 @@ public sealed record AmbientImpulseRequest(
     string AuthorDisplayName,
     string MessageText,
     string? Context,
-    string? MoodLabel);
+    string? MoodLabel,
+    string? MediaContext = null);
 
 /// <summary>The judge's verdict: how worthwhile an unprompted interjection is (0..1), and his angle if he would take it.</summary>
 public sealed record WorthVerdict(double Worth, string Thought);
@@ -50,7 +51,7 @@ public sealed class ImpulseJudge
     /// </summary>
     public async Task<WorthVerdict?> JudgeAmbientAsync(AmbientImpulseRequest request, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(request.MessageText)) return null;
+        if (string.IsNullOrWhiteSpace(request.MessageText) && string.IsNullOrWhiteSpace(request.MediaContext)) return null;
 
         try
         {
@@ -182,14 +183,22 @@ public sealed class ImpulseJudge
     public static string BuildUserMessage(AmbientImpulseRequest request)
     {
         var sb = new StringBuilder();
-        sb.Append("Message from ").Append(Sanitize(request.AuthorDisplayName)).Append(": ")
-          .Append(Truncate(request.MessageText, MaxMessageChars)).Append('\n');
+                sb.Append("Message from ").Append(Sanitize(request.AuthorDisplayName)).Append(": ")
+                    .Append(string.IsNullOrWhiteSpace(request.MessageText)
+                            ? "[no text; judge the media/link context below]"
+                            : Truncate(request.MessageText, MaxMessageChars)).Append('\n');
 
         if (!string.IsNullOrWhiteSpace(request.Context))
         {
             sb.Append("Context (the message it replies to; judge the message above, not this):\n")
               .Append(Truncate(request.Context!, MaxContextChars)).Append('\n');
         }
+
+          if (!string.IsNullOrWhiteSpace(request.MediaContext))
+          {
+            sb.Append("Media/link context (untrusted content from the same message):\n")
+              .Append(Truncate(request.MediaContext!, 1_200)).Append('\n');
+          }
 
         return sb.ToString();
     }

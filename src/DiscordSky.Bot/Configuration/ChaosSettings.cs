@@ -25,6 +25,12 @@ public sealed class ChaosSettings
     /// </summary>
     public double AmbientWorthThreshold { get; init; } = 0.5;
 
+    /// <summary>
+    /// Hard per-channel quiet period after a successful ambient reply. Unlike the probability dampener, this
+    /// prevents another in-flight message handler from producing a second reply to the same burst.
+    /// </summary>
+    public int AmbientReplyQuietSeconds { get; init; } = 90;
+
     public bool ContainsBanWord(string candidate)
     {
         if (string.IsNullOrWhiteSpace(candidate) || BanWords is not { Count: > 0 })
