@@ -51,7 +51,15 @@ public sealed record TelemetryEvent(
     [property: JsonPropertyName("reason")] string? Reason = null,
     [property: JsonPropertyName("before")] int? Before = null,
     [property: JsonPropertyName("after")] int? After = null,
-    [property: JsonPropertyName("room")] IReadOnlyList<string>? Room = null
+    [property: JsonPropertyName("room")] IReadOnlyList<string>? Room = null,
+    [property: JsonPropertyName("provider")] string? Provider = null,
+    [property: JsonPropertyName("model")] string? Model = null,
+    [property: JsonPropertyName("reasoning_effort")] string? ReasoningEffort = null,
+    [property: JsonPropertyName("latency_ms")] long? LatencyMs = null,
+    [property: JsonPropertyName("baseline_outcome")] string? BaselineOutcome = null,
+    [property: JsonPropertyName("baseline_score")] double? BaselineScore = null,
+    [property: JsonPropertyName("evaluation_id")] string? EvaluationId = null,
+    [property: JsonPropertyName("opportunity_at")] DateTimeOffset? OpportunityAt = null
 );
 
 /// <summary>Canonical event-type string constants. Use these instead of string literals at call sites.</summary>
@@ -75,6 +83,7 @@ public static class TelemetryEventTypes
     public const string ImpulseJudged = "impulse_judged";
     public const string ColdOpen = "cold_open";
     public const string ColdOpenCritique = "cold_open_critique";
+    public const string ColdOpenProviderShadow = "cold_open_provider_shadow";
 }
 
 /// <summary>Test/CI default. Discards events.</summary>

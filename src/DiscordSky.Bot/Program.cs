@@ -28,6 +28,7 @@ builder.Services.Configure<BotOptions>(builder.Configuration.GetSection(BotOptio
 builder.Services.Configure<ChaosSettings>(builder.Configuration.GetSection("Chaos"));
 builder.Services.Configure<ColdOpenOptions>(builder.Configuration.GetSection(ColdOpenOptions.SectionName));
 builder.Services.Configure<LlmOptions>(builder.Configuration.GetSection(LlmOptions.SectionName));
+builder.Services.Configure<ModelEvaluationOptions>(builder.Configuration.GetSection(ModelEvaluationOptions.SectionName));
 builder.Services.Configure<MemoryRelevanceOptions>(builder.Configuration.GetSection(MemoryRelevanceOptions.SectionName));
 builder.Services.Configure<TelemetryOptions>(builder.Configuration.GetSection(TelemetryOptions.SectionName));
 builder.Services.Configure<TranscriptOptions>(builder.Configuration.GetSection(TranscriptOptions.SectionName));
@@ -120,10 +121,8 @@ builder.Services.AddSingleton<IChatClient>(sp =>
 			$"LLM provider '{llmOptions.ActiveProvider}' has no API key configured.");
 	}
 
-	OpenAIClientOptions? clientOptions = null;
 	if (!string.IsNullOrWhiteSpace(provider.Endpoint))
 	{
-		clientOptions = new OpenAIClientOptions { Endpoint = new Uri(provider.Endpoint) };
 		logger.LogInformation("LLM provider '{Provider}' configured: endpoint={Endpoint}, model={Model}",
 			llmOptions.ActiveProvider, provider.Endpoint, provider.ChatModel);
 	}
@@ -133,21 +132,10 @@ builder.Services.AddSingleton<IChatClient>(sp =>
 			llmOptions.ActiveProvider, provider.ChatModel);
 	}
 
-	var openAiClient = clientOptions is not null
-		? new OpenAIClient(new System.ClientModel.ApiKeyCredential(provider.ApiKey), clientOptions)
-		: new OpenAIClient(provider.ApiKey);
-
 	if (provider.UseResponsesApi)
-	{
 		logger.LogInformation("Using Responses API for provider '{Provider}'", llmOptions.ActiveProvider);
-		return openAiClient
-			.GetResponsesClient(provider.ChatModel)
-			.AsIChatClient();
-	}
 
-	return openAiClient
-		.GetChatClient(provider.ChatModel)
-		.AsIChatClient();
+	return LlmChatClientFactory.Create(provider, provider.ChatModel);
 });
 
 builder.Services.AddHttpClient<TweetUnfurler>();
@@ -208,6 +196,11 @@ builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.ColdOpenCompo
 // A skeptical advisory pass that audits checkable flaws after the time-sensitive send and records a separate
 // telemetry event. It never gates humor (round-5 eval showed it killed the owner's best line when used as a gate).
 builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.ColdOpenCritic>();
+builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.GrokColdOpenShadowService>();
+builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.IColdOpenShadowSink>(sp =>
+	sp.GetRequiredService<DiscordSky.Bot.Orchestration.Impulse.GrokColdOpenShadowService>());
+builder.Services.AddHostedService(sp =>
+	sp.GetRequiredService<DiscordSky.Bot.Orchestration.Impulse.GrokColdOpenShadowService>());
 builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.ColdOpenService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DiscordSky.Bot.Orchestration.Impulse.ColdOpenService>());
 // Empire State: Robotnik's persistent, evolving in-character world (mood + war-room log), advanced by a slow tick.

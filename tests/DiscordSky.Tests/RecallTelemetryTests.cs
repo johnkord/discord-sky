@@ -93,7 +93,15 @@ public sealed class RecallTelemetryTests : IDisposable
             TopScore: 0.86,
             Note: "alascene, my bot being cunty is precision engineering.",
             Reason: "critic 0.84 clean",
-            Room: new[] { "alascene: Why is your bot so cunty to me yano", "curlyquote: who isn't he cunty to" }));
+            Room: new[] { "alascene: Why is your bot so cunty to me yano", "curlyquote: who isn't he cunty to" },
+            Provider: "xAI",
+            Model: "grok-4.5",
+            ReasoningEffort: "medium",
+            LatencyMs: 1234,
+            BaselineOutcome: "would_post",
+            BaselineScore: 0.88,
+            EvaluationId: "eval-123",
+            OpportunityAt: ts.AddSeconds(-2)));
 
         await sink.StopAsync(CancellationToken.None);
 
@@ -110,6 +118,14 @@ public sealed class RecallTelemetryTests : IDisposable
         // The bot's own drafted line and the advisory critic verdict are stored alongside it.
         Assert.Contains("precision engineering", root.GetProperty("note").GetString());
         Assert.Equal("critic 0.84 clean", root.GetProperty("reason").GetString());
+        Assert.Equal("xAI", root.GetProperty("provider").GetString());
+        Assert.Equal("grok-4.5", root.GetProperty("model").GetString());
+        Assert.Equal("medium", root.GetProperty("reasoning_effort").GetString());
+        Assert.Equal(1234, root.GetProperty("latency_ms").GetInt64());
+        Assert.Equal("would_post", root.GetProperty("baseline_outcome").GetString());
+        Assert.Equal(0.88, root.GetProperty("baseline_score").GetDouble());
+        Assert.Equal("eval-123", root.GetProperty("evaluation_id").GetString());
+        Assert.Equal(ts.AddSeconds(-2), root.GetProperty("opportunity_at").GetDateTimeOffset());
     }
 
     [Fact]

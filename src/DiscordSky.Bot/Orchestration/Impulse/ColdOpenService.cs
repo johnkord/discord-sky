@@ -38,6 +38,7 @@ public sealed class ColdOpenService : IHostedService, IDisposable
     private readonly RecentParticipants? _recentParticipants;
     private readonly ColdOpenCritic? _critic;
     private readonly SentMessageRegistry? _sentMessages;
+    private readonly IColdOpenShadowSink? _providerShadow;
 
     private readonly SemaphoreSlim _lock = new(1, 1);
     private readonly Dictionary<ulong, ChannelBudget> _budgets = new();
@@ -54,7 +55,8 @@ public sealed class ColdOpenService : IHostedService, IDisposable
         EmpireStateStore? empireState = null,
         RecentParticipants? recentParticipants = null,
         ColdOpenCritic? critic = null,
-        SentMessageRegistry? sentMessages = null)
+        SentMessageRegistry? sentMessages = null,
+        IColdOpenShadowSink? providerShadow = null)
     {
         _client = client;
         _options = options;
@@ -66,6 +68,7 @@ public sealed class ColdOpenService : IHostedService, IDisposable
         _recentParticipants = recentParticipants;
         _critic = critic;
         _sentMessages = sentMessages;
+        _providerShadow = providerShadow;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -159,21 +162,30 @@ public sealed class ColdOpenService : IHostedService, IDisposable
 
             var recentLines = await GatherRecentLinesAsync(channel);
             var context = BuildContext(recentLines);
+            var evaluationId = Guid.NewGuid().ToString("N");
             var draft = await _composer.ComposeAsync(context, ct);
+            _providerShadow?.TryEnqueue(new ColdOpenShadowOpportunity(
+                EvaluationId: evaluationId,
+                CapturedAt: now,
+                Channel: channel.Name,
+                Context: context,
+                ChampionDraft: draft,
+                WorthThreshold: opts.WorthThreshold,
+                RoomLines: recentLines));
             if (draft is null || draft.Worth < opts.WorthThreshold)
             {
-                Emit("declined", channel.Name, draft?.Hook, draft?.Worth, draft?.Line, recentLines, null);
+                Emit("declined", channel.Name, draft?.Hook, draft?.Worth, draft?.Line, recentLines, null, evaluationId, now);
                 _logger.LogInformation("cold_open outcome=declined worth={Worth:F2} channel={Channel}", draft?.Worth ?? 0.0, channel.Name);
                 continue; // a decline does NOT consume the fire cooldown or the daily cap, only the judge cooldown
             }
 
             // The critic is advisory and cannot block the line. Audit in the background so a second main-model
             // call does not delay a time-sensitive interruption; its result gets a separate durable event.
-            if (_critic is not null) _ = ReviewCritiqueAsync(context, draft, channel.Name, recentLines, ct);
+            if (_critic is not null) _ = ReviewCritiqueAsync(context, draft, channel.Name, recentLines, evaluationId, now, ct);
 
             if (opts.ShadowMode)
             {
-                Emit("shadow", channel.Name, draft.Hook, draft.Worth, draft.Line, recentLines, null);
+                Emit("shadow", channel.Name, draft.Hook, draft.Worth, draft.Line, recentLines, null, evaluationId, now);
                 _logger.LogInformation("cold_open outcome=shadow worth={Worth:F2} hook={Hook} channel={Channel} line={Line}",
                     draft.Worth, draft.Hook, channel.Name, draft.Line);
             }
@@ -182,7 +194,7 @@ public sealed class ColdOpenService : IHostedService, IDisposable
                 var sent = await channel.SendMessageAsync(draft.Line, allowedMentions: AllowedMentions.None);
                 _sentMessages?.Register(sent.Id, GetPersona(), "cold_open");
                 _pulse.RecordBot(channel.Id, DateTimeOffset.UtcNow);
-                Emit("fired", channel.Name, draft.Hook, draft.Worth, draft.Line, recentLines, null);
+                Emit("fired", channel.Name, draft.Hook, draft.Worth, draft.Line, recentLines, null, evaluationId, now);
                 _logger.LogInformation("cold_open outcome=fired worth={Worth:F2} hook={Hook} channel={Channel}",
                     draft.Worth, draft.Hook, channel.Name);
             }
@@ -207,6 +219,8 @@ public sealed class ColdOpenService : IHostedService, IDisposable
         ColdOpenDraft draft,
         string channel,
         IReadOnlyList<string> roomLines,
+        string evaluationId,
+        DateTimeOffset opportunityAt,
         CancellationToken ct)
     {
         try
@@ -227,7 +241,9 @@ public sealed class ColdOpenService : IHostedService, IDisposable
                 TopScore: critique.Worth,
                 Note: draft.Line,
                 Reason: flaw,
-                Room: roomLines));
+                Room: roomLines,
+                EvaluationId: evaluationId,
+                OpportunityAt: opportunityAt));
         }
         catch (OperationCanceledException)
         {
@@ -320,7 +336,7 @@ public sealed class ColdOpenService : IHostedService, IDisposable
     }
 
     private void Emit(string outcome, string channel, string? hook, double? worth, string? line,
-        IReadOnlyList<string>? roomLines, ColdOpenCritique? critique)
+        IReadOnlyList<string>? roomLines, ColdOpenCritique? critique, string evaluationId, DateTimeOffset opportunityAt)
     {
         _telemetry.Emit(new TelemetryEvent(
             Timestamp: DateTimeOffset.UtcNow,
@@ -331,7 +347,9 @@ public sealed class ColdOpenService : IHostedService, IDisposable
             TopScore: worth,
             Note: string.IsNullOrWhiteSpace(line) ? null : line,
             Reason: critique is null ? null : $"critic {critique.Worth:F2} {(string.IsNullOrWhiteSpace(critique.Flaw) ? "-" : critique.Flaw)}",
-            Room: roomLines is { Count: > 0 } ? roomLines : null));
+            Room: roomLines is { Count: > 0 } ? roomLines : null,
+            EvaluationId: evaluationId,
+            OpportunityAt: opportunityAt));
     }
 
     public void Dispose()

@@ -29,8 +29,10 @@ public sealed record ColdOpenDraft(double Worth, string Line, string Hook);
 public sealed class ColdOpenComposer
 {
     private readonly IChatClient _chatClient;
-    private readonly IOptionsMonitor<LlmOptions> _llmOptions;
+    private readonly IOptionsMonitor<LlmOptions>? _llmOptions;
+    private readonly LlmWorkloadProfile? _fixedProfile;
     private readonly ILogger<ColdOpenComposer> _logger;
+    private readonly bool _surfaceFailures;
 
     public ColdOpenComposer(IChatClient chatClient, IOptionsMonitor<LlmOptions> llmOptions, ILogger<ColdOpenComposer> logger)
     {
@@ -39,13 +41,27 @@ public sealed class ColdOpenComposer
         _logger = logger;
     }
 
+    /// <summary>Constructs an isolated composer with a frozen provider/model profile for evaluation.</summary>
+    public ColdOpenComposer(
+        IChatClient chatClient,
+        LlmWorkloadProfile fixedProfile,
+        ILogger<ColdOpenComposer> logger,
+        bool surfaceFailures = false)
+    {
+        _chatClient = chatClient;
+        _fixedProfile = fixedProfile;
+        _logger = logger;
+        _surfaceFailures = surfaceFailures;
+    }
+
     /// <summary>Judges worth and, if he would speak, drafts the line. Null on a decline, an empty draft, or any failure.</summary>
     public async Task<ColdOpenDraft?> ComposeAsync(ColdOpenContext context, CancellationToken cancellationToken)
     {
         try
         {
             var messages = new List<ChatMessage> { new(ChatRole.User, BuildUserMessage(context)) };
-            var profile = _llmOptions.CurrentValue.GetActiveProvider().GetProfile(LlmWorkload.ColdOpen);
+            var profile = _fixedProfile
+                ?? _llmOptions!.CurrentValue.GetActiveProvider().GetProfile(LlmWorkload.ColdOpen);
             var options = new ChatOptions
             {
                 ModelId = profile.Model,
@@ -69,6 +85,7 @@ public sealed class ColdOpenComposer
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "Cold-open composer failed; no cold open this cycle.");
+            if (_surfaceFailures) throw;
             return null;
         }
     }

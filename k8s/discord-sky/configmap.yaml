@@ -42,16 +42,25 @@ data:
   LLM__Providers__OpenAI__MemoryExtractionReasoningEffort: "none"
   LLM__Providers__OpenAI__MemoryConsolidationReasoningEffort: "none"
   LLM__Providers__OpenAI__UseResponsesApi: "true"
-  # xAI/Grok, wired for background A/B experimentation only (fun_assessment 3.10). NOT active.
-  # To run the experiment: set LLM__ActiveProvider=xAI (and put the key in the Secret as
-  # LLM__Providers__xAI__ApiKey), redeploy, then score transcripts with tools/DiscordSky.FunScore.
-  # grok-4.20-0309-reasoning is the most advanced model available; the non-reasoning sibling is the
-  # cheaper choice for background memory extraction.
+  # xAI/Grok challenger. OpenAI remains the active provider; Grok is never promoted by changing
+  # LLM__ActiveProvider. The isolated evaluator below mirrors eligible cold-open context only when its
+  # explicit kill switch is enabled, and has no Discord client or mutating tool surface.
   LLM__Providers__xAI__Endpoint: "https://api.x.ai/v1"
-  LLM__Providers__xAI__ChatModel: "grok-4.20-0309-reasoning"
+  LLM__Providers__xAI__ChatModel: "grok-4.5"
+  LLM__Providers__xAI__ColdOpenModel: "grok-4.5"
   LLM__Providers__xAI__MemoryExtractionModel: "grok-4.20-0309-non-reasoning"
   LLM__Providers__xAI__MaxTokens: "1200"
+  LLM__Providers__xAI__ReasoningEffort: "medium"
+  LLM__Providers__xAI__ColdOpenReasoningEffort: "medium"
   LLM__Providers__xAI__UseResponsesApi: "false"
+  # Disabled until the local blind GPT/Grok review is complete. Enabling adds xAI inference and durable
+  # candidate telemetry, but cannot post, react, write memory, or delay the OpenAI champion.
+  ModelEvaluation__GrokColdOpen__Enabled: "false"
+  ModelEvaluation__GrokColdOpen__ProviderName: "xAI"
+  ModelEvaluation__GrokColdOpen__Model: "grok-4.5"
+  ModelEvaluation__GrokColdOpen__ReasoningEffort: "medium"
+  ModelEvaluation__GrokColdOpen__SampleRate: "1.0"
+  ModelEvaluation__GrokColdOpen__QueueCapacity: "32"
   Chaos__AmbientReplyChance: "0.25"
   Chaos__MaxPromptsPerHour: "20"
   # Inner-thought worth gate. The roll remains the cost/opportunity sampler; the media-aware utility judge is
