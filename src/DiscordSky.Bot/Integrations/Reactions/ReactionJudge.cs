@@ -93,14 +93,16 @@ public sealed class ReactionJudge
             };
 
             // Mirror ImageRewriter: set the model explicitly and do NOT use a structured ResponseFormat
-            // (gpt-5.5 on the Responses API returns HTTP 400 for json_object). The prompt asks for JSON and
+            // (GPT-5.x on the Responses API may reject json_object). The prompt asks for JSON and
             // we parse defensively. Tokens give reasoning models headroom for a one-object answer.
+            var profile = _llmOptions.CurrentValue.GetActiveProvider().GetProfile(LlmWorkload.Utility);
             var options = new ChatOptions
             {
-                ModelId = ResolveUtilityModel(),
+                ModelId = profile.Model,
                 Instructions = BuildSystemPrompt(request.PersonaName),
                 MaxOutputTokens = 400,
             };
+            profile.ApplyReasoning(options);
 
             var response = await _chatClient.GetResponseAsync(messages, options, cancellationToken);
 
@@ -135,14 +137,6 @@ public sealed class ReactionJudge
             _logger.LogWarning(ex, "Reaction judge failed; no reaction will be attempted.");
             return new ReactionDecision(ReactionDecisionKind.Failed, Rationale: ex.GetType().Name);
         }
-    }
-
-    private string ResolveUtilityModel()
-    {
-        var provider = _llmOptions.CurrentValue.GetActiveProvider();
-        return !string.IsNullOrWhiteSpace(provider.UtilityModel)
-            ? provider.UtilityModel!
-            : provider.ChatModel;
     }
 
     /// <summary>

@@ -63,12 +63,14 @@ public sealed class ImpulseJudge
             // Mirror ReactionJudge / ImageRewriter: set the model explicitly and do NOT use a structured
             // ResponseFormat (gpt-5.x on the Responses API returns HTTP 400 for json_object). The prompt asks for
             // JSON and we parse defensively.
+            var profile = _llmOptions.CurrentValue.GetActiveProvider().GetProfile(LlmWorkload.Utility);
             var options = new ChatOptions
             {
-                ModelId = ResolveUtilityModel(),
+                ModelId = profile.Model,
                 Instructions = BuildSystemPrompt(request.PersonaName, request.MoodLabel),
                 MaxOutputTokens = 300,
             };
+            profile.ApplyReasoning(options);
 
             var response = await _chatClient.GetResponseAsync(messages, options, cancellationToken);
             var verdict = ParseWorth(response.Text);
@@ -88,14 +90,6 @@ public sealed class ImpulseJudge
             _logger.LogDebug(ex, "Ambient impulse judge failed; caller will fail open.");
             return null;
         }
-    }
-
-    private string ResolveUtilityModel()
-    {
-        var provider = _llmOptions.CurrentValue.GetActiveProvider();
-        return !string.IsNullOrWhiteSpace(provider.UtilityModel)
-            ? provider.UtilityModel!
-            : provider.ChatModel;
     }
 
     /// <summary>Parses the judge's JSON into a clamped worth plus a short thought, or null. Public for tests.</summary>

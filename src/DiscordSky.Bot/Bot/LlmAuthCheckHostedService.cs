@@ -1,4 +1,5 @@
 using DiscordSky.Bot.Configuration;
+using System.Text.Json;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -6,8 +7,8 @@ using Microsoft.Extensions.Options;
 namespace DiscordSky.Bot.Bot;
 
 /// <summary>
-/// Verifies the active LLM provider's API key at startup by issuing a single, harmless
-/// <c>GET /v1/models</c> request. If the key is rejected (HTTP 401), the host fails to start
+/// Verifies the active LLM provider's API key and configured OpenAI model access at startup by issuing a
+/// single, harmless <c>GET /v1/models</c> request. If the key is rejected (HTTP 401), the host fails to start
 /// and the pod crash-loops — surfacing the auth failure to operators instead of letting it
 /// hide behind a healthy <c>/healthz</c> while every reply silently fails.
 ///
@@ -95,6 +96,37 @@ public sealed class LlmAuthCheckHostedService : IHostedService
             _logger.LogInformation(
                 "LLM auth self-test OK: provider '{Provider}' authenticated at {Url} (HTTP {Status}).",
                 _llmOptions.Value.ActiveProvider, url, (int)resp.StatusCode);
+
+            // OpenAI can authenticate a key while denying a newly configured preview model. Fail now rather
+            // than letting every user-facing call fail behind a healthy Discord gateway.
+            if (string.IsNullOrWhiteSpace(provider.Endpoint))
+            {
+                var body = await resp.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false);
+                if (TryParseModelIds(body, out var available))
+                {
+                    var missing = provider.GetConfiguredModels()
+                        .Where(model => !IsModelAvailable(model, available))
+                        .ToArray();
+                    if (missing.Length > 0)
+                    {
+                        _logger.LogCritical(
+                            "LLM model-access self-test FAILED: OpenAI account cannot access configured model(s): {Models}. Crashing before Discord traffic.",
+                            string.Join(", ", missing));
+                        _lifetime.StopApplication();
+                        throw new InvalidOperationException(
+                            $"LLM model-access self-test failed; missing model(s): {string.Join(", ", missing)}.");
+                    }
+
+                    _logger.LogInformation(
+                        "LLM model-access self-test OK: {Count} configured model(s) available: {Models}.",
+                        provider.GetConfiguredModels().Count,
+                        string.Join(", ", provider.GetConfiguredModels()));
+                }
+                else
+                {
+                    _logger.LogWarning("LLM model-access self-test: could not parse /v1/models payload; auth passed, continuing startup.");
+                }
+            }
         }
         catch (InvalidOperationException)
         {
@@ -113,4 +145,33 @@ public sealed class LlmAuthCheckHostedService : IHostedService
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    internal static bool TryParseModelIds(string? json, out HashSet<string> ids)
+    {
+        ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(json)) return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+                return false;
+            foreach (var item in data.EnumerateArray())
+            {
+                if (item.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(id.GetString()))
+                {
+                    ids.Add(id.GetString()!);
+                }
+            }
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    internal static bool IsModelAvailable(string configuredModel, IReadOnlySet<string> available) =>
+        available.Contains(configuredModel)
+        || available.Any(id => id.StartsWith(configuredModel + "-", StringComparison.OrdinalIgnoreCase));
 }

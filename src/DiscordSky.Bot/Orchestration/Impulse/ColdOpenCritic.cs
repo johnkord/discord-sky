@@ -53,12 +53,14 @@ public sealed class ColdOpenCritic
         try
         {
             var messages = new List<ChatMessage> { new(ChatRole.User, BuildUserMessage(context, draft)) };
+            var profile = _llmOptions.CurrentValue.GetActiveProvider().GetProfile(LlmWorkload.ColdOpenCritic);
             var options = new ChatOptions
             {
-                ModelId = ResolveChatModel(),
+                ModelId = profile.Model,
                 Instructions = BuildSystemPrompt(context.PersonaName),
                 MaxOutputTokens = 1500,
             };
+            profile.ApplyReasoning(options);
 
             var response = await _chatClient.GetResponseAsync(messages, options, cancellationToken);
             var critique = ParseCritique(response.Text);
@@ -78,8 +80,6 @@ public sealed class ColdOpenCritic
             return null;
         }
     }
-
-    private string ResolveChatModel() => _llmOptions.CurrentValue.GetActiveProvider().ChatModel;
 
     /// <summary>Parses {worth, flaw}. Missing/unparseable worth is null. Worth is clamped. Public for tests.</summary>
     public static ColdOpenCritique? ParseCritique(string? modelText)

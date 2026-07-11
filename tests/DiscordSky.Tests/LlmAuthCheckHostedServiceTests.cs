@@ -25,9 +25,10 @@ public sealed class LlmAuthCheckHostedServiceTests
     private static (LlmAuthCheckHostedService service, FakeLifetime lifetime) Build(
         HttpStatusCode responseStatus,
         LlmOptions? opts = null,
-        TimeSpan? delay = null)
+        TimeSpan? delay = null,
+        string responseBody = "{}")
     {
-        var handler = new CannedResponseHandler(responseStatus, delay);
+        var handler = new CannedResponseHandler(responseStatus, delay, responseBody);
         var factory = new SingleClientFactory(handler);
         var lifetime = new FakeLifetime();
         var service = new LlmAuthCheckHostedService(
@@ -42,6 +43,43 @@ public sealed class LlmAuthCheckHostedServiceTests
     public async Task Returns_HTTP_200_Completes_Normally()
     {
         var (service, lifetime) = Build(HttpStatusCode.OK);
+        await service.StartAsync(CancellationToken.None);
+        Assert.False(lifetime.StopRequested);
+    }
+
+    [Fact]
+    public async Task OpenAi_MissingConfiguredModel_ThrowsAndRequestsShutdown()
+    {
+        var opts = OptionsWithKey();
+        var (service, lifetime) = Build(
+            HttpStatusCode.OK,
+            opts,
+            responseBody: "{\"data\":[{\"id\":\"some-other-model\"}]}");
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.StartAsync(CancellationToken.None));
+        Assert.Contains("gpt-test", ex.Message);
+        Assert.True(lifetime.StopRequested);
+    }
+
+    [Fact]
+    public async Task OpenAi_AllConfiguredModelsPresent_CompletesNormally()
+    {
+        var (service, lifetime) = Build(
+            HttpStatusCode.OK,
+            responseBody: "{\"data\":[{\"id\":\"gpt-test\"}]}");
+
+        await service.StartAsync(CancellationToken.None);
+        Assert.False(lifetime.StopRequested);
+    }
+
+    [Fact]
+    public async Task OpenAi_ConfiguredAliasWithSnapshotPresent_CompletesNormally()
+    {
+        var (service, lifetime) = Build(
+            HttpStatusCode.OK,
+            responseBody: "{\"data\":[{\"id\":\"gpt-test-2026-07-11\"}]}");
+
         await service.StartAsync(CancellationToken.None);
         Assert.False(lifetime.StopRequested);
     }
@@ -116,10 +154,13 @@ public sealed class LlmAuthCheckHostedServiceTests
         private readonly TimeSpan _delay;
         public HttpRequestMessage? LastRequest { get; private set; }
 
-        public CannedResponseHandler(HttpStatusCode status, TimeSpan? delay = null)
+        private readonly string _responseBody;
+
+        public CannedResponseHandler(HttpStatusCode status, TimeSpan? delay = null, string responseBody = "{}")
         {
             _status = status;
             _delay = delay ?? TimeSpan.Zero;
+            _responseBody = responseBody;
         }
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -127,7 +168,7 @@ public sealed class LlmAuthCheckHostedServiceTests
             LastRequest = request;
             if (_delay > TimeSpan.Zero)
                 await Task.Delay(_delay, cancellationToken).ConfigureAwait(false);
-            return new HttpResponseMessage(_status) { Content = new StringContent("{}") };
+            return new HttpResponseMessage(_status) { Content = new StringContent(_responseBody) };
         }
     }
 

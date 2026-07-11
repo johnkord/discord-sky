@@ -52,15 +52,17 @@ public sealed class ImageRewriter
                 new(ChatRole.User, BuildUserMessage(requesterDisplayName, userRequest, replyContext)),
             };
             // Match the proven orchestrator request shape: set the model explicitly and do NOT use a
-            // structured ResponseFormat. gpt-5.5 on the Responses API returns HTTP 400 for a json_object
+            // structured ResponseFormat. GPT-5.x on the Responses API may reject json_object
             // response format and/or a null model. The prompt asks for JSON and ExtractJsonObject tolerates
             // fencing/prose, so we parse defensively instead. Tokens give reasoning headroom.
+            var profile = _llmOptions.CurrentValue.GetActiveProvider().GetProfile(LlmWorkload.ImageRewrite);
             var options = new ChatOptions
             {
-                ModelId = _llmOptions.CurrentValue.GetActiveProvider().ChatModel,
+                ModelId = profile.Model,
                 Instructions = BuildSystemPrompt(persona, requesterDisplayName, userRequest, memories),
-                MaxOutputTokens = 1500,
+                MaxOutputTokens = 2500,
             };
+            profile.ApplyReasoning(options);
 
             var response = await _chatClient.GetResponseAsync(messages, options, cancellationToken);
             var rewrite = Parse(response.Text);

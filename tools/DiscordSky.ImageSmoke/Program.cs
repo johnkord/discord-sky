@@ -9,7 +9,7 @@ using OpenAI;
 using OpenAI.Responses;
 
 // Pre-deploy smoke test for the LIVE image pipeline. It runs the bot's ACTUAL code end to end: the
-// ImageRewriter (gpt-5.5 on the Responses API) turns a raw request into an in-character prompt + caption,
+// ImageRewriter (the configured balanced chat model on the Responses API) turns a raw request into an in-character prompt + caption,
 // then OpenAIImageGenerator renders it. This proves the whole un-unit-tested live path (org verification,
 // the chat + image API calls, option translation, real bytes) for under a cent. Run it BEFORE deploying.
 //
@@ -31,7 +31,7 @@ string GetArg(string name, string fallback)
     return idx >= 0 && idx + 1 < args.Length ? args[idx + 1] : fallback;
 }
 
-var chatModel = GetArg("--chat-model", "gpt-5.5");
+var chatModel = GetArg("--chat-model", "gpt-5.6-terra");
 var imageModel = GetArg("--model", "gpt-image-1-mini");
 var quality = GetArg("--quality", "low");
 var size = GetArg("--size", "1024x1024");

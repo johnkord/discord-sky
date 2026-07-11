@@ -10,16 +10,16 @@ using OpenAI;
 //
 // Usage:
 //   OPENAI_API_KEY=sk-... dotnet run --project tools/DiscordSky.FunJudge -- <transcripts-dir-or-file> \
-//       [--model gpt-5.5] [--sample 12] [--persona Robotnik] [--reactions <dir>]
+//       [--model gpt-5.6-sol] [--sample 12] [--persona Robotnik] [--reactions <dir>]
 
 if (args.Length == 0 || args.Contains("-h") || args.Contains("--help"))
 {
-    Console.WriteLine("Usage: OPENAI_API_KEY=... dotnet run --project tools/DiscordSky.FunJudge -- <transcripts-dir-or-file> [--model gpt-5.5] [--sample 12] [--persona Robotnik] [--reactions <dir>]");
+    Console.WriteLine("Usage: OPENAI_API_KEY=... dotnet run --project tools/DiscordSky.FunJudge -- <transcripts-dir-or-file> [--model gpt-5.6-sol] [--sample 12] [--persona Robotnik] [--reactions <dir>]");
     return 0;
 }
 
 var path = args[0];
-var model = "gpt-5.5";
+var model = "gpt-5.6-sol";
 string? persona = null;
 string? reactionsDir = null;
 var sample = 12;

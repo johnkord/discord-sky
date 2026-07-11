@@ -104,6 +104,13 @@ builder.Services.AddSingleton<IChatClient>(sp =>
 	var llmOptions = sp.GetRequiredService<IOptions<LlmOptions>>().Value;
 	var provider = llmOptions.GetActiveProvider(); // throws if ActiveProvider key not found
 	var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("LlmProvider");
+	logger.LogInformation(
+		"LLM workload routing: {Routing}",
+		string.Join(", ", Enum.GetValues<LlmWorkload>().Select(workload =>
+		{
+			var profile = provider.GetProfile(workload);
+			return $"{workload}={profile.Model}/{profile.ReasoningEffort ?? "default"}";
+		})));
 
 	if (string.IsNullOrWhiteSpace(provider.ApiKey))
 	{

@@ -91,7 +91,13 @@ if (string.IsNullOrWhiteSpace(apiKey))
 }
 
 var overlay = new Dictionary<string, string?> { [$"LLM:Providers:{activeProvider}:ApiKey"] = apiKey };
-if (!string.IsNullOrWhiteSpace(modelOverride)) overlay[$"LLM:Providers:{activeProvider}:ChatModel"] = modelOverride;
+if (!string.IsNullOrWhiteSpace(modelOverride))
+{
+    // ScenarioLab evaluates the cold-open generator. Keep the advisory critic on its configured model so
+    // cross-generator comparisons share one audit standard instead of silently moving both sides.
+    overlay[$"LLM:Providers:{activeProvider}:ChatModel"] = modelOverride;
+    overlay[$"LLM:Providers:{activeProvider}:ColdOpenModel"] = modelOverride;
+}
 var cfg = new ConfigurationBuilder().AddConfiguration(baseCfg).AddInMemoryCollection(overlay).Build();
 
 var llm = cfg.GetSection("LLM").Get<LlmOptions>() ?? new LlmOptions();
@@ -100,7 +106,7 @@ if (!llm.Providers.TryGetValue(llm.ActiveProvider, out var provider))
     Console.Error.WriteLine($"Active provider '{llm.ActiveProvider}' is not configured in appsettings.");
     return 1;
 }
-var model = provider.ChatModel;
+var model = provider.GetProfile(LlmWorkload.ColdOpen).Model;
 
 // Build the IChatClient EXACTLY as Program.cs does: honor a custom endpoint, and choose the Responses API vs
 // Chat Completions the same way the bot does. This is the real construction path, not a simplified copy.

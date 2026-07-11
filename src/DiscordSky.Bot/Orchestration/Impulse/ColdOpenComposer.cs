@@ -45,12 +45,14 @@ public sealed class ColdOpenComposer
         try
         {
             var messages = new List<ChatMessage> { new(ChatRole.User, BuildUserMessage(context)) };
+            var profile = _llmOptions.CurrentValue.GetActiveProvider().GetProfile(LlmWorkload.ColdOpen);
             var options = new ChatOptions
             {
-                ModelId = ResolveChatModel(),
+                ModelId = profile.Model,
                 Instructions = BuildSystemPrompt(context.PersonaName),
                 MaxOutputTokens = 900,
             };
+            profile.ApplyReasoning(options);
 
             var response = await _chatClient.GetResponseAsync(messages, options, cancellationToken);
             var draft = ParseDraft(response.Text);
@@ -70,8 +72,6 @@ public sealed class ColdOpenComposer
             return null;
         }
     }
-
-    private string ResolveChatModel() => _llmOptions.CurrentValue.GetActiveProvider().ChatModel;
 
     /// <summary>Parses {worth, hook, line}. A missing/blank line is a decline (null). Worth is clamped. Public for tests.</summary>
     public static ColdOpenDraft? ParseDraft(string? modelText)

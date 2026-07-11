@@ -269,15 +269,18 @@ public sealed class CreativeOrchestrator
 
         // When reasoning is enabled, we need more output tokens to accommodate both reasoning AND the tool call
         var llmProvider = _llmOptionsMonitor.CurrentValue.GetActiveProvider();
-        var hasReasoning = !string.IsNullOrWhiteSpace(llmProvider.ReasoningEffort) || !string.IsNullOrWhiteSpace(llmProvider.ReasoningSummary);
-        var maxOutputTokens = hasReasoning
+        var workload = request.InvocationKind == CreativeInvocationKind.Ambient
+            ? LlmWorkload.Ambient
+            : LlmWorkload.Main;
+        var profile = llmProvider.GetProfile(workload, request.Persona);
+        var maxOutputTokens = profile.HasReasoning
             ? Math.Clamp(llmProvider.MaxTokens * 3, 1500, 4096)  // Triple tokens for reasoning models
             : Math.Clamp(llmProvider.MaxTokens, 300, 1024);
 
         // Use a smaller token budget for ambient replies to reduce cost and response length
         if (request.InvocationKind == CreativeInvocationKind.Ambient)
         {
-            maxOutputTokens = Math.Min(maxOutputTokens, 512);
+            maxOutputTokens = Math.Min(maxOutputTokens, 1024);
         }
 
         // Offer the image tool when generation is wired. Command and direct-reply turns always get it;
@@ -292,21 +295,14 @@ public sealed class CreativeOrchestrator
 
         var chatOptions = new ChatOptions
         {
-            ModelId = ResolveModel(request.Persona, llmProvider),
+            ModelId = profile.Model,
             Instructions = BuildSystemInstructions(request.Persona, hasTopic, request.InvocationKind, request.ReplyChain, request.IsInThread, turnFlavor, offerImageTool, provenDirective, empireDirective),
             MaxOutputTokens = maxOutputTokens,
             Tools = tools,
             ToolMode = ChatToolMode.Auto,
         };
 
-        if (hasReasoning)
-        {
-            chatOptions.Reasoning = new ReasoningOptions
-            {
-                Effort = string.IsNullOrWhiteSpace(llmProvider.ReasoningEffort) ? null : Enum.Parse<ReasoningEffort>(llmProvider.ReasoningEffort, ignoreCase: true),
-                Output = string.IsNullOrWhiteSpace(llmProvider.ReasoningSummary) ? null : Enum.Parse<ReasoningOutput>(llmProvider.ReasoningSummary, ignoreCase: true),
-            };
-        }
+        profile.ApplyReasoning(chatOptions);
 
         var messages = new List<ChatMessage>
         {
@@ -1085,29 +1081,6 @@ public sealed class CreativeOrchestrator
     private static bool IsTransient(Exception ex) =>
         ex is HttpRequestException or TaskCanceledException or TimeoutException;
 
-    private static string ResolveModel(string persona, LlmProviderOptions provider)
-    {
-        if (provider.IntentModelOverrides.TryGetValue(persona, out var overrideModel) && !string.IsNullOrWhiteSpace(overrideModel))
-        {
-            return overrideModel;
-        }
-
-        return provider.ChatModel;
-    }
-
-    /// <summary>
-    /// Returns the model to use for memory extraction/consolidation.
-    /// Prefers <see cref="LlmProviderOptions.MemoryExtractionModel"/> if set,
-    /// otherwise falls back to the provider's default <see cref="LlmProviderOptions.ChatModel"/>.
-    /// </summary>
-    private string ResolveMemoryExtractionModel()
-    {
-        var provider = _llmOptionsMonitor.CurrentValue.GetActiveProvider();
-        return !string.IsNullOrWhiteSpace(provider.MemoryExtractionModel)
-            ? provider.MemoryExtractionModel
-            : provider.ChatModel;
-    }
-
     // ── Conversation-Window Memory Extraction ───────────────────────────
 
     /// <summary>
@@ -1139,14 +1112,17 @@ public sealed class CreativeOrchestrator
                 new(ChatRole.User, conversationText.ToString())
             };
 
+            var profile = _llmOptionsMonitor.CurrentValue.GetActiveProvider()
+                .GetProfile(LlmWorkload.MemoryExtraction);
             var options = new ChatOptions
             {
-                ModelId = ResolveMemoryExtractionModel(),
+                ModelId = profile.Model,
                 Instructions = systemPrompt,
-                MaxOutputTokens = 800,
+                MaxOutputTokens = 1600,
                 Tools = [UpdateUserMemoryConversationTool],
                 ToolMode = ChatToolMode.Auto,
             };
+            profile.ApplyReasoning(options);
 
             await _llmThrottle.WaitAsync(cancellationToken);
             ChatResponse response;
@@ -1202,13 +1178,16 @@ public sealed class CreativeOrchestrator
                 new(ChatRole.User, BuildConsolidationUserMessage(existingMemories.Count, targetCount))
             };
 
+            var profile = _llmOptionsMonitor.CurrentValue.GetActiveProvider()
+                .GetProfile(LlmWorkload.MemoryConsolidation);
             var options = new ChatOptions
             {
-                ModelId = ResolveMemoryExtractionModel(),
+                ModelId = profile.Model,
                 Instructions = systemPrompt,
-                MaxOutputTokens = 1200,
+                MaxOutputTokens = 2400,
                 ResponseFormat = ChatResponseFormat.Json,
             };
+            profile.ApplyReasoning(options);
 
             await _llmThrottle.WaitAsync(cancellationToken);
             ChatResponse response;

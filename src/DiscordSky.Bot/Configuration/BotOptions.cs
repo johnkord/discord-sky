@@ -51,11 +51,6 @@ public sealed class BotOptions
     public int MaxMemoriesPerUser { get; init; } = 20;
 
     /// <summary>
-    /// Model to use for memory extraction (should be cheap/fast).
-    /// </summary>
-    public string MemoryExtractionModel { get; init; } = "gpt-5.5";
-
-    /// <summary>
     /// Probability (0.0–1.0) of running memory extraction on a given invocation.
     /// Reduces cost by only extracting memories on a fraction of interactions.
     /// </summary>

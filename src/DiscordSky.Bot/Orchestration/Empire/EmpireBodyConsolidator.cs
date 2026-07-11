@@ -42,12 +42,14 @@ public sealed class EmpireBodyConsolidator
             {
                 new(ChatRole.User, BuildUserMessage(state, candidates)),
             };
+            var profile = _llmOptions.CurrentValue.GetActiveProvider().GetProfile(LlmWorkload.Utility);
             var chatOptions = new ChatOptions
             {
-                ModelId = ResolveUtilityModel(),
+                ModelId = profile.Model,
                 Instructions = BuildSystemPrompt(options),
                 MaxOutputTokens = 2000,
             };
+            profile.ApplyReasoning(chatOptions);
             var response = await _chatClient.GetResponseAsync(messages, chatOptions, cancellationToken);
             return Parse(response.Text, state.Body, candidates, options);
         }
@@ -60,12 +62,6 @@ public sealed class EmpireBodyConsolidator
             _logger.LogDebug(ex, "Empire consolidation failed; keeping old log.");
             return null;
         }
-    }
-
-    private string ResolveUtilityModel()
-    {
-        var provider = _llmOptions.CurrentValue.GetActiveProvider();
-        return !string.IsNullOrWhiteSpace(provider.UtilityModel) ? provider.UtilityModel! : provider.ChatModel;
     }
 
     /// <summary>Parses the model JSON, verifies the body, and validates rank ops against the candidate list. Public for tests.</summary>

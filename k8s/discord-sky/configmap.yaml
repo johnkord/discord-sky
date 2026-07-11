@@ -20,17 +20,27 @@ data:
   Bot__MaxMemoriesPerExtraction: "15"
   Bot__EnableMemoryConsolidation: "true"
   Bot__ConsolidationTargetPercent: "0.75"
-  # gpt-5.5 (OpenAI) is the primary provider for everything. This ConfigMap value overrides the
-  # Secret (the Deployment lists configMapRef after secretRef in envFrom, so the ConfigMap wins),
-  # keeping production on OpenAI even if the out-of-band Secret still names another provider.
+  # GPT-5.6 workload routing. Sol handles high-value persona work, Terra handles balanced ambient/audit/image
+  # work, Luna handles structured memory maintenance, and gpt-5.4-mini remains the cheap non-reasoning judge.
+  # ConfigMap values override the Secret because configMapRef follows secretRef in the Deployment.
   LLM__ActiveProvider: "OpenAI"
-  LLM__Providers__OpenAI__ChatModel: "gpt-5.5"
-  # Cheap model for high-frequency utility calls (the in-character reaction judge). There is no gpt-5.5-mini;
-  # gpt-5.4-mini is the newest cheap tier (gpt-5.4-nano is cheaper still). Change just this value to swap; no
-  # rebuild needed, only a pod restart to re-read the env.
+  LLM__Providers__OpenAI__ChatModel: "gpt-5.6-sol"
+  LLM__Providers__OpenAI__AmbientModel: "gpt-5.6-terra"
   LLM__Providers__OpenAI__UtilityModel: "gpt-5.4-mini"
+  LLM__Providers__OpenAI__ColdOpenModel: "gpt-5.6-sol"
+  LLM__Providers__OpenAI__ColdOpenCriticModel: "gpt-5.6-terra"
+  LLM__Providers__OpenAI__ImageRewriteModel: "gpt-5.6-terra"
+  LLM__Providers__OpenAI__MemoryExtractionModel: "gpt-5.6-luna"
+  LLM__Providers__OpenAI__MemoryConsolidationModel: "gpt-5.6-luna"
   LLM__Providers__OpenAI__MaxTokens: "1200"
   LLM__Providers__OpenAI__ReasoningEffort: "medium"
+  LLM__Providers__OpenAI__AmbientReasoningEffort: "low"
+  LLM__Providers__OpenAI__UtilityReasoningEffort: "none"
+  LLM__Providers__OpenAI__ColdOpenReasoningEffort: "medium"
+  LLM__Providers__OpenAI__ColdOpenCriticReasoningEffort: "low"
+  LLM__Providers__OpenAI__ImageRewriteReasoningEffort: "medium"
+  LLM__Providers__OpenAI__MemoryExtractionReasoningEffort: "none"
+  LLM__Providers__OpenAI__MemoryConsolidationReasoningEffort: "none"
   LLM__Providers__OpenAI__UseResponsesApi: "true"
   # xAI/Grok, wired for background A/B experimentation only (fun_assessment 3.10). NOT active.
   # To run the experiment: set LLM__ActiveProvider=xAI (and put the key in the Secret as
