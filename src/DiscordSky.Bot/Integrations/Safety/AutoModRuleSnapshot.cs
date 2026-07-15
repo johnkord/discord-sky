@@ -83,20 +83,19 @@ internal sealed record AutoModRuleSnapshot(
 internal sealed record AutoModActionSnapshot(
     AutoModActionType Type,
     ulong? ChannelId,
-    TimeSpan? TimeoutDuration,
-    string? CustomMessage)
+    TimeSpan? TimeoutDuration)
 {
+    // Discord omits custom_message from GET rule responses even immediately after accepting it on update.
+    // It is therefore write-only for reconciliation: Apply still sets it, but equality uses observable fields.
     internal static AutoModActionSnapshot From(AutoModRuleActionProperties action) =>
         new(
             action.Type,
             action.ChannelId,
-            action.TimeoutDuration,
-            action.CustomMessage.IsSpecified ? action.CustomMessage.Value : null);
+            action.TimeoutDuration);
 
     internal static AutoModActionSnapshot From(AutoModRuleAction action) =>
         new(
             action.Type,
             action.ChannelId,
-            action.TimeoutDuration,
-            action.CustomMessage.IsSpecified ? action.CustomMessage.Value : null);
+            action.TimeoutDuration);
 }

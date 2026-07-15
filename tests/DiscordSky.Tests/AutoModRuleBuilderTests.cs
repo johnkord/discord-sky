@@ -89,7 +89,7 @@ public sealed class AutoModRuleBuilderTests
     [InlineData(6, true, 42, "No.", false)]
     [InlineData(5, false, 42, "No.", false)]
     [InlineData(5, true, 43, "No.", false)]
-    [InlineData(5, true, 42, "Changed", false)]
+    [InlineData(5, true, 42, "Changed", true)] // Discord does not return write-only custom_message
     public void RuleSnapshot_DetectsManagedDrift(
         int mentionLimit,
         bool raidProtection,
