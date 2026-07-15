@@ -11,7 +11,7 @@ using OpenAI.Responses;
 // Pre-deploy smoke test for the LIVE image pipeline. It runs the bot's ACTUAL code end to end: the
 // ImageRewriter (the configured balanced chat model on the Responses API) turns a raw request into an in-character prompt + caption,
 // then OpenAIImageGenerator renders it. This proves the whole un-unit-tested live path (org verification,
-// the chat + image API calls, option translation, real bytes) for under a cent. Run it BEFORE deploying.
+// the chat + image API calls, option translation, real bytes). Run it BEFORE deploying.
 //
 // Usage (never put the key on the command line):
 //   OPENAI_API_KEY=sk-... dotnet run --project tools/DiscordSky.ImageSmoke
@@ -32,8 +32,8 @@ string GetArg(string name, string fallback)
 }
 
 var chatModel = GetArg("--chat-model", "gpt-5.6-terra");
-var imageModel = GetArg("--model", "gpt-image-1-mini");
-var quality = GetArg("--quality", "low");
+var imageModel = GetArg("--model", "gpt-image-2");
+var quality = GetArg("--quality", "medium");
 var size = GetArg("--size", "1024x1024");
 var format = GetArg("--format", "jpeg");
 var request = GetArg("--request", "crown yourself emperor of Mobius");

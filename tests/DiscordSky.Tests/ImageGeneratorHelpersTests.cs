@@ -6,15 +6,9 @@ namespace DiscordSky.Tests;
 public sealed class ImageGeneratorHelpersTests
 {
     [Theory]
-    [InlineData("gpt-image-1-mini", "low", 0.005)]
-    [InlineData("gpt-image-1-mini", "medium", 0.011)]
-    [InlineData("gpt-image-1-mini", "high", 0.036)]
     [InlineData("gpt-image-2", "low", 0.006)]
     [InlineData("gpt-image-2", "medium", 0.05)]
     [InlineData("gpt-image-2", "high", 0.21)]
-    [InlineData("gpt-image-1", "low", 0.011)]
-    [InlineData("gpt-image-1", "medium", 0.042)]
-    [InlineData("gpt-image-1", "high", 0.167)]
     public void ImageCost_MatchesPricingTable(string model, string quality, double expected)
     {
         Assert.Equal(expected, ImageCost.Estimate(model, quality), precision: 6);
@@ -24,8 +18,32 @@ public sealed class ImageGeneratorHelpersTests
     public void ImageCost_UnknownQuality_FallsBackWithinModel()
     {
         // Unknown quality must not be free; it should map to a sensible non-zero estimate.
-        Assert.True(ImageCost.Estimate("gpt-image-1-mini", "auto") > 0);
         Assert.True(ImageCost.Estimate("gpt-image-2", "auto") > 0);
+    }
+
+    [Theory]
+    [InlineData("gpt-image-1")]
+    [InlineData("gpt-image-1-mini")]
+    [InlineData("gpt-image-2-mini")]
+    [InlineData("dall-e-3")]
+    [InlineData("")]
+    public void FromConfig_RejectsModelsBelowQualityFloor(string model)
+    {
+        var options = new ImageOptions { Model = model };
+
+        var error = Assert.Throws<InvalidOperationException>(() => ImageRequestOptions.FromConfig(options));
+
+        Assert.Contains("prohibited", error.Message);
+    }
+
+    [Theory]
+    [InlineData("gpt-image-2")]
+    [InlineData("gpt-image-2-2026-01-01")]
+    [InlineData("gpt-image-3")]
+    public void FromConfig_AcceptsV2OrNewerNonMiniModels(string model)
+    {
+        var resolved = ImageRequestOptions.FromConfig(new ImageOptions { Model = model });
+        Assert.Equal(model, resolved.Model);
     }
 
     [Fact]

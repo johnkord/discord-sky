@@ -139,8 +139,6 @@ data:
   Image__Model: "gpt-image-2"
   Image__Size: "1024x1024"
   Image__Quality: "medium"
-  Image__SpontaneousModel: "gpt-image-1-mini"
-  Image__SpontaneousQuality: "low"
   Image__OutputFormat: "jpeg"
   Image__Moderation: "auto"
   Image__PerUserPerHour: "20"

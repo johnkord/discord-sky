@@ -67,6 +67,7 @@ public sealed class ImageToolService
         _generator = generator;
         _log = log;
         _options = options.Value;
+        ImageModelPolicy.EnsureApproved(_options.Model);
         _logger = logger;
     }
 

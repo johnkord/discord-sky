@@ -38,8 +38,6 @@ public sealed class ImageTriggersTests
         {
             Model = "gpt-image-2",
             Quality = "medium",
-            SpontaneousModel = "gpt-image-1-mini",
-            SpontaneousQuality = "low",
         };
 
         var r = ImageRequestOptions.FromConfig(o, ImageTier.Commissioned);
@@ -49,33 +47,31 @@ public sealed class ImageTriggersTests
     }
 
     [Fact]
-    public void FromConfig_Spontaneous_UsesSpontaneousModelAndQuality()
+    public void FromConfig_Spontaneous_NeverDowngradesModelOrQuality()
     {
         var o = new ImageOptions
         {
             Model = "gpt-image-2",
             Quality = "medium",
-            SpontaneousModel = "gpt-image-1-mini",
-            SpontaneousQuality = "low",
         };
 
         var r = ImageRequestOptions.FromConfig(o, ImageTier.Spontaneous);
 
-        Assert.Equal("gpt-image-1-mini", r.Model);
-        Assert.Equal("low", r.Quality);
+        Assert.Equal("gpt-image-2", r.Model);
+        Assert.Equal("medium", r.Quality);
     }
 
     [Fact]
     public void FromConfig_DefaultsToCommissioned()
     {
-        var o = new ImageOptions { Model = "gpt-image-2", SpontaneousModel = "gpt-image-1-mini" };
+        var o = new ImageOptions { Model = "gpt-image-2" };
         Assert.Equal("gpt-image-2", ImageRequestOptions.FromConfig(o).Model);
     }
 
     [Fact]
     public void FromConfig_ClampsHigh_OnBothTiers_WhenNotAllowed()
     {
-        var o = new ImageOptions { Quality = "high", SpontaneousQuality = "high", AllowHighQuality = false };
+        var o = new ImageOptions { Quality = "high", AllowHighQuality = false };
         Assert.Equal("medium", ImageRequestOptions.FromConfig(o, ImageTier.Commissioned).Quality);
         Assert.Equal("medium", ImageRequestOptions.FromConfig(o, ImageTier.Spontaneous).Quality);
     }

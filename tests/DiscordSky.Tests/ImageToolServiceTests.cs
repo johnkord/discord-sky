@@ -151,15 +151,13 @@ public sealed class ImageToolServiceTests
     }
 
     [Fact]
-    public async Task GenerateAsync_TierSelectsModel()
+    public async Task GenerateAsync_TierNeverDowngradesModel()
     {
         var gen = new StubGenerator();
         var opts = new ImageOptions
         {
             Model = "gpt-image-2",
             Quality = "medium",
-            SpontaneousModel = "gpt-image-1-mini",
-            SpontaneousQuality = "low",
             PerUserPerHour = 0,
             GlobalPerDay = 0,
             MonthlyUsdGuard = 0,
@@ -168,7 +166,7 @@ public sealed class ImageToolServiceTests
         var service = Build(gen, new FakeLog(), opts);
 
         await service.GenerateAsync(1, "c", "draw", ImageTier.Spontaneous, CancellationToken.None);
-        Assert.Equal("gpt-image-1-mini", gen.CapturedModel);
+        Assert.Equal("gpt-image-2", gen.CapturedModel);
 
         await service.GenerateAsync(1, "c", "draw", ImageTier.Commissioned, CancellationToken.None);
         Assert.Equal("gpt-image-2", gen.CapturedModel);

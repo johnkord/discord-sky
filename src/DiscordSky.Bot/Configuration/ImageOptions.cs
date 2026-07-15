@@ -18,24 +18,14 @@ public sealed class ImageOptions
     /// </summary>
     public string ProviderName { get; set; } = "OpenAI";
 
-    /// <summary>GPT Image model. <c>gpt-image-1-mini</c> is cheapest; <c>gpt-image-2</c> is best quality.</summary>
-    public string Model { get; set; } = "gpt-image-1-mini";
+    /// <summary>GPT Image model. Runtime policy requires <c>gpt-image-2</c> or a newer non-mini generation.</summary>
+    public string Model { get; set; } = "gpt-image-2";
 
     /// <summary>Square or portrait/landscape, "WxH". gpt-image supports 1024x1024, 1536x1024, 1024x1536.</summary>
     public string Size { get; set; } = "1024x1024";
 
-    /// <summary>low | medium | high | auto. Defaults low for cost and latency.</summary>
-    public string Quality { get; set; } = "low";
-
-    /// <summary>
-    /// Model for spontaneous/ambient images, where speed matters more than fidelity (nobody is waiting on an
-    /// unsolicited image). Defaults to the fast mini model so surprises render in ~10s instead of ~70s.
-    /// Explicit requests (command, direct-reply, "draw me ...") use <see cref="Model"/> / <see cref="Quality"/>.
-    /// </summary>
-    public string SpontaneousModel { get; set; } = "gpt-image-1-mini";
-
-    /// <summary>Quality tier for spontaneous/ambient images. Defaults low for speed.</summary>
-    public string SpontaneousQuality { get; set; } = "low";
+    /// <summary>low | medium | high | auto. Medium is the minimum production default for visible quality.</summary>
+    public string Quality { get; set; } = "medium";
 
     /// <summary>png | jpeg | webp. jpeg is faster and cheaper to ship to Discord.</summary>
     public string OutputFormat { get; set; } = "jpeg";

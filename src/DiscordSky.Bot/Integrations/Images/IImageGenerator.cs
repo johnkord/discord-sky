@@ -11,8 +11,37 @@ public enum ImageTier
 {
     /// <summary>Explicit request (command, direct reply, "draw me ..."): quality model, person opted into the wait.</summary>
     Commissioned,
-    /// <summary>Spontaneous/ambient surprise: fast model, because a slow unsolicited image is a dead one.</summary>
+    /// <summary>Spontaneous/ambient surprise. Kept for budgets and telemetry, never for a model downgrade.</summary>
     Spontaneous,
+}
+
+internal static class ImageModelPolicy
+{
+    private const string Prefix = "gpt-image-";
+
+    public static bool IsApproved(string? model)
+    {
+        if (string.IsNullOrWhiteSpace(model)
+            || !model.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase)
+            || model.Contains("mini", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var versionAndSuffix = model.AsSpan(Prefix.Length);
+        var separator = versionAndSuffix.IndexOf('-');
+        var version = separator >= 0 ? versionAndSuffix[..separator] : versionAndSuffix;
+        return int.TryParse(version, out var major) && major >= 2;
+    }
+
+    public static void EnsureApproved(string? model)
+    {
+        if (!IsApproved(model))
+        {
+            throw new InvalidOperationException(
+                $"Image model '{model ?? "<null>"}' is prohibited. Configure gpt-image-2 or a newer non-mini model.");
+        }
+    }
 }
 
 /// <summary>Per-request image parameters, resolved from <see cref="ImageOptions"/> at call time.</summary>
@@ -20,9 +49,9 @@ public sealed record ImageRequestOptions(string Model, string Size, string Quali
 {
     public static ImageRequestOptions FromConfig(ImageOptions o, ImageTier tier = ImageTier.Commissioned)
     {
-        var (model, quality) = tier == ImageTier.Spontaneous
-            ? (o.SpontaneousModel, o.SpontaneousQuality)
-            : (o.Model, o.Quality);
+        ImageModelPolicy.EnsureApproved(o.Model);
+        var model = o.Model;
+        var quality = o.Quality;
 
         // The high-quality tier is gated: clamp to medium unless explicitly allowed.
         if (!o.AllowHighQuality && string.Equals(quality, "high", StringComparison.OrdinalIgnoreCase))
@@ -187,18 +216,8 @@ internal static class ImageCost
 {
     public static double Estimate(string model, string quality)
     {
-        var m = (model ?? string.Empty).ToLowerInvariant();
+        ImageModelPolicy.EnsureApproved(model);
         var q = (quality ?? string.Empty).ToLowerInvariant();
-
-        if (m.Contains("mini"))
-        {
-            return q switch { "low" => 0.005, "medium" => 0.011, "high" => 0.036, _ => 0.011 };
-        }
-        if (m.Contains("image-2") || m.Contains("image-1.5"))
-        {
-            return q switch { "low" => 0.006, "medium" => 0.05, "high" => 0.21, _ => 0.05 };
-        }
-        // gpt-image-1 and unknown models.
-        return q switch { "low" => 0.011, "medium" => 0.042, "high" => 0.167, _ => 0.042 };
+        return q switch { "low" => 0.006, "medium" => 0.05, "high" => 0.21, _ => 0.05 };
     }
 }

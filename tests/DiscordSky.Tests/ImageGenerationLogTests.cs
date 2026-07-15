@@ -25,7 +25,7 @@ public sealed class ImageGenerationLogTests : IDisposable
             NullLogger<FileBackedImageGenerationLog>.Instance);
 
     private static ImageGenerationRecord Record(DateTimeOffset ts, string outcome, double cost) =>
-        new(ts, "general", "userhash", "gpt-image-1-mini", "1024x1024", "low", cost, 1234, outcome);
+        new(ts, "general", "userhash", "gpt-image-2", "1024x1024", "medium", cost, 1234, outcome);
 
     [Fact]
     public void CountSuccessesOnUtcDay_CountsOnlyOkOutcomes()
