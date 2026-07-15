@@ -7,6 +7,12 @@ namespace DiscordSky.Tests;
 
 public class CreativeOrchestratorTests
 {
+    private static readonly IReadOnlyDictionary<ulong, ChannelMessage> KnownMessages =
+        new Dictionary<ulong, ChannelMessage>
+        {
+            [100] = new() { MessageId = 100, Author = "older", Content = "older context" },
+        };
+
     [Fact]
     public void BuildEmptyResponsePlaceholder_CommandInvocation_ReturnsPersonaNotice()
     {
@@ -110,4 +116,107 @@ public class CreativeOrchestratorTests
         Assert.False(CreativeOrchestrator.IsImageDataError(
             new ClientResultException("HTTP 500 (server_error) something else")));
     }
+
+    [Theory]
+    [InlineData(CreativeInvocationKind.DirectReply, "broadcast", 100UL, 999UL)]
+    [InlineData(CreativeInvocationKind.Mention, "broadcast", 100UL, 999UL)]
+    [InlineData(CreativeInvocationKind.Ambient, "reply", 100UL, 999UL)]
+    [InlineData(CreativeInvocationKind.Ambient, "broadcast", 100UL, null)]
+    [InlineData(CreativeInvocationKind.Command, "reply", 100UL, 100UL)]
+    [InlineData(CreativeInvocationKind.Command, "reply", 777UL, null)]
+    public void ResolveReplyTarget_EnforcesInvocationOwnership(
+        CreativeInvocationKind kind,
+        string mode,
+        ulong? modelTarget,
+        ulong? expected)
+    {
+        var request = new CreativeRequest(
+            "Robotnik",
+            "topic",
+            "user",
+            1,
+            2,
+            3,
+            DateTimeOffset.UtcNow,
+            kind,
+            TriggerMessageId: 999);
+
+        var actual = CreativeOrchestrator.ResolveReplyTarget(request, mode, modelTarget, KnownMessages);
+
+        Assert.Equal(expected, actual);
+    }
+
+    [Theory]
+    [InlineData(true, CreativeInvocationKind.Ambient, CreativeActionMode.ImageRequired, true)]
+    [InlineData(true, CreativeInvocationKind.Ambient, CreativeActionMode.TextOnly, false)]
+    [InlineData(true, CreativeInvocationKind.DirectReply, CreativeActionMode.Auto, true)]
+    [InlineData(false, CreativeInvocationKind.Ambient, CreativeActionMode.ImageRequired, false)]
+    public void ImageToolExposure_FollowsSelectedAction(
+        bool enabled,
+        CreativeInvocationKind invocationKind,
+        CreativeActionMode actionMode,
+        bool expected)
+    {
+        Assert.Equal(expected, CreativeOrchestrator.ShouldOfferImageTool(enabled, invocationKind, actionMode));
+    }
+
+    [Fact]
+    public void RequiredImage_CannotCompleteAsProseOnly()
+    {
+        Assert.False(CreativeOrchestrator.CanCompleteRequiredImage(CreativeActionMode.ImageRequired, null));
+        Assert.False(CreativeOrchestrator.CanCompleteRequiredImage(CreativeActionMode.ImageRequired, []));
+        Assert.True(CreativeOrchestrator.CanCompleteRequiredImage(CreativeActionMode.ImageRequired, [1]));
+        Assert.True(CreativeOrchestrator.CanCompleteRequiredImage(CreativeActionMode.TextOnly, null));
+    }
+
+    [Theory]
+    [InlineData(CreativeInvocationKind.DirectReply, 123UL)]
+    [InlineData(CreativeInvocationKind.Mention, 123UL)]
+    [InlineData(CreativeInvocationKind.Command, null)]
+    [InlineData(CreativeInvocationKind.Ambient, null)]
+    public void ProviderFallback_PreservesDeterministicExplicitTarget(
+        CreativeInvocationKind invocationKind,
+        ulong? expectedTarget)
+    {
+        var request = Request(invocationKind, triggerMessageId: 123);
+
+        var result = CreativeOrchestrator.BuildProviderFallback(request, "fallback");
+
+        Assert.Equal(expectedTarget, result.ReplyToMessageId);
+        Assert.Equal("fallback", result.PrimaryMessage);
+    }
+
+    [Fact]
+    public void ProviderFallback_DeliversCompletedRequiredImageButSuppressesMissingImage()
+    {
+        var request = Request(
+            CreativeInvocationKind.Ambient,
+            triggerMessageId: 123,
+            actionMode: CreativeActionMode.ImageRequired);
+
+        var completed = CreativeOrchestrator.BuildProviderFallback(request, "provider prose", [1], "image.jpg");
+        var missing = CreativeOrchestrator.BuildProviderFallback(request, "provider prose");
+
+        Assert.Equal("Behold.", completed.PrimaryMessage);
+        Assert.Equal((ulong)123, completed.ReplyToMessageId);
+        Assert.NotNull(completed.AttachmentBytes);
+        Assert.Equal(string.Empty, missing.PrimaryMessage);
+        Assert.Null(missing.AttachmentBytes);
+    }
+
+    private static CreativeRequest Request(
+        CreativeInvocationKind invocationKind,
+        ulong? triggerMessageId,
+        CreativeActionMode actionMode = CreativeActionMode.Auto) =>
+        new(
+            "Robotnik",
+            "topic",
+            "user",
+            1,
+            2,
+            3,
+            DateTimeOffset.UtcNow,
+            invocationKind,
+            TriggerMessageId: triggerMessageId,
+            ActionMode: actionMode);
 }

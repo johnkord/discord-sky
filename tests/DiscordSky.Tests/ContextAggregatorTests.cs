@@ -127,4 +127,17 @@ public class ContextAggregatorTests
         Assert.Null(ContextAggregator.BuildJudgeMediaContext(
             Array.Empty<IAttachment>(), Array.Empty<UnfurledLink>(), Array.Empty<ChannelImage>()));
     }
+
+    [Fact]
+    public void CombineMediaContext_PreservesMetadataAndMarksSummaryUntrusted()
+    {
+        var result = ContextAggregator.CombineMediaContext(
+            "Attachments: meme.png (image/png)",
+            "Robotnik points at a misspelled warning sign.");
+
+        Assert.Contains("Attachments: meme.png", result);
+        Assert.Contains("Visual summary", result);
+        Assert.Contains("untrusted", result);
+        Assert.Contains("misspelled warning sign", result);
+    }
 }

@@ -59,7 +59,18 @@ public sealed record TelemetryEvent(
     [property: JsonPropertyName("baseline_outcome")] string? BaselineOutcome = null,
     [property: JsonPropertyName("baseline_score")] double? BaselineScore = null,
     [property: JsonPropertyName("evaluation_id")] string? EvaluationId = null,
-    [property: JsonPropertyName("opportunity_at")] DateTimeOffset? OpportunityAt = null
+    [property: JsonPropertyName("opportunity_at")] DateTimeOffset? OpportunityAt = null,
+    [property: JsonPropertyName("workload")] string? Workload = null,
+    [property: JsonPropertyName("input_tokens")] long? InputTokens = null,
+    [property: JsonPropertyName("output_tokens")] long? OutputTokens = null,
+    [property: JsonPropertyName("cached_input_tokens")] long? CachedInputTokens = null,
+    [property: JsonPropertyName("reasoning_tokens")] long? ReasoningTokens = null,
+    [property: JsonPropertyName("total_tokens")] long? TotalTokens = null,
+    [property: JsonPropertyName("response_id")] string? ResponseId = null,
+    [property: JsonPropertyName("finish_reason")] string? FinishReason = null,
+    [property: JsonPropertyName("failure_class")] string? FailureClass = null,
+    [property: JsonPropertyName("visual_worth")] double? VisualWorth = null,
+    [property: JsonPropertyName("visual_hook")] string? VisualHook = null
 );
 
 /// <summary>Canonical event-type string constants. Use these instead of string literals at call sites.</summary>
@@ -84,6 +95,7 @@ public static class TelemetryEventTypes
     public const string ColdOpen = "cold_open";
     public const string ColdOpenCritique = "cold_open_critique";
     public const string ColdOpenProviderShadow = "cold_open_provider_shadow";
+    public const string LlmCall = "llm_call";
 }
 
 /// <summary>Test/CI default. Discards events.</summary>

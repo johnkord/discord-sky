@@ -83,6 +83,38 @@ public sealed class ImageGenerationLogTests : IDisposable
     }
 
     [Fact]
+    public void AmbientVisualQueries_CountOnlyMatchingSuccessfulGuildSource()
+    {
+        var log = Build();
+        var early = new DateTimeOffset(2026, 6, 25, 10, 0, 0, TimeSpan.Zero);
+        var late = early.AddHours(2);
+        log.Record(Record(early, ImageGenerationRecord.OutcomeOk, 0.005) with
+        {
+            Source = ImageGenerationContext.SourceAmbientVisual,
+            GuildId = 42,
+        });
+        log.Record(Record(late, ImageGenerationRecord.OutcomeOk, 0.005) with
+        {
+            Source = "image_command",
+            GuildId = 42,
+        });
+        log.Record(Record(late, ImageGenerationRecord.OutcomeOk, 0.005) with
+        {
+            Source = ImageGenerationContext.SourceAmbientVisual,
+            GuildId = 99,
+        });
+        log.Record(Record(late, ImageGenerationRecord.OutcomeError, 0.0) with
+        {
+            Source = ImageGenerationContext.SourceAmbientVisual,
+            GuildId = 42,
+        });
+
+        Assert.Equal(1, log.CountSuccessfulAmbientVisualsOnUtcDay(
+            DateOnly.FromDateTime(early.UtcDateTime), 42));
+        Assert.Equal(early, log.LastSuccessfulAmbientVisualAt(42));
+    }
+
+    [Fact]
     public void ReadBack_ToleratesTornOrGarbageLines()
     {
         var log = Build();

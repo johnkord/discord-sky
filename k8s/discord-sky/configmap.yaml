@@ -81,6 +81,7 @@ data:
   # gate already limits fires to ~2-3/day on its own. Generous shadow-harvest caps were pulled back for live.
   ColdOpen__MaxPerDay: "3"
   ColdOpen__CooldownMinutes: "180"
+  ColdOpen__HookCooldownMinutes: "1440"
   ColdOpen__JudgeCooldownMinutes: "20"
   # Telemetry sink path. MUST live inside the PVC mount; the PVC is mounted at
   # /app/data/user_memories so we nest telemetry there. Without this override the
@@ -147,7 +148,11 @@ data:
   Image__MaxConcurrent: "20"
   Image__MonthlyUsdGuard: "200"
   Image__AllowHighQuality: "false"
-  Image__AmbientChance: "0.25"
+  Image__AmbientVisualEnabled: "true"
+  Image__AmbientVisualWorthThreshold: "0.72"
+  Image__AmbientVisualMinLead: "0.05"
+  Image__AmbientVisualMaxPerGuildPerDay: "1"
+  Image__AmbientVisualCooldownHours: "6"
   Image__BaseDirectory: "/app/data/user_memories/images"
   Image__RetentionDays: "60"
   # Scam-link guard: proactive in-character warnings on obvious phishing/crypto-scam links.

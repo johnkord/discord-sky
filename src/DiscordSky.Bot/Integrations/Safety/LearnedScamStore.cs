@@ -28,6 +28,8 @@ public sealed class LearnedScamStore
 
     public IReadOnlyCollection<string> Hosts => _snapshot.Hosts;
 
+    public event Action? Changed;
+
     public bool AddPhrase(string phrase) => Add(phrase, isHost: false);
 
     public bool AddHost(string host) => Add(host, isHost: true);
@@ -63,8 +65,11 @@ public sealed class LearnedScamStore
             target.Add(normalized);
             _snapshot = new Snapshot(phrases, hosts);
             Save();
-            return true;
         }
+
+        try { Changed?.Invoke(); }
+        catch (Exception ex) { _logger.LogDebug(ex, "Learned-scam store: change notification failed."); }
+        return true;
     }
 
     private void Load()

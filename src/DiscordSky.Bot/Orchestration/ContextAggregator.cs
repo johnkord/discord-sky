@@ -23,6 +23,7 @@ public sealed class ContextAggregator
     private readonly int _replyChainDepth;
     private readonly bool _includeOwnMessagesInHistory;
     private readonly bool _enableLinkUnfurling;
+    private readonly MediaSemanticCache? _mediaSemantics;
     private ulong? _botUserId;
 
     private static readonly string[] ImageExtensions =
@@ -42,10 +43,12 @@ public sealed class ContextAggregator
     public ContextAggregator(
         IOptions<BotOptions> botOptions,
         ILinkUnfurler linkUnfurler,
-        ILogger<ContextAggregator> logger)
+        ILogger<ContextAggregator> logger,
+        MediaSemanticCache? mediaSemantics = null)
     {
         _logger = logger;
         _linkUnfurler = linkUnfurler;
+        _mediaSemantics = mediaSemantics;
 
         var bot = botOptions.Value;
         _commandPrefix = bot.CommandPrefix ?? string.Empty;
@@ -97,7 +100,26 @@ public sealed class ContextAggregator
             httpLinks = await _linkUnfurler.UnfurlAsync(text, message.Timestamp, cancellationToken);
         }
         var links = MergeUnfurledLinks(httpLinks, embedLinks);
-        return new SemanticMessageView(text, BuildJudgeMediaContext(message.Attachments, links, images), links, images);
+        var deterministicContext = BuildJudgeMediaContext(message.Attachments, links, images);
+        var visualImages = images
+            .Concat(links.SelectMany(link => link.Images))
+            .DistinctBy(image => image.Url.ToString(), StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var visual = _mediaSemantics is null
+            ? MediaSemanticResult.None
+            : await _mediaSemantics.DescribeAsync(
+                message.Id, message.Timestamp, deterministicContext, visualImages, cancellationToken);
+        var mediaContext = CombineMediaContext(deterministicContext, visual.Summary);
+        return new SemanticMessageView(
+            text,
+            mediaContext,
+            links,
+            images,
+            message.Id,
+            message.Timestamp,
+            message.Attachments.Count > 0 || links.Count > 0 || visualImages.Length > 0,
+            visual.Summary,
+            visual.Analyzed);
     }
 
     /// <summary>Renders media/link evidence into bounded untrusted text suitable for cheap decision models.</summary>
@@ -130,6 +152,15 @@ public sealed class ContextAggregator
 
         var result = string.Join("\n", lines);
         return result.Length <= maxChars ? result : result[..maxChars];
+    }
+
+    internal static string? CombineMediaContext(string? deterministicContext, string? visualSummary)
+    {
+        if (string.IsNullOrWhiteSpace(visualSummary)) return deterministicContext;
+        var visual = $"Visual summary (untrusted, model-derived): {visualSummary}";
+        return string.IsNullOrWhiteSpace(deterministicContext)
+            ? visual
+            : $"{deterministicContext}\n{visual}";
     }
 
     private async Task<IReadOnlyList<ChannelMessage>> GatherHistoryAsync(SocketCommandContext commandContext, CancellationToken cancellationToken)

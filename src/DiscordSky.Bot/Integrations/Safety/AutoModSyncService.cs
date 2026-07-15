@@ -43,15 +43,19 @@ public sealed class AutoModSyncService : IHostedService, IDisposable
         }
 
         _client.Ready += OnReadyAsync;
+        if (_learned is not null) _learned.Changed += OnLearnedChanged;
         return Task.CompletedTask;
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
         _client.Ready -= OnReadyAsync;
+        if (_learned is not null) _learned.Changed -= OnLearnedChanged;
         _timer?.Change(Timeout.Infinite, Timeout.Infinite);
         return Task.CompletedTask;
     }
+
+    private void OnLearnedChanged() => _ = Task.Run(ReconcileAllAsync);
 
     private Task OnReadyAsync()
     {
@@ -229,11 +233,18 @@ public sealed class AutoModSyncService : IHostedService, IDisposable
             props.AllowList = plan.AllowList.ToArray();
             props.Actions = actions.ToArray();
             props.Enabled = true;
-            if (exemptChannelIds.Length > 0)
-            {
-                props.ExemptChannels = exemptChannelIds;
-            }
+            props.ExemptRoles = Array.Empty<ulong>();
+            props.ExemptChannels = exemptChannelIds;
         }
+
+        var desired = AutoModRuleSnapshot.CreateDesired(
+            ruleName,
+            AutoModTriggerType.Keyword,
+            actions,
+            exemptChannelIds,
+            plan.Keywords,
+            plan.RegexPatterns,
+            plan.AllowList);
 
         var blocks = actions.Any(a => a.Type == AutoModActionType.BlockMessage);
         if (existing is null)
@@ -243,13 +254,17 @@ public sealed class AutoModSyncService : IHostedService, IDisposable
                 "automod_synced action=created guild={Guild} rule={Rule} tier={Tier} keywords={Keywords} regex={Regex} block={Block}",
                 guild.Name, ruleName, tier, plan.Keywords.Count, plan.RegexPatterns.Count, blocks);
         }
-        else
+        else if (!desired.SemanticallyEquals(AutoModRuleSnapshot.From(existing)))
         {
             await existing.ModifyAsync(Apply);
             _logger.LogInformation(
                 "automod_synced action=updated guild={Guild} rule={Rule} tier={Tier} keywords={Keywords} regex={Regex} block={Block}",
                 guild.Name, ruleName, tier, plan.Keywords.Count, plan.RegexPatterns.Count, blocks);
         }
+            else
+            {
+                _logger.LogDebug("automod_synced action=unchanged guild={Guild} rule={Rule} tier={Tier}", guild.Name, ruleName, tier);
+            }
 
         return true;
     }
@@ -273,11 +288,17 @@ public sealed class AutoModSyncService : IHostedService, IDisposable
             props.MentionRaidProtectionEnabled = true;
             props.Actions = actions.ToArray();
             props.Enabled = true;
-            if (exemptChannelIds.Length > 0)
-            {
-                props.ExemptChannels = exemptChannelIds;
-            }
+            props.ExemptRoles = Array.Empty<ulong>();
+            props.ExemptChannels = exemptChannelIds;
         }
+
+        var desired = AutoModRuleSnapshot.CreateDesired(
+            ruleName,
+            AutoModTriggerType.MentionSpam,
+            actions,
+            exemptChannelIds,
+            mentionLimit: limit,
+            mentionRaidProtectionEnabled: true);
 
         try
         {
@@ -286,10 +307,14 @@ public sealed class AutoModSyncService : IHostedService, IDisposable
                 await guild.CreateAutoModRuleAsync(Apply);
                 _logger.LogInformation("automod_synced action=created guild={Guild} rule={Rule} tier=mentions limit={Limit} raidProtection=True", guild.Name, ruleName, limit);
             }
-            else
+            else if (!desired.SemanticallyEquals(AutoModRuleSnapshot.From(existing)))
             {
                 await existing.ModifyAsync(Apply);
                 _logger.LogInformation("automod_synced action=updated guild={Guild} rule={Rule} tier=mentions limit={Limit} raidProtection=True", guild.Name, ruleName, limit);
+            }
+            else
+            {
+                _logger.LogDebug("automod_synced action=unchanged guild={Guild} rule={Rule} tier=mentions", guild.Name, ruleName);
             }
         }
         catch (Exception ex)
@@ -319,11 +344,15 @@ public sealed class AutoModSyncService : IHostedService, IDisposable
             props.EventType = AutoModEventType.MessageSend;
             props.Actions = actions.ToArray();
             props.Enabled = true;
-            if (exemptChannelIds.Length > 0)
-            {
-                props.ExemptChannels = exemptChannelIds;
-            }
+            props.ExemptRoles = Array.Empty<ulong>();
+            props.ExemptChannels = exemptChannelIds;
         }
+
+        var desired = AutoModRuleSnapshot.CreateDesired(
+            ruleName,
+            AutoModTriggerType.Spam,
+            actions,
+            exemptChannelIds);
 
         try
         {
@@ -332,10 +361,14 @@ public sealed class AutoModSyncService : IHostedService, IDisposable
                 await guild.CreateAutoModRuleAsync(Apply);
                 _logger.LogInformation("automod_synced action=created guild={Guild} rule={Rule} tier=spam", guild.Name, ruleName);
             }
-            else
+            else if (!desired.SemanticallyEquals(AutoModRuleSnapshot.From(existing)))
             {
                 await existing.ModifyAsync(Apply);
                 _logger.LogInformation("automod_synced action=updated guild={Guild} rule={Rule} tier=spam", guild.Name, ruleName);
+            }
+            else
+            {
+                _logger.LogDebug("automod_synced action=unchanged guild={Guild} rule={Rule} tier=spam", guild.Name, ruleName);
             }
         }
         catch (Exception ex)

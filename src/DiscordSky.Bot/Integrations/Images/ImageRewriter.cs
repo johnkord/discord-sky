@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Memory.Logging;
 using DiscordSky.Bot.Memory.Scoring;
 using DiscordSky.Bot.Models.Orchestration;
 using DiscordSky.Bot.Orchestration;
@@ -43,7 +44,8 @@ public sealed class ImageRewriter
 
     public async Task<ImageRewrite> RewriteAsync(
         string persona, string userRequest, string requesterDisplayName,
-        IReadOnlyList<UserMemory>? memories, string? replyContext, CancellationToken cancellationToken)
+        IReadOnlyList<UserMemory>? memories, string? replyContext, CancellationToken cancellationToken,
+        ulong? triggerMessageId = null)
     {
         try
         {
@@ -63,6 +65,7 @@ public sealed class ImageRewriter
                 MaxOutputTokens = 2500,
             };
             profile.ApplyReasoning(options);
+            LlmCallTelemetry.Tag(options, "image_rewrite", profile, triggerMessageId);
 
             var response = await _chatClient.GetResponseAsync(messages, options, cancellationToken);
             var rewrite = Parse(response.Text);

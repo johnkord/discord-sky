@@ -1,3 +1,4 @@
+using Discord;
 using DiscordSky.Bot.Integrations.Safety;
 
 namespace DiscordSky.Tests;
@@ -52,5 +53,73 @@ public sealed class AutoModRuleBuilderTests
     {
         Assert.NotEmpty(ScamLinkDetector.BuiltInScamPhrases);
         Assert.Contains("dlscord", ScamLinkDetector.BuiltInLookalikePattern);
+    }
+
+    [Fact]
+    public void RuleSnapshot_SameSemanticStateDifferentOrder_IsEqual()
+    {
+        var first = AutoModRuleSnapshot.CreateDesired(
+            "sky-scamguard-block",
+            AutoModTriggerType.Keyword,
+            new AutoModRuleActionProperties[]
+            {
+                new() { Type = AutoModActionType.SendAlertMessage, ChannelId = 42 },
+                new() { Type = AutoModActionType.BlockMessage, CustomMessage = "No." },
+            },
+            new ulong[] { 3, 2 },
+            new[] { "*evil.example*", "*bad.example*" },
+            new[] { "(?i)dlscord", "(?i)nitro" });
+        var reordered = AutoModRuleSnapshot.CreateDesired(
+            "sky-scamguard-block",
+            AutoModTriggerType.Keyword,
+            new AutoModRuleActionProperties[]
+            {
+                new() { Type = AutoModActionType.BlockMessage, CustomMessage = "No." },
+                new() { Type = AutoModActionType.SendAlertMessage, ChannelId = 42 },
+            },
+            new ulong[] { 2, 3 },
+            new[] { "*bad.example*", "*evil.example*" },
+            new[] { "(?i)nitro", "(?i)dlscord" });
+
+        Assert.True(first.SemanticallyEquals(reordered));
+    }
+
+    [Theory]
+    [InlineData(5, true, 42, "No.", true)]
+    [InlineData(6, true, 42, "No.", false)]
+    [InlineData(5, false, 42, "No.", false)]
+    [InlineData(5, true, 43, "No.", false)]
+    [InlineData(5, true, 42, "Changed", false)]
+    public void RuleSnapshot_DetectsManagedDrift(
+        int mentionLimit,
+        bool raidProtection,
+        ulong alertChannel,
+        string customMessage,
+        bool expected)
+    {
+        var desired = AutoModRuleSnapshot.CreateDesired(
+            "sky-scamguard-mentions",
+            AutoModTriggerType.MentionSpam,
+            new AutoModRuleActionProperties[]
+            {
+                new() { Type = AutoModActionType.SendAlertMessage, ChannelId = 42 },
+                new() { Type = AutoModActionType.BlockMessage, CustomMessage = "No." },
+            },
+            new ulong[] { 2 },
+            mentionLimit: 5,
+            mentionRaidProtectionEnabled: true);
+        var current = AutoModRuleSnapshot.CreateDesired(
+            "sky-scamguard-mentions",
+            AutoModTriggerType.MentionSpam,
+            new AutoModRuleActionProperties[]
+            {
+                new() { Type = AutoModActionType.SendAlertMessage, ChannelId = alertChannel },
+                new() { Type = AutoModActionType.BlockMessage, CustomMessage = customMessage },
+            },
+            new ulong[] { 2 },
+            mentionLimit: mentionLimit,
+            mentionRaidProtectionEnabled: raidProtection);
+
+        Assert.Equal(expected, desired.SemanticallyEquals(current));
     }
 }

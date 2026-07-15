@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Memory.Logging;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -56,6 +57,12 @@ public sealed class ColdOpenComposer
 
     /// <summary>Judges worth and, if he would speak, drafts the line. Null on a decline, an empty draft, or any failure.</summary>
     public async Task<ColdOpenDraft?> ComposeAsync(ColdOpenContext context, CancellationToken cancellationToken)
+        => await ComposeAsync(context, null, cancellationToken);
+
+    public async Task<ColdOpenDraft?> ComposeAsync(
+        ColdOpenContext context,
+        string? evaluationId,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -69,6 +76,7 @@ public sealed class ColdOpenComposer
                 MaxOutputTokens = 900,
             };
             profile.ApplyReasoning(options);
+            LlmCallTelemetry.Tag(options, "cold_open", profile, evaluationId: evaluationId);
 
             var response = await _chatClient.GetResponseAsync(messages, options, cancellationToken);
             var draft = ParseDraft(response.Text);

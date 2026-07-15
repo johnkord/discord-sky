@@ -20,12 +20,25 @@ public sealed record ImageGenerationRecord(
     [property: JsonPropertyName("quality")] string Quality,
     [property: JsonPropertyName("est_cost_usd")] double EstCostUsd,
     [property: JsonPropertyName("latency_ms")] long LatencyMs,
-    [property: JsonPropertyName("outcome")] string Outcome)
+    [property: JsonPropertyName("outcome")] string Outcome,
+    [property: JsonPropertyName("source")] string? Source = null,
+    [property: JsonPropertyName("invocation_kind")] string? InvocationKind = null,
+    [property: JsonPropertyName("tier")] string? Tier = null,
+    [property: JsonPropertyName("trigger_message_id")] ulong? TriggerMessageId = null,
+    [property: JsonPropertyName("opportunity_id")] string? OpportunityId = null,
+    [property: JsonPropertyName("tool_offered")] bool? ToolOffered = null,
+    [property: JsonPropertyName("tool_selected")] bool? ToolSelected = null,
+    [property: JsonPropertyName("visual_worth")] double? VisualWorth = null,
+    [property: JsonPropertyName("reason")] string? Reason = null,
+    [property: JsonPropertyName("guild_id")] ulong? GuildId = null)
 {
     public const string OutcomeOk = "ok";
     public const string OutcomeRefused = "refused";
     public const string OutcomeModerationBlocked = "moderation_blocked";
     public const string OutcomeError = "error";
+    public const string OutcomeCancelled = "cancelled";
+    public const string OutcomeNotOffered = "not_offered";
+    public const string OutcomeNotSelected = "not_selected";
 }
 
 /// <summary>
@@ -44,6 +57,10 @@ public interface IImageGenerationLog
 
     /// <summary>Sum of estimated cost of successful generations in the UTC month containing <paramref name="now"/>.</summary>
     double SumSuccessCostInUtcMonth(DateTimeOffset now);
+
+    int CountSuccessfulAmbientVisualsOnUtcDay(DateOnly utcDay, ulong guildId) => 0;
+
+    DateTimeOffset? LastSuccessfulAmbientVisualAt(ulong guildId) => null;
 }
 
 /// <summary>Default used in tests and when image generation is disabled. Records nothing, counts nothing.</summary>
@@ -126,6 +143,35 @@ public sealed class FileBackedImageGenerationLog : IImageGenerationLog, IHostedS
         }
         return sum;
     }
+
+    public int CountSuccessfulAmbientVisualsOnUtcDay(DateOnly utcDay, ulong guildId)
+    {
+        var path = Path.Combine(_options.BaseDirectory, $"{FilePrefix}{utcDay:yyyy-MM-dd}.jsonl");
+        return ReadRecords(path).Count(record => IsSuccessfulAmbientVisual(record, guildId));
+    }
+
+    public DateTimeOffset? LastSuccessfulAmbientVisualAt(ulong guildId)
+    {
+        if (!Directory.Exists(_options.BaseDirectory)) return null;
+        DateTimeOffset? latest = null;
+        foreach (var file in Directory.EnumerateFiles(_options.BaseDirectory, $"{FilePrefix}*.jsonl"))
+        {
+            foreach (var record in ReadRecords(file))
+            {
+                if (IsSuccessfulAmbientVisual(record, guildId)
+                    && (latest is null || record.Timestamp > latest))
+                {
+                    latest = record.Timestamp;
+                }
+            }
+        }
+        return latest;
+    }
+
+    private static bool IsSuccessfulAmbientVisual(ImageGenerationRecord record, ulong guildId) =>
+        record.Outcome == ImageGenerationRecord.OutcomeOk
+        && record.GuildId == guildId
+        && string.Equals(record.Source, ImageGenerationContext.SourceAmbientVisual, StringComparison.Ordinal);
 
     private IEnumerable<ImageGenerationRecord> ReadRecords(string path)
     {

@@ -58,12 +58,20 @@ public sealed class ImageOptions
     /// <summary>When false, a requested <c>high</c> quality is clamped to <c>medium</c>.</summary>
     public bool AllowHighQuality { get; set; } = false;
 
-    /// <summary>
-    /// Probability (0..1) that the model-decided <c>generate_image</c> tool is offered on an ambient
-    /// (unprompted) interjection. Ambient images use the fast/cheap spontaneous tier, so this can be generous
-    /// while staying an occasional surprise. Command and direct-reply turns always offer the tool regardless.
-    /// </summary>
-    public double AmbientChance { get; set; } = 0.25;
+    /// <summary>Whether the ambient impulse judge may select an image instead of prose.</summary>
+    public bool AmbientVisualEnabled { get; set; } = false;
+
+    /// <summary>Minimum visual-worth score required before an unsolicited image can win.</summary>
+    public double AmbientVisualWorthThreshold { get; set; } = 0.72;
+
+    /// <summary>When prose also qualifies, visual worth must exceed prose worth by at least this amount.</summary>
+    public double AmbientVisualMinLead { get; set; } = 0.05;
+
+    /// <summary>Successful unsolicited images allowed per guild per UTC day. Explicit images are separate.</summary>
+    public int AmbientVisualMaxPerGuildPerDay { get; set; } = 1;
+
+    /// <summary>Minimum hours between successful unsolicited images in the same guild.</summary>
+    public double AmbientVisualCooldownHours { get; set; } = 6;
 
     /// <summary>Directory for the durable generation log. Should sit on the PVC so the daily cap survives restarts.</summary>
     public string BaseDirectory { get; set; } = Path.Combine("data", "images");

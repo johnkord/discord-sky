@@ -36,6 +36,9 @@ public sealed class ColdOpenOptions
     /// <summary>Minimum minutes between actual cold opens in a channel.</summary>
     public int CooldownMinutes { get; init; } = 180;
 
+    /// <summary>Minimum minutes before the same normalized hook may fire again in one channel.</summary>
+    public int HookCooldownMinutes { get; init; } = 1440;
+
     /// <summary>Minimum minutes between composer calls in a channel (a cost bound so a long lull does not re-judge every poll).</summary>
     public int JudgeCooldownMinutes { get; init; } = 20;
 

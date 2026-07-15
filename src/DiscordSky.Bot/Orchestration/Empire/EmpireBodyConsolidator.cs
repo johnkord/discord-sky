@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Memory.Logging;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -50,6 +51,7 @@ public sealed class EmpireBodyConsolidator
                 MaxOutputTokens = 2000,
             };
             profile.ApplyReasoning(chatOptions);
+            LlmCallTelemetry.Tag(chatOptions, "empire_consolidation", profile);
             var response = await _chatClient.GetResponseAsync(messages, chatOptions, cancellationToken);
             return Parse(response.Text, state.Body, candidates, options);
         }

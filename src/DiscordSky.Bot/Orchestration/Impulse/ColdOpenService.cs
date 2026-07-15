@@ -4,6 +4,7 @@ using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Memory.Logging;
 using DiscordSky.Bot.Memory.Reception;
 using DiscordSky.Bot.Orchestration.Empire;
+using DiscordSky.Bot.Orchestration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -26,6 +27,7 @@ public sealed class ColdOpenService : IHostedService, IDisposable
         public int FiredToday;
         public DateTimeOffset? LastFiredAt;
         public DateTimeOffset? LastJudgedAt;
+        public Dictionary<string, DateTimeOffset> HookLastFiredAt { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
     private readonly DiscordSocketClient _client;
@@ -39,6 +41,7 @@ public sealed class ColdOpenService : IHostedService, IDisposable
     private readonly ColdOpenCritic? _critic;
     private readonly SentMessageRegistry? _sentMessages;
     private readonly IColdOpenShadowSink? _providerShadow;
+    private readonly ContextAggregator? _contextAggregator;
 
     private readonly SemaphoreSlim _lock = new(1, 1);
     private readonly Dictionary<ulong, ChannelBudget> _budgets = new();
@@ -56,7 +59,8 @@ public sealed class ColdOpenService : IHostedService, IDisposable
         RecentParticipants? recentParticipants = null,
         ColdOpenCritic? critic = null,
         SentMessageRegistry? sentMessages = null,
-        IColdOpenShadowSink? providerShadow = null)
+        IColdOpenShadowSink? providerShadow = null,
+        ContextAggregator? contextAggregator = null)
     {
         _client = client;
         _options = options;
@@ -69,6 +73,7 @@ public sealed class ColdOpenService : IHostedService, IDisposable
         _critic = critic;
         _sentMessages = sentMessages;
         _providerShadow = providerShadow;
+        _contextAggregator = contextAggregator;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -160,10 +165,10 @@ public sealed class ColdOpenService : IHostedService, IDisposable
             if (budget.LastJudgedAt is { } judged && now - judged < judgeCooldown) continue;
             budget.LastJudgedAt = now;
 
-            var recentLines = await GatherRecentLinesAsync(channel);
+            var recentLines = await GatherRecentLinesAsync(channel, now, window, ct);
             var context = BuildContext(recentLines);
             var evaluationId = Guid.NewGuid().ToString("N");
-            var draft = await _composer.ComposeAsync(context, ct);
+            var draft = await _composer.ComposeAsync(context, evaluationId, ct);
             _providerShadow?.TryEnqueue(new ColdOpenShadowOpportunity(
                 EvaluationId: evaluationId,
                 CapturedAt: now,
@@ -177,6 +182,20 @@ public sealed class ColdOpenService : IHostedService, IDisposable
                 Emit("declined", channel.Name, draft?.Hook, draft?.Worth, draft?.Line, recentLines, null, evaluationId, now);
                 _logger.LogInformation("cold_open outcome=declined worth={Worth:F2} channel={Channel}", draft?.Worth ?? 0.0, channel.Name);
                 continue; // a decline does NOT consume the fire cooldown or the daily cap, only the judge cooldown
+            }
+
+            var normalizedHook = NormalizeHook(draft.Hook);
+            var hookCooldown = TimeSpan.FromMinutes(Math.Max(1, opts.HookCooldownMinutes));
+            if (!string.IsNullOrEmpty(normalizedHook)
+                && budget.HookLastFiredAt.TryGetValue(normalizedHook, out var hookLastFiredAt)
+                && IsWithinCooldown(hookLastFiredAt, now, hookCooldown))
+            {
+                Emit("declined", channel.Name, draft.Hook, draft.Worth, draft.Line, recentLines,
+                    "repeated_hook", evaluationId, now);
+                _logger.LogInformation(
+                    "cold_open outcome=declined reason=repeated_hook worth={Worth:F2} hook={Hook} channel={Channel}",
+                    draft.Worth, draft.Hook, channel.Name);
+                continue;
             }
 
             // The critic is advisory and cannot block the line. Audit in the background so a second main-model
@@ -202,6 +221,14 @@ public sealed class ColdOpenService : IHostedService, IDisposable
             // A fire (shadow or live) consumes the daily cap and the fire cooldown, so the shadow cadence mirrors live.
             budget.FiredToday++;
             budget.LastFiredAt = now;
+            if (!string.IsNullOrEmpty(normalizedHook)) budget.HookLastFiredAt[normalizedHook] = now;
+            foreach (var staleHook in budget.HookLastFiredAt
+                .Where(pair => !IsWithinCooldown(pair.Value, now, hookCooldown))
+                .Select(pair => pair.Key)
+                .ToArray())
+            {
+                budget.HookLastFiredAt.Remove(staleHook);
+            }
         }
     }
 
@@ -225,7 +252,7 @@ public sealed class ColdOpenService : IHostedService, IDisposable
     {
         try
         {
-            var critique = await _critic!.ReviewAsync(context, draft, ct);
+            var critique = await _critic!.ReviewAsync(context, draft, evaluationId, ct);
             if (critique is null) return;
 
             var flaw = string.IsNullOrWhiteSpace(critique.Flaw) ? "-" : critique.Flaw;
@@ -262,7 +289,11 @@ public sealed class ColdOpenService : IHostedService, IDisposable
     /// callback to catch. Bounded; the bot's own and other bots' messages are skipped; marked untrusted
     /// downstream. Fail-open to empty, in which case the composer has no hook and should stay silent.
     /// </summary>
-    private async Task<IReadOnlyList<string>> GatherRecentLinesAsync(SocketTextChannel channel)
+    private async Task<IReadOnlyList<string>> GatherRecentLinesAsync(
+        SocketTextChannel channel,
+        DateTimeOffset now,
+        TimeSpan window,
+        CancellationToken cancellationToken)
     {
         const int Fetch = 16;
         const int MaxLines = 8;
@@ -270,17 +301,29 @@ public sealed class ColdOpenService : IHostedService, IDisposable
         try
         {
             var recent = await channel.GetMessagesAsync(Fetch).FlattenAsync();
-            return recent
-                .Where(m => !m.Author.IsBot && !string.IsNullOrWhiteSpace(m.Content))
+            var candidates = recent
+                .Where(m => !m.Author.IsBot
+                    && IsFreshContextLine(m.Timestamp, now, window))
                 .OrderBy(m => m.Timestamp)
                 .TakeLast(MaxLines)
-                .Select(m =>
+                .ToArray();
+            var lines = new List<string>(candidates.Length);
+            foreach (var message in candidates)
+            {
+                var name = (message.Author as SocketGuildUser)?.DisplayName ?? message.Author.Username;
+                var text = message.Content.Replace('\n', ' ').Replace('\r', ' ').Trim();
+                string? mediaContext = null;
+                if (_contextAggregator is not null)
                 {
-                    var name = (m.Author as SocketGuildUser)?.DisplayName ?? m.Author.Username;
-                    var text = m.Content.Replace('\n', ' ').Replace('\r', ' ').Trim();
-                    return text.Length > MaxLineChars ? $"{name}: {text[..MaxLineChars]}" : $"{name}: {text}";
-                })
-                .ToList();
+                    var view = await _contextAggregator.BuildMessageViewAsync(
+                        message, includeHttpUnfurls: false, cancellationToken);
+                    text = view.Text.Replace('\n', ' ').Replace('\r', ' ').Trim();
+                    mediaContext = view.MediaContext?.Replace('\n', ' ').Replace('\r', ' ').Trim();
+                }
+                var line = FormatRecentLine(name, text, mediaContext, MaxLineChars);
+                if (line is not null) lines.Add(line);
+            }
+            return lines;
         }
         catch (Exception ex)
         {
@@ -290,6 +333,55 @@ public sealed class ColdOpenService : IHostedService, IDisposable
     }
 
     private static string GetPersona() => "Robotnik from Adventures of Sonic the Hedgehog";
+
+    internal static bool IsFreshContextLine(DateTimeOffset timestamp, DateTimeOffset now, TimeSpan window) =>
+        timestamp >= now - window && timestamp <= now;
+
+    internal static bool IsWithinCooldown(DateTimeOffset previous, DateTimeOffset now, TimeSpan cooldown) =>
+        now >= previous && now - previous < cooldown;
+
+    internal static string NormalizeHook(string? hook)
+    {
+        if (string.IsNullOrWhiteSpace(hook)) return string.Empty;
+        var normalized = new string(hook
+            .Trim()
+            .ToLowerInvariant()
+            .Select(character => char.IsLetterOrDigit(character) ? character : ' ')
+            .ToArray());
+        return string.Join(' ', normalized.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    internal static string? FormatRecentLine(
+        string name,
+        string? text,
+        string? mediaContext,
+        int maxPayloadChars = 200)
+    {
+        text = text?.ReplaceLineEndings(" ").Trim();
+        mediaContext = mediaContext?.ReplaceLineEndings(" ").Trim();
+        if (string.IsNullOrWhiteSpace(text) && string.IsNullOrWhiteSpace(mediaContext)) return null;
+
+        string payload;
+        if (string.IsNullOrWhiteSpace(mediaContext))
+        {
+            payload = text!;
+        }
+        else if (string.IsNullOrWhiteSpace(text))
+        {
+            payload = $"[media: {mediaContext}]";
+        }
+        else
+        {
+            var textLimit = Math.Max(1, maxPayloadChars / 2);
+            var boundedText = text.Length <= textLimit ? text : text[..textLimit];
+            var mediaLimit = Math.Max(1, maxPayloadChars - boundedText.Length - " [media: ]".Length);
+            var boundedMedia = mediaContext.Length <= mediaLimit ? mediaContext : mediaContext[..mediaLimit];
+            payload = $"{boundedText} [media: {boundedMedia}]";
+        }
+
+        if (payload.Length > maxPayloadChars) payload = payload[..maxPayloadChars];
+        return $"{name}: {payload}";
+    }
 
     private SocketTextChannel? ResolveChannel(ColdOpenChannel target)
     {
@@ -336,7 +428,7 @@ public sealed class ColdOpenService : IHostedService, IDisposable
     }
 
     private void Emit(string outcome, string channel, string? hook, double? worth, string? line,
-        IReadOnlyList<string>? roomLines, ColdOpenCritique? critique, string evaluationId, DateTimeOffset opportunityAt)
+        IReadOnlyList<string>? roomLines, string? reason, string evaluationId, DateTimeOffset opportunityAt)
     {
         _telemetry.Emit(new TelemetryEvent(
             Timestamp: DateTimeOffset.UtcNow,
@@ -346,7 +438,7 @@ public sealed class ColdOpenService : IHostedService, IDisposable
             Outcome: outcome,
             TopScore: worth,
             Note: string.IsNullOrWhiteSpace(line) ? null : line,
-            Reason: critique is null ? null : $"critic {critique.Worth:F2} {(string.IsNullOrWhiteSpace(critique.Flaw) ? "-" : critique.Flaw)}",
+            Reason: reason,
             Room: roomLines is { Count: > 0 } ? roomLines : null,
             EvaluationId: evaluationId,
             OpportunityAt: opportunityAt));

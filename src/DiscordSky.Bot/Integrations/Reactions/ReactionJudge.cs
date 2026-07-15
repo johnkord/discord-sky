@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Memory.Logging;
 using DiscordSky.Bot.Memory.Scoring;
 using DiscordSky.Bot.Models.Orchestration;
 using DiscordSky.Bot.Orchestration;
@@ -22,7 +23,8 @@ public sealed record ReactionRequest(
     IReadOnlyList<AllowedEmote> Allowed,
     IReadOnlyList<UserMemory>? AuthorMemories = null,
     IReadOnlyList<string>? RecentEmojis = null,
-    string? MediaContext = null);
+    string? MediaContext = null,
+    ulong? MessageId = null);
 
 /// <summary>The judge's decision: which allowed token to react with, plus a one-line (logged, never posted) rationale.</summary>
 public sealed record ReactionVerdict(string Token, string Rationale);
@@ -103,6 +105,7 @@ public sealed class ReactionJudge
                 MaxOutputTokens = 400,
             };
             profile.ApplyReasoning(options);
+            LlmCallTelemetry.Tag(options, "reaction_judge", profile, request.MessageId);
 
             var response = await _chatClient.GetResponseAsync(messages, options, cancellationToken);
 

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Memory.Logging;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -47,6 +48,13 @@ public sealed class ColdOpenCritic
     /// unchanged, matching the fail-open judges).
     /// </summary>
     public async Task<ColdOpenCritique?> ReviewAsync(ColdOpenContext context, ColdOpenDraft draft, CancellationToken cancellationToken)
+        => await ReviewAsync(context, draft, null, cancellationToken);
+
+    public async Task<ColdOpenCritique?> ReviewAsync(
+        ColdOpenContext context,
+        ColdOpenDraft draft,
+        string? evaluationId,
+        CancellationToken cancellationToken)
     {
         if (draft is null || string.IsNullOrWhiteSpace(draft.Line)) return null;
 
@@ -61,6 +69,7 @@ public sealed class ColdOpenCritic
                 MaxOutputTokens = 1500,
             };
             profile.ApplyReasoning(options);
+            LlmCallTelemetry.Tag(options, "cold_open_critic", profile, evaluationId: evaluationId);
 
             var response = await _chatClient.GetResponseAsync(messages, options, cancellationToken);
             var critique = ParseCritique(response.Text);

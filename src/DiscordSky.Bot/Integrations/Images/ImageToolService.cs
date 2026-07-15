@@ -12,6 +12,21 @@ public sealed record ImageGenerationOutcome(bool Generated, byte[]? Bytes, strin
     public static ImageGenerationOutcome Refused(string refusalText) => new(false, null, null, refusalText);
 }
 
+/// <summary>Non-content metadata that links an image opportunity to the interaction that created it.</summary>
+public sealed record ImageGenerationContext(
+    string Source,
+    string InvocationKind,
+    ulong? TriggerMessageId = null,
+    string? OpportunityId = null,
+    bool? ToolOffered = null,
+    bool? ToolSelected = null,
+    double? VisualWorth = null,
+    ulong? GuildId = null)
+{
+    public const string SourceAmbientVisual = "ambient_visual_impulse";
+    public static readonly ImageGenerationContext Unknown = new("unknown", "unknown");
+}
+
 /// <summary>
 /// The shared core of image generation, used by BOTH the <c>!sky(image)</c> command (Phase 1) and the
 /// model-decided <c>generate_image</c> tool (Phase 2). It owns everything between "we have a prompt" and
@@ -58,19 +73,27 @@ public sealed class ImageToolService
     /// <summary>True when a real backend is wired (enabled + an API key was found).</summary>
     public bool IsEnabled => _generator.IsEnabled;
 
-    /// <summary>Probability the tool is offered on an ambient interjection (see <see cref="ImageOptions.AmbientChance"/>).</summary>
-    public double AmbientChance => _options.AmbientChance;
-
     /// <summary>
     /// Runs the budget gate, appends the style suffix, generates, and logs the outcome. Returns the image
     /// bytes on success or an in-character refusal string on any non-drawing outcome. The caller owns the
     /// caption and the actual Discord send.
     /// </summary>
     public async Task<ImageGenerationOutcome> GenerateAsync(
-        ulong userId, string? channelName, string imagePrompt, ImageTier tier, CancellationToken cancellationToken)
+        ulong userId,
+        string? channelName,
+        string imagePrompt,
+        ImageTier tier,
+        CancellationToken cancellationToken,
+        ImageGenerationContext? context = null)
     {
+        var startedAt = DateTimeOffset.UtcNow;
+        var requestOptions = ImageRequestOptions.FromConfig(_options, tier);
+        context ??= ImageGenerationContext.Unknown;
+
         if (string.IsNullOrWhiteSpace(imagePrompt))
         {
+            Record(channelName, userId, requestOptions, tier, context, 0.0, startedAt,
+                ImageGenerationRecord.OutcomeRefused, "empty_prompt");
             return ImageGenerationOutcome.Refused(ImageRefusals.GenericRefusal);
         }
 
@@ -78,11 +101,11 @@ public sealed class ImageToolService
         if (!lease.Allowed)
         {
             _logger.LogInformation("image_refused reason={Reason} user={User}", lease.Reason, userId);
+            Record(channelName, userId, requestOptions, tier, context, 0.0, startedAt,
+                ImageGenerationRecord.OutcomeRefused, BudgetReason(lease.Reason));
             return ImageGenerationOutcome.Refused(ImageRefusals.ForBudget(lease.Reason));
         }
 
-        var startedAt = DateTimeOffset.UtcNow;
-        var requestOptions = ImageRequestOptions.FromConfig(_options, tier);
         var estCost = ImageCost.Estimate(requestOptions.Model, requestOptions.Quality);
 
         try
@@ -95,11 +118,11 @@ public sealed class ImageToolService
                 var outcome = result.Error == ImageResult.ErrorModerationBlocked
                     ? ImageGenerationRecord.OutcomeModerationBlocked
                     : ImageGenerationRecord.OutcomeError;
-                Record(channelName, userId, requestOptions, 0.0, startedAt, outcome);
+                Record(channelName, userId, requestOptions, tier, context, 0.0, startedAt, outcome, result.Error);
                 return ImageGenerationOutcome.Refused(ImageRefusals.ForError(result.Error));
             }
 
-            Record(channelName, userId, requestOptions, estCost, startedAt, ImageGenerationRecord.OutcomeOk);
+            Record(channelName, userId, requestOptions, tier, context, estCost, startedAt, ImageGenerationRecord.OutcomeOk);
             _logger.LogInformation(
                 "image_generated user={User} model={Model} quality={Quality} est_cost={Cost:F3} latency_ms={Latency}",
                 userId, requestOptions.Model, requestOptions.Quality, estCost,
@@ -107,15 +130,48 @@ public sealed class ImageToolService
 
             return ImageGenerationOutcome.Ok(result.Bytes, $"robotnik.{result.FileExtension}");
         }
+        catch (OperationCanceledException)
+        {
+            Record(channelName, userId, requestOptions, tier, context, 0.0, startedAt,
+                ImageGenerationRecord.OutcomeCancelled, "operation_cancelled");
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Record(channelName, userId, requestOptions, tier, context, 0.0, startedAt,
+                ImageGenerationRecord.OutcomeError, ex.GetType().Name);
+            throw;
+        }
         finally
         {
             lease.Dispose();
         }
     }
 
+    /// <summary>Records a creative turn where image generation was available but no render was attempted.</summary>
+    public void RecordOpportunity(
+        ulong userId,
+        string? channelName,
+        ImageTier tier,
+        ImageGenerationContext context)
+    {
+        var requestOptions = ImageRequestOptions.FromConfig(_options, tier);
+        var outcome = context.ToolOffered == true
+            ? ImageGenerationRecord.OutcomeNotSelected
+            : ImageGenerationRecord.OutcomeNotOffered;
+        Record(channelName, userId, requestOptions, tier, context, 0.0, DateTimeOffset.UtcNow, outcome);
+    }
+
     private void Record(
-        string? channelName, ulong userId, ImageRequestOptions options,
-        double estCost, DateTimeOffset startedAt, string outcome)
+        string? channelName,
+        ulong userId,
+        ImageRequestOptions options,
+        ImageTier tier,
+        ImageGenerationContext context,
+        double estCost,
+        DateTimeOffset startedAt,
+        string outcome,
+        string? reason = null)
     {
         _log.Record(new ImageGenerationRecord(
             Timestamp: DateTimeOffset.UtcNow,
@@ -126,6 +182,25 @@ public sealed class ImageToolService
             Quality: options.Quality,
             EstCostUsd: estCost,
             LatencyMs: (long)(DateTimeOffset.UtcNow - startedAt).TotalMilliseconds,
-            Outcome: outcome));
+            Outcome: outcome,
+            Source: context.Source,
+            InvocationKind: context.InvocationKind,
+            Tier: tier.ToString().ToLowerInvariant(),
+            TriggerMessageId: context.TriggerMessageId,
+            OpportunityId: context.OpportunityId,
+            ToolOffered: context.ToolOffered,
+            ToolSelected: context.ToolSelected,
+            VisualWorth: context.VisualWorth,
+            Reason: reason,
+            GuildId: context.GuildId));
     }
+
+    private static string BudgetReason(BudgetRefusalReason reason) => reason switch
+    {
+        BudgetRefusalReason.UserHourlyLimit => "user_hourly_limit",
+        BudgetRefusalReason.DailyLimit => "daily_limit",
+        BudgetRefusalReason.MonthlyGuard => "monthly_guard",
+        BudgetRefusalReason.ConcurrencyBusy => "concurrency_busy",
+        _ => "budget_refused",
+    };
 }

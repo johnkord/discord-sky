@@ -98,6 +98,40 @@ public class ImpulseJudgeTests
         Assert.Equal(string.Empty, v!.Thought);
     }
 
+    [Fact]
+    public void ParseWorth_VisualFieldsParseAndClamp()
+    {
+        var v = ImpulseJudge.ParseWorth(
+            "{\"worth\":0.4,\"thought\":\"a line\",\"visual_worth\":1.4,\"visual_hook\":\"lava board meeting\"}");
+
+        Assert.NotNull(v);
+        Assert.Equal(1.0, v!.VisualWorth);
+        Assert.Equal("lava board meeting", v.VisualHook);
+    }
+
+    [Theory]
+    [InlineData(0.80, 0.90, true, AmbientActionKind.Image)]
+    [InlineData(0.80, 0.83, true, AmbientActionKind.Text)]
+    [InlineData(0.40, 0.80, true, AmbientActionKind.Image)]
+    [InlineData(0.40, 0.80, false, AmbientActionKind.Silence)]
+    [InlineData(0.40, 0.50, true, AmbientActionKind.Silence)]
+    public void ActionArbiter_SelectsSingleBestEligibleAction(
+        double textWorth,
+        double visualWorth,
+        bool visualEnabled,
+        AmbientActionKind expected)
+    {
+        var actual = AmbientActionArbiter.Choose(
+            useWorthGate: true,
+            new WorthVerdict(textWorth, "text", visualWorth, "visual"),
+            textThreshold: 0.5,
+            visualEnabled,
+            visualThreshold: 0.72,
+            visualMinLead: 0.05);
+
+        Assert.Equal(expected, actual);
+    }
+
     // ── BuildSystemPrompt ───────────────────────────────────────────────
 
     [Fact]

@@ -135,7 +135,11 @@ builder.Services.AddSingleton<IChatClient>(sp =>
 	if (provider.UseResponsesApi)
 		logger.LogInformation("Using Responses API for provider '{Provider}'", llmOptions.ActiveProvider);
 
-	return LlmChatClientFactory.Create(provider, provider.ChatModel);
+	var client = LlmChatClientFactory.Create(provider, provider.ChatModel);
+	return new TelemetryChatClient(
+		client,
+		llmOptions.ActiveProvider,
+		sp.GetRequiredService<IRecallTelemetrySink>());
 });
 
 builder.Services.AddHttpClient<TweetUnfurler>();
@@ -156,6 +160,7 @@ builder.Services.AddSingleton<ILinkUnfurler>(sp =>
 	return new CompositeUnfurler(unfurlers, sp.GetRequiredService<ILogger<CompositeUnfurler>>());
 });
 builder.Services.AddSingleton<SafetyFilter>();
+builder.Services.AddSingleton<MediaSemanticCache>();
 builder.Services.AddSingleton<ContextAggregator>();
 builder.Services.AddSingleton<IMemoryScorer, LexicalMemoryScorer>();
 builder.Services.AddSingleton<CreativeOrchestrator>();
@@ -184,6 +189,7 @@ builder.Services.AddSingleton<FileBackedImageGenerationLog>();
 builder.Services.AddSingleton<IImageGenerationLog>(sp => sp.GetRequiredService<FileBackedImageGenerationLog>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<FileBackedImageGenerationLog>());
 builder.Services.AddSingleton<ImageBudget>();
+builder.Services.AddSingleton<AmbientVisualBudget>();
 builder.Services.AddSingleton<ImageRewriter>();
 // One cheap-LLM call decides Robotnik's in-character emoji reaction to messages he did NOT reply to.
 builder.Services.AddSingleton<ReactionJudge>();

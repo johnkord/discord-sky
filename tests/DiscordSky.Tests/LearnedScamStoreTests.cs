@@ -44,6 +44,21 @@ public sealed class LearnedScamStoreTests
         }
     }
 
+    [Fact]
+    public void Changed_FiresOnlyForNewValidSignals()
+    {
+        var store = Build();
+        var changed = 0;
+        store.Changed += () => changed++;
+
+        Assert.True(store.AddHost("evil.example"));
+        Assert.False(store.AddHost("evil.example"));
+        Assert.False(store.AddHost("invalid"));
+        Assert.True(store.AddPhrase("drain your wallet"));
+
+        Assert.Equal(2, changed);
+    }
+
     private static LearnedScamStore Build(string? path = null)
     {
         var options = new ScamGuardOptions

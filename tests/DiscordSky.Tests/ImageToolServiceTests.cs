@@ -60,13 +60,25 @@ public sealed class ImageToolServiceTests
         var log = new FakeLog();
         var service = Build(gen, log);
 
-        var outcome = await service.GenerateAsync(1, "chan", "draw me a throne", ImageTier.Commissioned, CancellationToken.None);
+        var context = new ImageGenerationContext(
+            "creative_orchestrator", "ambient", 123, "opp-1", ToolOffered: true, ToolSelected: true, VisualWorth: 0.9);
+        var outcome = await service.GenerateAsync(
+            1, "chan", "draw me a throne", ImageTier.Spontaneous, CancellationToken.None, context);
 
         Assert.True(outcome.Generated);
         Assert.Equal(new byte[] { 1, 2, 3, 4 }, outcome.Bytes);
         Assert.Equal("robotnik.jpg", outcome.FileName);
         Assert.Null(outcome.RefusalText);
-        Assert.Contains(log.Records, r => r.Outcome == ImageGenerationRecord.OutcomeOk);
+        var record = Assert.Single(log.Records);
+        Assert.Equal(ImageGenerationRecord.OutcomeOk, record.Outcome);
+        Assert.Equal("creative_orchestrator", record.Source);
+        Assert.Equal("ambient", record.InvocationKind);
+        Assert.Equal("spontaneous", record.Tier);
+        Assert.Equal((ulong)123, record.TriggerMessageId);
+        Assert.Equal("opp-1", record.OpportunityId);
+        Assert.True(record.ToolOffered);
+        Assert.True(record.ToolSelected);
+        Assert.Equal(0.9, record.VisualWorth);
     }
 
     [Fact]
@@ -98,7 +110,7 @@ public sealed class ImageToolServiceTests
     }
 
     [Fact]
-    public async Task GenerateAsync_BudgetDenied_RefusesWithoutCallingGenerator()
+    public async Task GenerateAsync_BudgetDenied_RefusesWithoutCallingGeneratorAndLogsReason()
     {
         var gen = new StubGenerator();
         var log = new FakeLog { DayCount = 5 };
@@ -110,18 +122,25 @@ public sealed class ImageToolServiceTests
         Assert.False(outcome.Generated);
         Assert.False(string.IsNullOrWhiteSpace(outcome.RefusalText));
         Assert.Null(gen.CapturedPrompt); // generator must not be called when the budget denies
+        var record = Assert.Single(log.Records);
+        Assert.Equal(ImageGenerationRecord.OutcomeRefused, record.Outcome);
+        Assert.Equal("daily_limit", record.Reason);
     }
 
     [Fact]
-    public async Task GenerateAsync_EmptyPrompt_Refuses()
+    public async Task GenerateAsync_EmptyPrompt_RefusesAndLogsReason()
     {
         var gen = new StubGenerator();
-        var service = Build(gen, new FakeLog());
+        var log = new FakeLog();
+        var service = Build(gen, log);
 
         var outcome = await service.GenerateAsync(1, "chan", "   ", ImageTier.Commissioned, CancellationToken.None);
 
         Assert.False(outcome.Generated);
         Assert.Null(gen.CapturedPrompt);
+        var record = Assert.Single(log.Records);
+        Assert.Equal(ImageGenerationRecord.OutcomeRefused, record.Outcome);
+        Assert.Equal("empty_prompt", record.Reason);
     }
 
     [Fact]
@@ -155,10 +174,22 @@ public sealed class ImageToolServiceTests
         Assert.Equal("gpt-image-2", gen.CapturedModel);
     }
 
-    [Fact]
-    public void AmbientChance_ReflectsOption()
+    [Theory]
+    [InlineData(true, ImageGenerationRecord.OutcomeNotSelected)]
+    [InlineData(false, ImageGenerationRecord.OutcomeNotOffered)]
+    public void RecordOpportunity_RecordsTerminalDecision(bool offered, string expectedOutcome)
     {
-        var service = Build(new StubGenerator(), new FakeLog(), new ImageOptions { AmbientChance = 0.25 });
-        Assert.Equal(0.25, service.AmbientChance);
+        var log = new FakeLog();
+        var service = Build(new StubGenerator(), log);
+        var context = new ImageGenerationContext(
+            "creative_orchestrator", "ambient", 123, "opp-2", ToolOffered: offered, ToolSelected: false);
+
+        service.RecordOpportunity(1, "chan", ImageTier.Spontaneous, context);
+
+        var record = Assert.Single(log.Records);
+        Assert.Equal(expectedOutcome, record.Outcome);
+        Assert.Equal("opp-2", record.OpportunityId);
+        Assert.Equal(offered, record.ToolOffered);
+        Assert.False(record.ToolSelected);
     }
 }

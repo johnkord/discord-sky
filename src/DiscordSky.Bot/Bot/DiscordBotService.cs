@@ -54,6 +54,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private const int RecentEmojiMemory = 5;
     private readonly ImageToolService? _imageToolService;
     private readonly ImageRewriter? _imageRewriter;
+    private readonly AmbientVisualBudget? _ambientVisualBudget;
     private readonly ScamGuardOptions _scamGuard;
     private readonly IPhishingDomainSource _phishingDomains;
     private readonly RaidTracker _raidTracker;
@@ -66,7 +67,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly CancellationTokenSource _shutdownCts = new();
     internal const int DiscordMaxMessageLength = 2000;
 
-    private sealed record AmbientGateDecision(bool Pass, SemanticMessageView? MessageView);
+    private sealed record AmbientGateDecision(SemanticMessageView? MessageView, WorthVerdict? Verdict);
 
     public DiscordBotService(
         DiscordSocketClient client,
@@ -96,7 +97,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         ImpulseJudge? impulseJudge = null,
         ChannelPulseTracker? channelPulse = null,
         SentMessageRegistry? sentMessages = null,
-        AmbientChannelCoordinator? ambientCoordinator = null)
+        AmbientChannelCoordinator? ambientCoordinator = null,
+        AmbientVisualBudget? ambientVisualBudget = null)
     {
         _client = client;
         _options = options.Value;
@@ -118,6 +120,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _reactQuiet = TimeSpan.FromSeconds(Math.Max(0, reactionOptions?.Value.EmojiReactQuietSeconds ?? 90));
         _imageToolService = imageToolService;
         _imageRewriter = imageRewriter;
+        _ambientVisualBudget = ambientVisualBudget;
         _scamGuard = scamGuardOptions?.Value ?? new ScamGuardOptions { Enabled = false };
         _phishingDomains = phishingDomains ?? NullPhishingDomainSource.Instance;
         _raidTracker = raidTracker ?? new RaidTracker();
@@ -566,12 +569,73 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 {
                     var gate = await EvaluateAmbientWorthGateAsync(message, chaosSettings);
                     semanticView = gate.MessageView;
-                    if (gate.Pass)
+                    var visualEnabled = _imageToolService?.IsEnabled == true
+                        && _ambientVisualBudget?.Enabled == true;
+                    var action = AmbientActionArbiter.Choose(
+                        chaosSettings.UseWorthGate,
+                        gate.Verdict,
+                        chaosSettings.AmbientWorthThreshold,
+                        visualEnabled,
+                        _ambientVisualBudget?.WorthThreshold ?? 1.0,
+                        _ambientVisualBudget?.MinLead ?? 0.0);
+                    string? decisionReason = null;
+                    AmbientVisualLease? visualLease = null;
+                    if (action == AmbientActionKind.Image)
                     {
-                        var sent = await HandlePersonaAsync(
-                            context, _options.CommandPrefix + " " + content, message,
-                            CreativeInvocationKind.Ambient, semanticView);
-                        if (sent) lease.MarkSent(DateTimeOffset.UtcNow);
+                        var guildId = (context.Guild as SocketGuild)?.Id;
+                        var visualVeto = guildId is null ? "no_guild" : null;
+                        if (guildId is null
+                            || _ambientVisualBudget?.TryAcquire(
+                                guildId.Value,
+                                DateTimeOffset.UtcNow,
+                                out visualLease,
+                                out visualVeto) != true)
+                        {
+                            decisionReason = $"visual_{visualVeto ?? "unavailable"}";
+                            action = gate.Verdict is null
+                                ? AmbientActionKind.Text
+                                : AmbientActionArbiter.FallbackAfterImageVeto(
+                                    gate.Verdict, chaosSettings.AmbientWorthThreshold);
+                        }
+                    }
+
+                    if (gate.Verdict is not null)
+                    {
+                        _telemetry.Emit(new TelemetryEvent(
+                            Timestamp: DateTimeOffset.UtcNow,
+                            EventType: TelemetryEventTypes.ImpulseJudged,
+                            UserHash: UserIdHash.Hash(message.Author.Id),
+                            Channel: message.Channel.Name,
+                            Outcome: action.ToString().ToLowerInvariant(),
+                            TopScore: gate.Verdict.Worth,
+                            MessageId: message.Id,
+                            Note: gate.Verdict.Thought,
+                            Reason: decisionReason,
+                            VisualWorth: gate.Verdict.VisualWorth,
+                            VisualHook: gate.Verdict.VisualHook));
+                        _logger.LogInformation(
+                            "impulse_judged action={Action} text_worth={TextWorth:F2} visual_worth={VisualWorth:F2} reason={Reason} channel={Channel}",
+                            action, gate.Verdict.Worth, gate.Verdict.VisualWorth, decisionReason ?? "-", message.Channel.Name);
+                    }
+
+                    if (action != AmbientActionKind.Silence)
+                    {
+                        using (visualLease)
+                        {
+                            var actionMode = action == AmbientActionKind.Image
+                                ? CreativeActionMode.ImageRequired
+                                : CreativeActionMode.TextOnly;
+                            var sent = await HandlePersonaAsync(
+                                context, _options.CommandPrefix + " " + content, message,
+                                CreativeInvocationKind.Ambient, semanticView, actionMode,
+                                gate.Verdict?.VisualWorth, gate.Verdict?.VisualHook);
+                            if (sent)
+                            {
+                                var sentAt = DateTimeOffset.UtcNow;
+                                lease.MarkSent(sentAt);
+                                visualLease?.MarkSucceeded(sentAt);
+                            }
+                        }
                         return;
                     }
                 }
@@ -598,7 +662,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     {
         if (!chaos.UseWorthGate || _impulseJudge is null)
         {
-            return new AmbientGateDecision(true, null);
+            return new AmbientGateDecision(null, null);
         }
 
         SemanticMessageView? messageView = null;
@@ -613,28 +677,16 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 MessageText: messageView.Text,
                 Context: BuildReactionContext(message),
                 MoodLabel: _empireState is { Enabled: true } ? _empireState.Current.Mood.Label : null,
-                MediaContext: messageView.MediaContext);
+                MediaContext: messageView.MediaContext,
+                MessageId: message.Id);
 
             var verdict = await _impulseJudge.JudgeAmbientAsync(request, _shutdownCts.Token);
             if (verdict is null)
             {
                 // Judge failed or returned nothing usable: fail open (do not swallow a granted reply).
-                return new AmbientGateDecision(true, messageView);
+                return new AmbientGateDecision(messageView, null);
             }
-
-            var spoke = verdict.Worth >= chaos.AmbientWorthThreshold;
-            _telemetry.Emit(new TelemetryEvent(
-                Timestamp: DateTimeOffset.UtcNow,
-                EventType: TelemetryEventTypes.ImpulseJudged,
-                UserHash: UserIdHash.Hash(message.Author.Id),
-                Channel: message.Channel.Name,
-                Outcome: spoke ? "spoke" : "held",
-                TopScore: verdict.Worth,
-                MessageId: message.Id));
-            _logger.LogInformation("impulse_judged outcome={Outcome} worth={Worth:F2} thought={Thought} channel={Channel}",
-                spoke ? "spoke" : "held", verdict.Worth, string.IsNullOrEmpty(verdict.Thought) ? "(none)" : verdict.Thought, message.Channel.Name);
-
-            return new AmbientGateDecision(spoke, messageView);
+            return new AmbientGateDecision(messageView, verdict);
         }
         catch (OperationCanceledException)
         {
@@ -644,7 +696,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         {
             // Fail-open: a broken gate should never silence a reply the roll already granted.
             _logger.LogDebug(ex, "Ambient worth gate failed; allowing the reply.");
-            return new AmbientGateDecision(true, messageView);
+            return new AmbientGateDecision(messageView, null);
         }
     }
 
@@ -716,7 +768,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 Allowed: allowed,
                 AuthorMemories: authorMemories,
                 RecentEmojis: recentEmojis,
-                MediaContext: semanticView.MediaContext);
+                MediaContext: semanticView.MediaContext,
+                MessageId: message.Id);
 
             var decision = await _reactionJudge.JudgeAsync(request, _shutdownCts.Token);
             var verdict = decision.Verdict;
@@ -1050,7 +1103,10 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         string content,
         SocketUserMessage message,
         CreativeInvocationKind invocationKind,
-        SemanticMessageView? semanticView = null)
+        SemanticMessageView? semanticView = null,
+        CreativeActionMode actionMode = CreativeActionMode.Auto,
+        double? visualWorth = null,
+        string? visualHook = null)
     {
         var prefix = _options.CommandPrefix;
         if (string.IsNullOrWhiteSpace(prefix))
@@ -1152,10 +1208,15 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             (context.Guild as SocketGuild)?.Id,
             DateTimeOffset.UtcNow,
             invocationKind,
+            TriggerMessageId: message.Id,
             Channel: channelContext,
             UserMemories: userMemories,
             UnfurledLinks: unfurledLinks,
-            TriggerImages: triggerImagesParam);
+            TriggerImages: triggerImagesParam,
+            TriggerMediaContext: semanticView.MediaContext,
+            ActionMode: actionMode,
+            VisualWorth: visualWorth,
+            VisualHook: visualHook);
 
         var result = await _orchestrator.ExecuteAsync(request, context, _shutdownCts.Token);
         var reply = string.IsNullOrWhiteSpace(result.PrimaryMessage)
@@ -1229,17 +1290,14 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 context.User.Id, _memoryRelevanceMonitor, _shutdownCts.Token);
         }
 
-        // Collect images from the reply message
-        var triggerImages = _contextAggregator.CollectImages(message);
-        IReadOnlyList<ChannelImage>? triggerImagesParam = triggerImages.Count > 0 ? triggerImages : null;
-
-        // Unfurl links (e.g. tweets) from the reply message
-        IReadOnlyList<UnfurledLink>? unfurledLinks = null;
-        if (_options.EnableLinkUnfurling && !string.IsNullOrWhiteSpace(topic))
-        {
-            unfurledLinks = await _linkUnfurler.UnfurlAsync(topic, DateTimeOffset.UtcNow, _shutdownCts.Token);
-            if (unfurledLinks.Count == 0) unfurledLinks = null;
-        }
+        var semanticView = await _contextAggregator.BuildMessageViewAsync(
+            message, includeHttpUnfurls: true, _shutdownCts.Token);
+        IReadOnlyList<ChannelImage>? triggerImagesParam = semanticView.Images.Count > 0
+            ? semanticView.Images
+            : null;
+        IReadOnlyList<UnfurledLink>? unfurledLinks = semanticView.UnfurledLinks.Count > 0
+            ? semanticView.UnfurledLinks
+            : null;
 
         var request = new CreativeRequest(
             persona,
@@ -1256,7 +1314,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             channelContext,
             userMemories,
             unfurledLinks,
-            triggerImagesParam);
+            triggerImagesParam,
+            semanticView.MediaContext);
 
         // Traffic visibility — see HandlePersonaAsync. DirectReply was previously silent in telemetry,
         // which underclamped the adoption-rate denominator (recall_feature_review §6.7 footnote).
@@ -1282,8 +1341,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             return;
         }
 
-        // For DirectReply, default to replying to the user's message (the trigger)
-        // unless the orchestrator chose a different target
+        // DirectReply target ownership is deterministic in the orchestrator. Keep the fallback for
+        // defensive compatibility with custom orchestrators and older serialized results.
         MessageReference? reference = result.ReplyToMessageId.HasValue
             ? new MessageReference(result.ReplyToMessageId.Value)
             : new MessageReference(message.Id);
@@ -1950,7 +2009,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             var replyContext = await TryGetReferencedContextAsync(message);
 
             var rewrite = await _imageRewriter.RewriteAsync(
-                persona, request, GetDisplayName(context.User), userMemories, replyContext, _shutdownCts.Token);
+                persona, request, GetDisplayName(context.User), userMemories, replyContext, _shutdownCts.Token,
+                triggerMessageId: message.Id);
 
             if (rewrite.Refuse || string.IsNullOrWhiteSpace(rewrite.ImagePrompt))
             {
@@ -1977,7 +2037,19 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             }
 
             var outcome = await _imageToolService.GenerateAsync(
-                context.User.Id, context.Channel.Name, rewrite.ImagePrompt!, ImageTier.Commissioned, _shutdownCts.Token);
+                context.User.Id,
+                context.Channel.Name,
+                rewrite.ImagePrompt!,
+                ImageTier.Commissioned,
+                _shutdownCts.Token,
+                new ImageGenerationContext(
+                    Source: "image_command",
+                    InvocationKind: "command",
+                    TriggerMessageId: message.Id,
+                    OpportunityId: Guid.NewGuid().ToString("N"),
+                    ToolOffered: false,
+                    ToolSelected: false,
+                    GuildId: (context.Guild as SocketGuild)?.Id));
 
             if (!outcome.Generated || outcome.Bytes is null || outcome.FileName is null)
             {

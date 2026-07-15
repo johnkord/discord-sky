@@ -8,6 +8,13 @@ public enum CreativeInvocationKind
     Mention
 }
 
+public enum CreativeActionMode
+{
+    Auto,
+    TextOnly,
+    ImageRequired,
+}
+
 public sealed record CreativeRequest(
     string Persona,
     string? Topic,
@@ -23,7 +30,11 @@ public sealed record CreativeRequest(
     ChannelContext? Channel = null,
     IReadOnlyList<UserMemory>? UserMemories = null,
     IReadOnlyList<UnfurledLink>? UnfurledLinks = null,
-    IReadOnlyList<ChannelImage>? TriggerImages = null
+    IReadOnlyList<ChannelImage>? TriggerImages = null,
+    string? TriggerMediaContext = null,
+    CreativeActionMode ActionMode = CreativeActionMode.Auto,
+    double? VisualWorth = null,
+    string? VisualHook = null
 );
 
 /// <summary>
@@ -52,7 +63,12 @@ public sealed record SemanticMessageView(
     string Text,
     string? MediaContext,
     IReadOnlyList<UnfurledLink> UnfurledLinks,
-    IReadOnlyList<ChannelImage> Images);
+    IReadOnlyList<ChannelImage> Images,
+    ulong MessageId = 0,
+    DateTimeOffset Timestamp = default,
+    bool HasMedia = false,
+    string? VisualSummary = null,
+    bool VisualSemanticsAnalyzed = false);
 
 public sealed record CreativeResult(
     string PrimaryMessage,
