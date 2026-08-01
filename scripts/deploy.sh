@@ -264,19 +264,28 @@ cp -R "$K8S_PATH" "$TEMP_DIR/"
 
 INJECTED_STEWARD_GUILDS=()
 if [[ ${#STEWARD_PROFILES[@]} -gt 0 ]]; then
-  CONFIGMAP_FILE="$MANIFEST_WORKDIR/configmap.yaml"
-  if [[ ! -f "$CONFIGMAP_FILE" ]]; then
-    echo "ConfigMap file not found at $CONFIGMAP_FILE" >&2
+  KUSTOMIZATION_FILE="$MANIFEST_WORKDIR/kustomization.yaml"
+  if [[ ! -f "$KUSTOMIZATION_FILE" ]]; then
+    echo "Kustomization file not found at $KUSTOMIZATION_FILE" >&2
     exit 1
   fi
 
+  AUTONOMY_BINDINGS_FILE="$MANIFEST_WORKDIR/autonomy-bindings.yaml"
+  cat > "$AUTONOMY_BINDINGS_FILE" <<'EOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: discord-sky-autonomy-bindings
+  namespace: discord-sky
+data:
+EOF
   for bundled_profile in "$REPO_ROOT"/artifacts/discord-steward/profiles/*.json; do
     if [[ ! -f "$bundled_profile" ]]; then
       continue
     fi
     guild_id="$(basename "$bundled_profile" .json)"
     INJECTED_STEWARD_GUILDS+=("$guild_id")
-    cat >> "$CONFIGMAP_FILE" <<EOF
+    cat >> "$AUTONOMY_BINDINGS_FILE" <<EOF
   WorldAutonomy__EnabledGuilds__${guild_id}__ProfilePath: "/app/steward/profiles/${guild_id}.json"
 EOF
   done
@@ -285,6 +294,8 @@ EOF
     echo "Expected ${#STEWARD_PROFILES[@]} bundled Steward profiles but found ${#INJECTED_STEWARD_GUILDS[@]}." >&2
     exit 1
   fi
+
+  sed -i '/^resources:/a\  - autonomy-bindings.yaml' "$KUSTOMIZATION_FILE"
 fi
 
 DEPLOYMENT_FILE="$MANIFEST_WORKDIR/deployment.yaml"
@@ -308,6 +319,9 @@ echo "Verified ${#INJECTED_STEWARD_GUILDS[@]} private autonomy binding(s) in ren
 
 echo "Applying manifests"
 kubectl apply -f "$RENDERED_MANIFEST"
+if [[ ${#INJECTED_STEWARD_GUILDS[@]} -eq 0 ]]; then
+  kubectl delete configmap discord-sky-autonomy-bindings -n discord-sky --ignore-not-found
+fi
 
 echo "Waiting for rollout to complete"
 kubectl rollout status deployment/discord-sky-bot -n discord-sky

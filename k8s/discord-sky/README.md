@@ -64,9 +64,10 @@ profile with `Steward:JournalBackend` set to `File` and keep all durable paths u
 `/app/data/user_memories/world-autonomy/<guild-id>/steward` subtree. The file backend atomically replaces a
 complete journal snapshot, which is compatible with the Azure Files mount; keep `Sqlite` for deployments
 backed by a local disk filesystem. The single-replica deployment uses `Recreate` so old and new pods cannot
-update a journal snapshot concurrently. The deploy script injects each exact binding into its temporary
-ConfigMap copy; the model falls back to the active Main workload profile unless a private environment
-override is supplied:
+update a journal snapshot concurrently. The deploy script writes exact bindings to a separate temporary
+`discord-sky-autonomy-bindings` ConfigMap. The public Deployment references it optionally, so dark
+deployments remain valid without publishing private guild IDs. The model falls back to the active Main
+workload profile unless a private environment override is supplied:
 
 ```text
 WorldAutonomy__EnabledGuilds__<exact-guild-id>__ProfilePath=/app/steward/profiles/<exact-guild-id>.json
