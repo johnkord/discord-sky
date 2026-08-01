@@ -1,0 +1,129 @@
+[
+  {
+    "name": "same-source-shadow-observes",
+    "mode": "Shadow",
+    "candidate": [
+      {
+        "messageId": 10,
+        "timestamp": "2026-07-19T12:00:00Z",
+        "author": "alice",
+        "renderedLine": "alice: the meteor returned",
+        "topicAnchors": ["meteor", "return"],
+        "resourceIds": []
+      }
+    ],
+    "prior": [
+      {
+        "episodeId": "prior-1",
+        "channelId": 99,
+        "firedAt": "2026-07-19T11:00:00Z",
+        "sourceMessageIds": [10],
+        "referencedMessageIds": [],
+        "resourceIds": [],
+        "topicAnchors": ["meteor", "return"]
+      }
+    ],
+    "expectStage": "ExactSource",
+    "expectShouldSuppress": false
+  },
+  {
+    "name": "same-source-exact-gates",
+    "mode": "Exact",
+    "candidate": [
+      {
+        "messageId": 10,
+        "timestamp": "2026-07-19T12:00:00Z",
+        "topicAnchors": [],
+        "resourceIds": []
+      }
+    ],
+    "prior": [
+      {
+        "episodeId": "prior-1",
+        "channelId": 99,
+        "firedAt": "2026-07-19T11:00:00Z",
+        "sourceMessageIds": [10],
+        "referencedMessageIds": [],
+        "resourceIds": [],
+        "topicAnchors": []
+      }
+    ],
+    "expectStage": "ExactSource",
+    "expectShouldSuppress": true
+  },
+  {
+    "name": "same-url-exact-gates",
+    "mode": "Exact",
+    "candidate": [
+      {
+        "messageId": 20,
+        "timestamp": "2026-07-19T12:00:00Z",
+        "topicAnchors": ["story"],
+        "resourceIds": ["example.com/story/1"]
+      }
+    ],
+    "prior": [
+      {
+        "episodeId": "prior-url",
+        "channelId": 99,
+        "firedAt": "2026-07-19T11:00:00Z",
+        "sourceMessageIds": [11],
+        "referencedMessageIds": [],
+        "resourceIds": ["example.com/story/1"],
+        "topicAnchors": ["story"]
+      }
+    ],
+    "expectStage": "StableResource",
+    "expectShouldSuppress": true
+  },
+  {
+    "name": "odyssey-anchor-exact-observes",
+    "mode": "Exact",
+    "candidate": [
+      {
+        "messageId": 30,
+        "timestamp": "2026-07-19T12:00:00Z",
+        "topicAnchors": ["odyssey", "helmet", "return"],
+        "resourceIds": []
+      }
+    ],
+    "prior": [
+      {
+        "episodeId": "prior-odyssey",
+        "channelId": 99,
+        "firedAt": "2026-07-19T11:00:00Z",
+        "sourceMessageIds": [21],
+        "referencedMessageIds": [],
+        "resourceIds": [],
+        "topicAnchors": ["odyssey", "helmet", "crew"]
+      }
+    ],
+    "expectStage": "MultipleTopicAnchors",
+    "expectShouldSuppress": false
+  },
+  {
+    "name": "benign-callback-calibrated-allows",
+    "mode": "Calibrated",
+    "candidate": [
+      {
+        "messageId": 40,
+        "timestamp": "2026-07-19T12:00:00Z",
+        "topicAnchors": ["odyssey", "lunch"],
+        "resourceIds": []
+      }
+    ],
+    "prior": [
+      {
+        "episodeId": "prior-callback",
+        "channelId": 99,
+        "firedAt": "2026-07-19T11:00:00Z",
+        "sourceMessageIds": [31],
+        "referencedMessageIds": [],
+        "resourceIds": [],
+        "topicAnchors": ["odyssey", "helmet"]
+      }
+    ],
+    "expectStage": "NoOverlap",
+    "expectShouldSuppress": false
+  }
+]

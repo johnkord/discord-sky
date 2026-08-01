@@ -23,6 +23,7 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
     private readonly int _maxMemoriesPerUser;
     private readonly string _dataDirectory;
     private readonly Timer _flushTimer;
+    private readonly Action<string, string, string> _writeSnapshot;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -34,10 +35,19 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
     };
 
     public FileBackedUserMemoryStore(IOptions<BotOptions> options, ILogger<FileBackedUserMemoryStore> logger)
+        : this(options, logger, WriteSnapshotAtomically)
+    {
+    }
+
+    internal FileBackedUserMemoryStore(
+        IOptions<BotOptions> options,
+        ILogger<FileBackedUserMemoryStore> logger,
+        Action<string, string, string> writeSnapshot)
     {
         _logger = logger;
         _maxMemoriesPerUser = options.Value.MaxMemoriesPerUser;
         _dataDirectory = options.Value.MemoryDataPath;
+        _writeSnapshot = writeSnapshot;
 
         Directory.CreateDirectory(_dataDirectory);
 
@@ -133,7 +143,16 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
             }
 
             var now = DateTimeOffset.UtcNow;
-            memories.Add(new UserMemory(content, context, now, now, 0, kind, topics, Importance: importance));
+            memories.Add(new UserMemory(
+                content,
+                context,
+                now,
+                now,
+                0,
+                kind,
+                topics,
+                Importance: importance,
+                MemoryId: MemoryIdentity.NewId()));
             MarkDirty(userId);
             _logger.LogInformation("Saved {Kind} memory for user {UserId}: \"{Content}\"", kind, userId, content);
         }
@@ -268,13 +287,14 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
 
     public async Task ReplaceAllMemoriesAsync(ulong userId, IReadOnlyList<UserMemory> newMemories, CancellationToken ct = default)
     {
+        var normalized = MemoryIdentity.NormalizeCopy(newMemories);
         var userLock = GetUserLock(userId);
         await userLock.WaitAsync(ct);
         try
         {
             var memories = await GetOrLoadAsync(userId, ct);
             memories.Clear();
-            memories.AddRange(newMemories);
+            memories.AddRange(normalized);
             MarkDirty(userId);
             _logger.LogInformation("Replaced all memories for user {UserId} with {Count} consolidated memories", userId, newMemories.Count);
         }
@@ -303,6 +323,7 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
             {
                 var json = await File.ReadAllTextAsync(filePath, ct);
                 memories = JsonSerializer.Deserialize<List<UserMemory>>(json, JsonOptions) ?? [];
+                if (MemoryIdentity.NormalizeInPlace(memories)) MarkDirty(userId);
                 _logger.LogDebug("Loaded {Count} memories for user {UserId} from disk", memories.Count, userId);
             }
             catch (Exception ex)
@@ -326,6 +347,8 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
 
     private void MarkDirty(ulong userId) =>
         _dirty[userId] = true;
+
+    internal bool IsDirty(ulong userId) => _dirty.ContainsKey(userId);
 
     /// <summary>
     /// Flush all dirty user memory files to disk.
@@ -353,8 +376,7 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
                 var filePath = GetFilePath(userId);
                 // Write to temp file first, then atomic rename for crash safety
                 var tempPath = filePath + ".tmp";
-                File.WriteAllText(tempPath, json);
-                File.Move(tempPath, filePath, overwrite: true);
+                _writeSnapshot(tempPath, filePath, json);
 
                 _logger.LogDebug("Flushed {Count} memories for user {UserId} to disk", memories.Count, userId);
             }
@@ -369,6 +391,12 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
                 userLock.Release();
             }
         }
+    }
+
+    private static void WriteSnapshotAtomically(string tempPath, string filePath, string json)
+    {
+        File.WriteAllText(tempPath, json);
+        File.Move(tempPath, filePath, overwrite: true);
     }
 
     public void Dispose()

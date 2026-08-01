@@ -36,7 +36,10 @@ public sealed record ReactionEvent(
     [property: JsonPropertyName("message_id")] ulong MessageId,
     [property: JsonPropertyName("persona")] string? Persona,
     [property: JsonPropertyName("reply_excerpt")] string? ReplyExcerpt,
-    [property: JsonPropertyName("source")] string? Source = null);
+    [property: JsonPropertyName("source")] string? Source = null,
+    [property: JsonPropertyName("episode_id")] string? EpisodeId = null,
+    [property: JsonPropertyName("trigger_message_id")] ulong? TriggerMessageId = null,
+    [property: JsonPropertyName("reply_target_message_id")] ulong? ReplyTargetMessageId = null);
 
 /// <summary>Default sink used when reaction logging is disabled or in tests. Discards entries.</summary>
 public sealed class NoOpReactionSink : IReactionSink
@@ -181,6 +184,16 @@ public sealed class ReactionOptions
 
     /// <summary>Max number of the guild's custom emotes offered to the reaction judge (bounds prompt size and cost). 0 = unicode palette only.</summary>
     public int MaxCustomEmotes { get; set; } = 40;
+
+    /// <summary>Require one choose_reaction tool call constrained to the tokens offered for this request.</summary>
+    public bool ConstrainedToolEnabled { get; set; } = false;
+
+    /// <summary>Skip judge calls temporarily only after Discord proves reactions are blocked for a user.</summary>
+    public bool CapabilityCooldownEnabled { get; set; } = false;
+
+    public int BlockedUserCooldownHours { get; set; } = 24;
+
+    public string CapabilityStorePath { get; set; } = Path.Combine("data", "reaction_capabilities.json");
 
     /// <summary>Whether to inject "proven bits" (the bot's best-received past lines, ranked by reaction) into the persona prompt.</summary>
     public bool ProvenBitsEnabled { get; set; } = true;

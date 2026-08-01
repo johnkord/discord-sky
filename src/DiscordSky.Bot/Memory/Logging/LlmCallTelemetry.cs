@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Models.Orchestration;
 using Microsoft.Extensions.AI;
 
 namespace DiscordSky.Bot.Memory.Logging;
@@ -14,14 +15,16 @@ public static class LlmCallTelemetry
         string workload,
         LlmWorkloadProfile profile,
         ulong? messageId = null,
-        string? evaluationId = null)
+        string? evaluationId = null,
+        InteractionTraceContext? trace = null)
     {
         Metadata.Remove(options);
         Metadata.Add(options, new LlmCallMetadata(
             workload,
             profile.ReasoningEffort,
             messageId,
-            evaluationId));
+            evaluationId,
+            trace));
     }
 
     internal static (ChatOptions? Forwarded, LlmCallMetadata? Metadata) Prepare(ChatOptions? options)
@@ -42,18 +45,21 @@ internal sealed class LlmCallMetadata
         string workload,
         string? reasoningEffort,
         ulong? messageId,
-        string? evaluationId)
+        string? evaluationId,
+        InteractionTraceContext? trace)
     {
         Workload = workload;
         ReasoningEffort = reasoningEffort;
         MessageId = messageId;
         EvaluationId = evaluationId;
+        Trace = trace;
     }
 
     public string Workload { get; }
     public string? ReasoningEffort { get; }
     public ulong? MessageId { get; }
     public string? EvaluationId { get; }
+    public InteractionTraceContext? Trace { get; }
     public int NextCallIndex() => Interlocked.Increment(ref _callIndex);
 }
 
@@ -181,6 +187,11 @@ internal sealed class TelemetryChatClient : IChatClient
             TotalTokens: usage?.TotalTokenCount,
             ResponseId: responseId,
             FinishReason: finishReason,
-            FailureClass: failureClass));
+            FailureClass: failureClass,
+            OperationId: metadata?.Trace?.OperationId,
+            EpisodeId: metadata?.Trace?.EpisodeId,
+            EpisodeSchemaVersion: metadata?.Trace?.EpisodeSchemaVersion,
+            EvidenceDigest: metadata?.Trace?.EvidenceDigest,
+            ProjectionDigest: metadata?.Trace?.ProjectionDigest));
     }
 }

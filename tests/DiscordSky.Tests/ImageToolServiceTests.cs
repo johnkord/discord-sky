@@ -61,7 +61,8 @@ public sealed class ImageToolServiceTests
         var service = Build(gen, log);
 
         var context = new ImageGenerationContext(
-            "creative_orchestrator", "ambient", 123, "opp-1", ToolOffered: true, ToolSelected: true, VisualWorth: 0.9);
+            "creative_orchestrator", "ambient", 123, "opp-1", ToolOffered: true, ToolSelected: true, VisualWorth: 0.9,
+            EvidenceMessageIds: new ulong[] { 100, 123 }, PromptDigest: "digest-1");
         var outcome = await service.GenerateAsync(
             1, "chan", "draw me a throne", ImageTier.Spontaneous, CancellationToken.None, context);
 
@@ -79,6 +80,8 @@ public sealed class ImageToolServiceTests
         Assert.True(record.ToolOffered);
         Assert.True(record.ToolSelected);
         Assert.Equal(0.9, record.VisualWorth);
+        Assert.Equal(new ulong[] { 100, 123 }, record.EvidenceMessageIds);
+        Assert.Equal("digest-1", record.PromptDigest);
     }
 
     [Fact]

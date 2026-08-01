@@ -21,7 +21,9 @@ public sealed record ImageGenerationContext(
     bool? ToolOffered = null,
     bool? ToolSelected = null,
     double? VisualWorth = null,
-    ulong? GuildId = null)
+    ulong? GuildId = null,
+    IReadOnlyList<ulong>? EvidenceMessageIds = null,
+    string? PromptDigest = null)
 {
     public const string SourceAmbientVisual = "ambient_visual_impulse";
     public static readonly ImageGenerationContext Unknown = new("unknown", "unknown");
@@ -193,7 +195,9 @@ public sealed class ImageToolService
             ToolSelected: context.ToolSelected,
             VisualWorth: context.VisualWorth,
             Reason: reason,
-            GuildId: context.GuildId));
+            GuildId: context.GuildId,
+            EvidenceMessageIds: context.EvidenceMessageIds,
+            PromptDigest: context.PromptDigest));
     }
 
     private static string BudgetReason(BudgetRefusalReason reason) => reason switch

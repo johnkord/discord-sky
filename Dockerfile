@@ -18,7 +18,14 @@ RUN dotnet publish src/DiscordSky.Bot/DiscordSky.Bot.csproj \
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS final
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libsqlite3-0 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=build /app/publish .
+# scripts/deploy.sh --include-steward publishes a self-contained Linux bundle here. The tracked
+# placeholder keeps ordinary Sky-only image builds working when autonomy is not packaged.
+COPY artifacts/discord-steward/ /app/steward/
 
 ENV DOTNET_EnableDiagnostics=0
 EXPOSE 8080

@@ -1,4 +1,5 @@
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Models.Orchestration;
 using DiscordSky.Bot.Orchestration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -68,6 +69,48 @@ public class SafetyFilterTests
         {
             filter.ShouldRateLimit(now.AddMilliseconds(i), 1ul);
         });
+    }
+
+    [Fact]
+    public void ExplicitTraffic_UsesReserveAfterAmbientFillsSharedBudget()
+    {
+        var filter = CreateFilter(new ChaosSettings
+        {
+            MaxPromptsPerHour = 2,
+            ExplicitReservePromptsPerHour = 2,
+        });
+        var now = DateTimeOffset.UtcNow;
+
+        Assert.False(filter.EvaluateRateLimit(now, 1, CreativeInvocationKind.Ambient).IsRateLimited);
+        Assert.False(filter.EvaluateRateLimit(now.AddSeconds(1), 1, CreativeInvocationKind.Ambient).IsRateLimited);
+        Assert.True(filter.EvaluateRateLimit(now.AddSeconds(2), 1, CreativeInvocationKind.Ambient).IsRateLimited);
+
+        var firstExplicit = filter.EvaluateRateLimit(now.AddSeconds(3), 1, CreativeInvocationKind.DirectReply);
+        var secondExplicit = filter.EvaluateRateLimit(now.AddSeconds(4), 1, CreativeInvocationKind.Mention);
+        var exhausted = filter.EvaluateRateLimit(now.AddSeconds(5), 1, CreativeInvocationKind.Command);
+
+        Assert.False(firstExplicit.IsRateLimited);
+        Assert.Equal("explicit_reserve", firstExplicit.BudgetClass);
+        Assert.False(secondExplicit.IsRateLimited);
+        Assert.True(exhausted.IsRateLimited);
+        Assert.Equal("explicit_channel_reserve", exhausted.BudgetClass);
+        Assert.Equal(2, exhausted.Count);
+        Assert.Equal(2, exhausted.Limit);
+    }
+
+    [Fact]
+    public void AutonomousTraffic_CannotConsumeExplicitReserve()
+    {
+        var filter = CreateFilter(new ChaosSettings
+        {
+            MaxPromptsPerHour = 1,
+            ExplicitReservePromptsPerHour = 1,
+        });
+        var now = DateTimeOffset.UtcNow;
+
+        Assert.False(filter.EvaluateRateLimit(now, 1, CreativeInvocationKind.Ambient).IsRateLimited);
+        Assert.True(filter.EvaluateRateLimit(now.AddSeconds(1), 1, CreativeInvocationKind.Ambient).IsRateLimited);
+        Assert.False(filter.EvaluateRateLimit(now.AddSeconds(2), 1, CreativeInvocationKind.DirectReply).IsRateLimited);
     }
 
     // ── Ban word scrubbing ─────────────────────────────────────────

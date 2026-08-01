@@ -1,4 +1,5 @@
 using DiscordSky.Bot.Orchestration.Impulse;
+using DiscordSky.Bot.Models.Orchestration;
 
 namespace DiscordSky.Tests;
 
@@ -109,6 +110,48 @@ public class ImpulseJudgeTests
         Assert.Equal("lava board meeting", v.VisualHook);
     }
 
+    [Fact]
+    public void ParseWorth_OptionalReferentFieldsRemainBackwardCompatible()
+    {
+        var legacy = ImpulseJudge.ParseWorth("{\"worth\":0.4}");
+        var enriched = ImpulseJudge.ParseWorth(
+            "{\"worth\":0.8,\"referent_message_id\":\"42\",\"referent_confidence\":1.4,\"referent_status\":\"resolved\"}");
+
+        Assert.NotNull(legacy);
+        Assert.Null(legacy!.ReferentMessageId);
+        Assert.Equal(ReferentResolutionStatus.None, legacy.ReferentStatus);
+        Assert.NotNull(enriched);
+        Assert.Equal(42UL, enriched!.ReferentMessageId);
+        Assert.Equal(1.0, enriched.ReferentConfidence);
+        Assert.Equal(ReferentResolutionStatus.Resolved, enriched.ReferentStatus);
+    }
+
+    [Fact]
+    public void ValidateReferentDecision_AcceptsOnlyOfferedHighConfidenceCandidate()
+    {
+        var episode = Episode();
+
+        var accepted = ImpulseJudge.ValidateReferentDecision(
+            new WorthVerdict(0.8, "", ReferentMessageId: 1, ReferentConfidence: 0.9),
+            episode,
+            0.7);
+        var invalid = ImpulseJudge.ValidateReferentDecision(
+            new WorthVerdict(0.8, "", ReferentMessageId: 999, ReferentConfidence: 1.0),
+            episode,
+            0.7);
+        var weak = ImpulseJudge.ValidateReferentDecision(
+            new WorthVerdict(0.8, "", ReferentMessageId: 1, ReferentConfidence: 0.2),
+            episode,
+            0.7);
+
+        Assert.Equal(1UL, accepted.SelectedMessageId);
+        Assert.Equal(ReferentResolutionStatus.Resolved, accepted.Status);
+        Assert.Null(invalid.SelectedMessageId);
+        Assert.Equal(ReferentResolutionStatus.Invalid, invalid.Status);
+        Assert.Null(weak.SelectedMessageId);
+        Assert.Equal(ReferentResolutionStatus.Ambiguous, weak.Status);
+    }
+
     [Theory]
     [InlineData(0.80, 0.90, true, AmbientActionKind.Image)]
     [InlineData(0.80, 0.83, true, AmbientActionKind.Text)]
@@ -196,5 +239,40 @@ public class ImpulseJudgeTests
         var longMsg = new string('x', 900);
         var m = ImpulseJudge.BuildUserMessage(new AmbientImpulseRequest("Robotnik", "bob", longMsg, null, null));
         Assert.True(m.Length < 900);
+    }
+
+    [Fact]
+    public void BuildUserMessage_EpisodeProjectionReplacesDivergentLegacyContext()
+    {
+        var request = new AmbientImpulseRequest(
+            "Robotnik",
+            "bob",
+            "legacy trigger",
+            "legacy parent",
+            null,
+            EpisodeProjection: "canonical frozen episode");
+
+        var message = ImpulseJudge.BuildUserMessage(request);
+
+        Assert.Equal("canonical frozen episode", message);
+        Assert.DoesNotContain("legacy", message);
+    }
+
+    private static InteractionEpisode Episode()
+    {
+        var now = new DateTimeOffset(2026, 7, 19, 12, 0, 0, TimeSpan.Zero);
+        return InteractionEpisode.Create(
+            "episode-1",
+            now,
+            99,
+            2,
+            new[]
+            {
+                new EpisodeMessage(1, 10, "Alice", "meteor", now.AddSeconds(-5)),
+                new EpisodeMessage(2, 20, "Bob", "what is that?", now),
+            },
+            null,
+            new ReferentRequirement(true, "deictic_question"),
+            new[] { new ReferentCandidate(1, 0.75, "recent_message") });
     }
 }

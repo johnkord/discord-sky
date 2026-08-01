@@ -19,9 +19,9 @@ public class MemoryConsolidationTests
     {
         var memories = new List<UserMemory>
         {
-            new("Likes cats", "pets", DateTimeOffset.UtcNow.AddDays(-10), DateTimeOffset.UtcNow, 3),
-            new("Works as a developer", "career", DateTimeOffset.UtcNow.AddDays(-5), DateTimeOffset.UtcNow, 1),
-            new("Lives in Canada", "location", DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow, 2),
+            Mem("a", "Likes cats", createdAt: DateTimeOffset.UtcNow.AddDays(-10)),
+            Mem("b", "Works as a developer", createdAt: DateTimeOffset.UtcNow.AddDays(-5)),
+            Mem("c", "Lives in Canada", createdAt: DateTimeOffset.UtcNow.AddDays(-1)),
         };
 
         var prompt = CreativeOrchestrator.BuildConsolidationPrompt(memories, 2);
@@ -32,6 +32,8 @@ public class MemoryConsolidationTests
         Assert.Contains("[0]", prompt);
         Assert.Contains("[1]", prompt);
         Assert.Contains("[2]", prompt);
+        Assert.Contains("id=a", prompt);
+        Assert.Contains("source_memory_ids", prompt);
     }
 
     [Fact]
@@ -98,85 +100,86 @@ public class MemoryConsolidationTests
         Assert.Contains("15", msg);
     }
 
-    // ── ParseConsolidatedMemories ─────────────────────────────────────
+    // ── ParseConsolidatedMemoryProposals ──────────────────────────────
 
     [Fact]
-    public void ParseConsolidatedMemories_ValidJson_ReturnsMemories()
+    public void ParseConsolidatedMemoryProposals_ValidJson_ReturnsSources()
     {
         var json = """
         {
           "memories": [
-            { "content": "Loves cats and has a cat named Whiskers", "context": "merged pet facts" },
-            { "content": "Software engineer in Vancouver", "context": "career and location" }
+            { "content": "Loves cats and has a cat named Whiskers", "context": "merged pet facts", "source_memory_ids": ["a", "b"] },
+            { "content": "Software engineer in Vancouver", "context": "career and location", "source_memory_ids": ["c"] }
           ]
         }
         """;
 
         var response = BuildTextResponse(json);
-        var result = CreativeOrchestrator.ParseConsolidatedMemories(response);
+        var result = CreativeOrchestrator.ParseConsolidatedMemoryProposals(response);
 
         Assert.NotNull(result);
         Assert.Equal(2, result.Count);
         Assert.Equal("Loves cats and has a cat named Whiskers", result[0].Content);
         Assert.Equal("merged pet facts", result[0].Context);
+        Assert.Equal(new[] { "a", "b" }, result[0].SourceMemoryIds);
         Assert.Equal("Software engineer in Vancouver", result[1].Content);
-        Assert.Equal("career and location", result[1].Context);
+        Assert.Equal(new[] { "c" }, result[1].SourceMemoryIds);
     }
 
     [Fact]
-    public void ParseConsolidatedMemories_EmptyMemoriesArray_ReturnsNull()
+    public void ParseConsolidatedMemoryProposals_EmptyMemoriesArray_ReturnsNull()
     {
         var json = """{ "memories": [] }""";
         var response = BuildTextResponse(json);
-        var result = CreativeOrchestrator.ParseConsolidatedMemories(response);
+        var result = CreativeOrchestrator.ParseConsolidatedMemoryProposals(response);
 
         Assert.Null(result);
     }
 
     [Fact]
-    public void ParseConsolidatedMemories_MissingMemoriesKey_ReturnsNull()
+    public void ParseConsolidatedMemoryProposals_MissingMemoriesKey_ReturnsNull()
     {
         var json = """{ "facts": [{ "content": "test" }] }""";
         var response = BuildTextResponse(json);
-        var result = CreativeOrchestrator.ParseConsolidatedMemories(response);
+        var result = CreativeOrchestrator.ParseConsolidatedMemoryProposals(response);
 
         Assert.Null(result);
     }
 
     [Fact]
-    public void ParseConsolidatedMemories_InvalidJson_ReturnsNull()
+    public void ParseConsolidatedMemoryProposals_InvalidJson_ReturnsNull()
     {
         var response = BuildTextResponse("not valid json {{{");
-        var result = CreativeOrchestrator.ParseConsolidatedMemories(response);
+        var result = CreativeOrchestrator.ParseConsolidatedMemoryProposals(response);
 
         Assert.Null(result);
     }
 
     [Fact]
-    public void ParseConsolidatedMemories_EmptyTextResponse_ReturnsNull()
+    public void ParseConsolidatedMemoryProposals_EmptyTextResponse_ReturnsNull()
     {
         var response = BuildTextResponse("");
-        var result = CreativeOrchestrator.ParseConsolidatedMemories(response);
+        var result = CreativeOrchestrator.ParseConsolidatedMemoryProposals(response);
 
         Assert.Null(result);
     }
 
     [Fact]
-    public void ParseConsolidatedMemories_NullContentEntries_SkipsNull()
+    public void ParseConsolidatedMemoryProposals_MissingContentOrSources_SkipsEntry()
     {
         var json = """
         {
           "memories": [
-            { "content": "Valid fact", "context": "ctx" },
-            { "content": null, "context": "ctx" },
-            { "content": "", "context": "ctx" },
-            { "content": "Another valid", "context": "ctx2" }
+            { "content": "Valid fact", "context": "ctx", "source_memory_ids": ["a"] },
+            { "content": null, "context": "ctx", "source_memory_ids": ["b"] },
+            { "content": "Missing sources", "context": "ctx" },
+            { "content": "Another valid", "context": "ctx2", "source_memory_ids": ["c", "c"] }
           ]
         }
         """;
 
         var response = BuildTextResponse(json);
-        var result = CreativeOrchestrator.ParseConsolidatedMemories(response);
+        var result = CreativeOrchestrator.ParseConsolidatedMemoryProposals(response);
 
         Assert.NotNull(result);
         Assert.Equal(2, result.Count);
@@ -185,18 +188,18 @@ public class MemoryConsolidationTests
     }
 
     [Fact]
-    public void ParseConsolidatedMemories_MissingContext_DefaultsToEmpty()
+    public void ParseConsolidatedMemoryProposals_MissingContext_DefaultsToEmpty()
     {
         var json = """
         {
           "memories": [
-            { "content": "Fact without context" }
+            { "content": "Fact without context", "source_memory_ids": ["a"] }
           ]
         }
         """;
 
         var response = BuildTextResponse(json);
-        var result = CreativeOrchestrator.ParseConsolidatedMemories(response);
+        var result = CreativeOrchestrator.ParseConsolidatedMemoryProposals(response);
 
         Assert.NotNull(result);
         Assert.Single(result);
@@ -204,27 +207,133 @@ public class MemoryConsolidationTests
         Assert.Equal(string.Empty, result[0].Context);
     }
 
+    // ── MemoryConsolidationPlanner ────────────────────────────────────
+
     [Fact]
-    public void ParseConsolidatedMemories_SetsTimestampsAndZeroReferenceCount()
+    public void Planner_MergesMetadataAndCreatesSourceLineage()
     {
-        var json = """
+        var capturedAt = new DateTimeOffset(2026, 7, 26, 12, 0, 0, TimeSpan.Zero);
+        var older = capturedAt.AddDays(-10);
+        var recent = capturedAt.AddDays(-1);
+        var existing = new[]
         {
-          "memories": [
-            { "content": "Some fact", "context": "ctx" }
-          ]
-        }
-        """;
+            Mem("a", "Likes cats", createdAt: older, lastReferencedAt: older, referenceCount: 2,
+                topics: new[] { "pets" }, importance: 5, evidence: new[] { 11UL }),
+            Mem("b", "Has a cat named Luna", createdAt: recent, lastReferencedAt: recent, referenceCount: 3,
+                topics: new[] { "cats" }, importance: 8, evidence: new[] { 12UL }),
+        };
 
-        var before = DateTimeOffset.UtcNow;
-        var response = BuildTextResponse(json);
-        var result = CreativeOrchestrator.ParseConsolidatedMemories(response);
-        var after = DateTimeOffset.UtcNow;
+        var plan = MemoryConsolidationPlanner.Build(
+            100,
+            existing,
+            new[] { new ConsolidatedMemoryProposal("Has a cat named Luna and loves cats", "merged pets", new[] { "a", "b" }) },
+            targetCount: 1,
+            operationId: "op-1",
+            capturedAt);
 
-        Assert.NotNull(result);
-        Assert.Single(result);
-        Assert.InRange(result[0].CreatedAt, before, after);
-        Assert.InRange(result[0].LastReferencedAt, before, after);
-        Assert.Equal(0, result[0].ReferenceCount);
+        Assert.True(plan.IsValid);
+        var merged = Assert.Single(plan.Memories!);
+        Assert.Equal(older, merged.CreatedAt);
+        Assert.Equal(recent, merged.LastReferencedAt);
+        Assert.Equal(5, merged.ReferenceCount);
+        Assert.Equal(MemoryKind.Factual, merged.Kind);
+        Assert.Equal(new[] { "pets", "cats" }, merged.Topics);
+        Assert.Equal(8, merged.Importance);
+        Assert.Equal(new[] { 11UL, 12UL }, merged.Provenance?.EvidenceMessageIds);
+        Assert.Equal(new[] { "a", "b" }, merged.Provenance?.SourceMemoryIds);
+        Assert.Equal("consolidation", merged.Provenance?.Transition);
+        Assert.Equal(MemoryIdentity.FromOperation("op-1", 100, 0), merged.MemoryId);
+    }
+
+    [Theory]
+    [InlineData("unknown", "unknown_source_id")]
+    [InlineData("cross-kind", "cross_kind_merge")]
+    [InlineData("source-reused", "source_reused")]
+    [InlineData("high-value-dropped", "high_value_source_dropped")]
+    public void Planner_RejectsInvalidSourcePlans(string scenario, string expectedReason)
+    {
+        var existing = new[]
+        {
+            Mem("a", "Fact A", importance: 9),
+            Mem("b", "Fact B"),
+            Mem("r", "Running bit", kind: MemoryKind.Running, importance: 8),
+        };
+        var proposals = scenario switch
+        {
+            "unknown" => new[] { new ConsolidatedMemoryProposal("X", "", new[] { "missing" }) },
+            "cross-kind" => new[] { new ConsolidatedMemoryProposal("X", "", new[] { "a", "r" }) },
+            "source-reused" => new[]
+            {
+                new ConsolidatedMemoryProposal("X", "", new[] { "a", "b" }),
+                new ConsolidatedMemoryProposal("Y", "", new[] { "b", "r" }),
+            },
+            "high-value-dropped" => new[] { new ConsolidatedMemoryProposal("B", "", new[] { "b" }) },
+            _ => throw new ArgumentOutOfRangeException(nameof(scenario)),
+        };
+
+        var plan = MemoryConsolidationPlanner.Build(
+            100, existing, proposals, 2, "op", DateTimeOffset.UtcNow);
+
+        Assert.False(plan.IsValid);
+        Assert.Equal(expectedReason, plan.RejectionReason);
+    }
+
+    [Fact]
+    public void Planner_PreservesMetaAndSuppressedOutsideModelRewrite()
+    {
+        var factual = Mem("f", "Fact");
+        var meta = Mem("m", "Prefers short replies", kind: MemoryKind.Meta);
+        var suppressed = Mem("s", "cats", kind: MemoryKind.Suppressed, topics: new[] { "cats" });
+
+        var plan = MemoryConsolidationPlanner.Build(
+            100,
+            new[] { factual, meta, suppressed },
+            new[] { new ConsolidatedMemoryProposal("Fact rewritten", "ctx", new[] { "f" }) },
+            targetCount: 2,
+            operationId: "op",
+            DateTimeOffset.UtcNow);
+
+        Assert.True(plan.IsValid);
+        Assert.Equal(3, plan.Memories!.Count);
+        Assert.Contains(meta, plan.Memories);
+        Assert.Contains(suppressed, plan.Memories);
+        Assert.Equal(2, plan.Memories.Count(memory => memory.Kind != MemoryKind.Suppressed));
+    }
+
+    [Fact]
+    public void DeterministicFallback_PreservesProtectedAndHighValueMetadata()
+    {
+        var low = Mem("low", "Low", importance: 1);
+        var running = Mem("run", "Running", kind: MemoryKind.Running, importance: 6, referenceCount: 4);
+        var high = Mem("high", "High", importance: 9, topics: new[] { "gold" });
+        var meta = Mem("meta", "Meta", kind: MemoryKind.Meta);
+        var suppressed = Mem("sup", "Suppressed", kind: MemoryKind.Suppressed);
+
+        var result = MemoryConsolidationPlanner.DeterministicFallback(
+            new[] { low, running, high, meta, suppressed },
+            targetCount: 3);
+
+        Assert.DoesNotContain(low, result);
+        Assert.Contains(running, result);
+        Assert.Contains(high, result);
+        Assert.Contains(meta, result);
+        Assert.Contains(suppressed, result);
+        Assert.Equal(4, result.Single(memory => memory.MemoryId == "run").ReferenceCount);
+        Assert.Equal(new[] { "gold" }, result.Single(memory => memory.MemoryId == "high").Topics);
+    }
+
+    [Fact]
+    public void DeterministicFallback_TiesUseOriginalOrder()
+    {
+        var timestamp = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var first = Mem("a", "A", createdAt: timestamp, lastReferencedAt: timestamp, importance: 1);
+        var second = Mem("b", "B", createdAt: timestamp, lastReferencedAt: timestamp, importance: 1);
+
+        var result = MemoryConsolidationPlanner.DeterministicFallback(
+            new[] { first, second },
+            targetCount: 1);
+
+        Assert.Equal("a", Assert.Single(result).MemoryId);
     }
 
     // ── ReplaceAllMemoriesAsync (InMemoryUserMemoryStore) ─────────────
@@ -353,4 +462,25 @@ public class MemoryConsolidationTests
         var message = new ChatMessage(ChatRole.Assistant, text);
         return new ChatResponse(message);
     }
+
+    private static UserMemory Mem(
+        string id,
+        string content,
+        MemoryKind kind = MemoryKind.Factual,
+        DateTimeOffset? createdAt = null,
+        DateTimeOffset? lastReferencedAt = null,
+        int referenceCount = 0,
+        IReadOnlyList<string>? topics = null,
+        int? importance = null,
+        IReadOnlyList<ulong>? evidence = null) => new(
+            content,
+            "ctx",
+            createdAt ?? new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            lastReferencedAt ?? new DateTimeOffset(2026, 1, 2, 0, 0, 0, TimeSpan.Zero),
+            referenceCount,
+            kind,
+            topics,
+            Importance: importance,
+            Provenance: new MemoryProvenance("source-op", DateTimeOffset.UtcNow, evidence ?? Array.Empty<ulong>()),
+            MemoryId: id);
 }

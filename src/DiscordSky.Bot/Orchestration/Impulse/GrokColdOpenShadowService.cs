@@ -82,7 +82,12 @@ public sealed class GrokColdOpenShadowService : BackgroundService, IColdOpenShad
                 opportunity.Context.MoodLabel,
                 opportunity.Context.SituationLog,
                 opportunity.Context.RecentPeople.ToArray(),
-                opportunity.Context.RecentLines?.ToArray()),
+                opportunity.Context.RecentLines?.ToArray(),
+                opportunity.Context.RoomEvidence?.Select(item => item with
+                {
+                    TopicAnchors = item.TopicAnchors.ToArray(),
+                    ResourceIds = item.ResourceIds.ToArray(),
+                }).ToArray()),
             RoomLines = opportunity.RoomLines.ToArray(),
         };
         if (_queue.Writer.TryWrite(snapshot)) return true;

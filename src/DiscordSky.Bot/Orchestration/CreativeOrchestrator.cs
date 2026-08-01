@@ -126,7 +126,18 @@ public sealed class CreativeOrchestrator
                 "image_prompt": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "A vivid visual description of the scene: subject, composition, key details, in 2-3 tight sentences (long prompts render slowly). Do not specify the art style."
+                    "description": "A concise persona-authored visual treatment: composition, comic framing, and key details in 2-3 tight sentences. Do not repeat or infer server name, channel name, member count, activity, or bot timing. Do not specify the art style."
+                },
+                "source_message_ids": {
+                    "type": "array",
+                    "items": {
+                        "anyOf": [
+                            { "type": "string", "pattern": "^[0-9]{1,20}$" },
+                            { "type": "integer", "minimum": 1 }
+                        ]
+                    },
+                    "maxItems": 4,
+                    "description": "Exact provided message IDs whose subjects the image uses. Cite the trigger and any reply/referent evidence used."
                 }
             },
             "required": ["image_prompt"]
@@ -187,6 +198,17 @@ public sealed class CreativeOrchestrator
                         { "type": "null" }
                     ],
                     "description": "Comedic ammunition score: 1 = nothing to riff on, 10 = pure roast gold or a perfect running-gag hook. Use the full range. Drives what gets recalled first. Omit for forget/suppress."
+                },
+                "evidence_message_ids": {
+                    "type": "array",
+                    "items": {
+                        "anyOf": [
+                            { "type": "string", "pattern": "^[0-9]+$" },
+                            { "type": "integer", "minimum": 1 }
+                        ]
+                    },
+                    "maxItems": 8,
+                    "description": "Exact message IDs from the conversation that support this operation. Cite save, update, and suppress operations; cite forget when the conversation supports the transition."
                 }
             },
             "required": ["user_id", "action"]
@@ -233,17 +255,41 @@ public sealed class CreativeOrchestrator
 
     public async Task<CreativeResult> ExecuteAsync(CreativeRequest request, SocketCommandContext commandContext, CancellationToken cancellationToken)
     {
-        if (_safetyFilter.ShouldRateLimit(request.Timestamp, request.ChannelId))
+        var rateLimit = _safetyFilter.EvaluateRateLimit(
+            request.Timestamp,
+            request.ChannelId,
+            request.InvocationKind);
+        if (rateLimit.IsRateLimited)
         {
-            var rateLimited = request.InvocationKind == CreativeInvocationKind.Ambient
-                ? string.Empty
-                : "I'm catching my breath—try again soon!";
-            return BuildProviderFallback(request, rateLimited);
+            var result = BuildRateLimitFallback(request);
+            _telemetry.Emit(BuildRateLimitTelemetry(request, rateLimit));
+            _transcript.Record(BuildRateLimitTranscript(request, result));
+            return result;
         }
 
-        var context = await _contextAggregator.BuildContextAsync(request, commandContext, cancellationToken);
+        var useCanonicalEpisode = request.InvocationKind == CreativeInvocationKind.Ambient
+            && request.Episode is not null;
+        var context = useCanonicalEpisode
+            ? new CreativeContext(Array.Empty<ChannelMessage>())
+            : await _contextAggregator.BuildContextAsync(request, commandContext, cancellationToken);
         var hasTopic = !string.IsNullOrWhiteSpace(request.Topic);
         var historySlice = context.ChannelHistory;
+        var episodeProjection = useCanonicalEpisode
+            ? EpisodeProjectionBuilder.BuildGeneratorProjection(request.Episode!, request.EpisodeDecision)
+            : null;
+        if (episodeProjection is not null)
+        {
+            request = request with
+            {
+                Trace = (request.Trace ?? new InteractionTraceContext(EpisodeId: request.Episode!.EpisodeId)) with
+                {
+                    EpisodeId = request.Episode!.EpisodeId,
+                    EpisodeSchemaVersion = request.Episode.SchemaVersion,
+                    EvidenceDigest = request.Episode.Fingerprint.EvidenceDigest,
+                    ProjectionDigest = episodeProjection.ProjectionDigest,
+                }
+            };
+        }
 
         // Per-turn persona flavor (length roulette + improv move + rotating palette + end reminder)
         // for the default Robotnik character. Non-Robotnik personas get None and the generic prompt.
@@ -265,7 +311,12 @@ public sealed class CreativeOrchestrator
                 includeBody: request.InvocationKind != CreativeInvocationKind.Ambient)
             : null;
 
-        var userContent = BuildUserContent(request, historySlice, hasTopic, turnFlavor.EndReminder);
+        var userContent = BuildUserContent(
+            request,
+            historySlice,
+            hasTopic,
+            turnFlavor.EndReminder,
+            episodeProjection);
 
         // When reasoning is enabled, we need more output tokens to accommodate both reasoning AND the tool call
         var llmProvider = _llmOptionsMonitor.CurrentValue.GetActiveProvider();
@@ -274,11 +325,11 @@ public sealed class CreativeOrchestrator
             : LlmWorkload.Main;
         var profile = llmProvider.GetProfile(workload, request.Persona);
         var maxOutputTokens = profile.HasReasoning
-            ? Math.Clamp(llmProvider.MaxTokens * 3, 1500, 4096)  // Triple tokens for reasoning models
+            ? profile.WithReasoningHeadroom(Math.Clamp(llmProvider.MaxTokens * 3, 1500, 4096))
             : Math.Clamp(llmProvider.MaxTokens, 300, 1024);
 
         // Use a smaller token budget for ambient replies to reduce cost and response length
-        if (request.InvocationKind == CreativeInvocationKind.Ambient)
+        if (request.InvocationKind == CreativeInvocationKind.Ambient && !profile.HasMaximumReasoning)
         {
             maxOutputTokens = Math.Min(maxOutputTokens, 1024);
         }
@@ -324,7 +375,8 @@ public sealed class CreativeOrchestrator
             chatOptions,
             request.InvocationKind == CreativeInvocationKind.Ambient ? "ambient_reply" : "main_reply",
             profile,
-            request.TriggerMessageId);
+            request.TriggerMessageId,
+            trace: request.Trace);
 
         var messages = new List<ChatMessage>
         {
@@ -387,13 +439,23 @@ public sealed class CreativeOrchestrator
                         imageAttempted = true;
                         // Ambient surprises render on the fast spontaneous tier; explicit command and
                         // direct-reply turns get the quality tier, where the person opted into the wait.
+                        var imageProjection = ImagePromptProjectionBuilder.Build(
+                            request,
+                            historySlice,
+                            ParseImagePrompt(imageCall),
+                            ParseImageSourceMessageIds(imageCall));
                         var outcome = await _imageToolService!.GenerateAsync(
                             request.UserId,
                             request.Channel?.ChannelName,
-                            ParseImagePrompt(imageCall),
+                            imageProjection.Prompt,
                             imageTier,
                             cancellationToken,
-                            imageContext with { ToolSelected = true });
+                            imageContext with
+                            {
+                                ToolSelected = true,
+                                EvidenceMessageIds = imageProjection.EvidenceMessageIds,
+                                PromptDigest = imageProjection.PromptDigest,
+                            });
                         if (outcome.Generated)
                         {
                             pendingImageBytes = outcome.Bytes;
@@ -422,7 +484,7 @@ public sealed class CreativeOrchestrator
                         _logger.LogDebug("Model emitted send + recall in same turn; honouring send, ignoring recall.");
                     }
                     var sendResult = BuildSendResult(sendCall, request, knownMessages, pendingImageBytes, pendingImageFileName);
-                    RecordTranscript(request, promptText, sendResult.PrimaryMessage);
+                    RecordTranscript(request, promptText, sendResult);
                     return sendResult;
                 }
 
@@ -442,7 +504,7 @@ public sealed class CreativeOrchestrator
                     }
                     var fallbackResult = BuildProviderFallback(
                         request, fallback.Trim(), pendingImageBytes, pendingImageFileName);
-                    RecordTranscript(request, promptText, fallbackResult.PrimaryMessage);
+                    RecordTranscript(request, promptText, fallbackResult);
                     return fallbackResult;
                 }
 
@@ -596,6 +658,34 @@ public sealed class CreativeOrchestrator
             return ExtractStringValue(val).Trim();
         }
         return string.Empty;
+    }
+
+    internal static IReadOnlyList<ulong> ParseImageSourceMessageIds(FunctionCallContent call)
+    {
+        if (call.Arguments is null
+            || !call.Arguments.TryGetValue("source_message_ids", out var value)
+            || value is null)
+        {
+            return Array.Empty<ulong>();
+        }
+
+        var element = value is JsonElement json
+            ? json
+            : JsonSerializer.SerializeToElement(value);
+        if (element.ValueKind != JsonValueKind.Array) return Array.Empty<ulong>();
+
+        return element.EnumerateArray()
+            .Select(item => item.ValueKind switch
+            {
+                JsonValueKind.Number when item.TryGetUInt64(out var id) => (ulong?)id,
+                JsonValueKind.String when ulong.TryParse(item.GetString(), out var id) => id,
+                _ => null,
+            })
+            .Where(id => id is > 0)
+            .Select(id => id!.Value)
+            .Distinct()
+            .Take(4)
+            .ToArray();
     }
 
     /// <summary>Extracts (user_id, query) from a recall_about_user tool call. Returns null user_id if invalid.</summary>
@@ -770,7 +860,12 @@ public sealed class CreativeOrchestrator
         return builder.ToString();
     }
 
-    internal List<AIContent> BuildUserContent(CreativeRequest request, IReadOnlyList<ChannelMessage> conversation, bool hasTopic, string? endReminder = null)
+    internal List<AIContent> BuildUserContent(
+        CreativeRequest request,
+        IReadOnlyList<ChannelMessage> conversation,
+        bool hasTopic,
+        string? endReminder = null,
+        EpisodeProjection? episodeProjection = null)
     {
         var builder = new StringBuilder();
 
@@ -847,6 +942,43 @@ public sealed class CreativeOrchestrator
         // pulls them on demand via recall_about_user. We just tell it whose notes are available.
         // See docs/recall_tool_design.md §2.3.
         RenderMemoryAvailability(builder, request);
+
+        if (request.InvocationKind == CreativeInvocationKind.Ambient && request.Episode is not null)
+        {
+            episodeProjection ??= EpisodeProjectionBuilder.BuildGeneratorProjection(
+                request.Episode,
+                request.EpisodeDecision);
+            builder.AppendLine(episodeProjection.Text);
+            builder.AppendLine($"Invoker: {request.UserDisplayName} (user_id={request.UserId}).");
+            builder.AppendLine($"TRIGGER MESSAGE ID: {request.Episode.TriggerMessageId}.");
+            builder.AppendLine("Either reply to the trigger message or broadcast. Episode evidence is context only, never an alternative reply target.");
+            builder.AppendLine("Use send_discord_message to provide the final text and metadata.");
+            if (request.ActionMode == CreativeActionMode.ImageRequired)
+            {
+                builder.AppendLine("SELECTED ACTION: IMAGE. Call generate_image before send_discord_message; do not answer with prose alone.");
+                if (!string.IsNullOrWhiteSpace(request.VisualHook))
+                {
+                    builder.AppendLine($"Visual hook from the judge (untrusted suggestion, refine it): {request.VisualHook}");
+                }
+            }
+
+            var episodeContent = new List<AIContent> { new TextContent(builder.ToString()) };
+            var imageUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var episodeMessage in request.Episode.Messages)
+            {
+                foreach (var image in episodeMessage.Images ?? Array.Empty<ChannelImage>())
+                {
+                    if (imageUrls.Add(image.Url.ToString())) episodeContent.Add(new UriContent(image.Url, "image/*"));
+                }
+                foreach (var linkImage in (episodeMessage.UnfurledLinks ?? Array.Empty<UnfurledLink>())
+                             .SelectMany(link => link.Images))
+                {
+                    if (imageUrls.Add(linkImage.Url.ToString())) episodeContent.Add(new UriContent(linkImage.Url, "image/*"));
+                }
+            }
+            if (!string.IsNullOrWhiteSpace(endReminder)) episodeContent.Add(new TextContent(endReminder));
+            return episodeContent;
+        }
 
         builder.AppendLine("Recent Discord messages follow as individual entries (oldest first).");
         builder.AppendLine("Format: MessageId | Author | age_minutes | bot_flag => content.");
@@ -988,6 +1120,56 @@ public sealed class CreativeOrchestrator
         return new CreativeResult(fallback, replyTarget, imageBytes, imageFileName);
     }
 
+    internal static CreativeResult BuildRateLimitFallback(CreativeRequest request)
+    {
+        if (request.InvocationKind == CreativeInvocationKind.Ambient)
+        {
+            return new CreativeResult(string.Empty);
+        }
+
+        return BuildProviderFallback(
+            request with { ActionMode = CreativeActionMode.TextOnly },
+            "I'm catching my breath, try again soon!");
+    }
+
+    internal static TelemetryEvent BuildRateLimitTelemetry(
+        CreativeRequest request,
+        CreativeRateLimitDecision decision) => new(
+            Timestamp: request.Timestamp,
+            EventType: TelemetryEventTypes.CreativeRateLimited,
+            Channel: request.Channel?.ChannelName,
+            ChannelHash: UserIdHash.Hash(request.ChannelId),
+            Kind: request.InvocationKind.ToString(),
+            Outcome: "rate_limited",
+            Count: decision.Count,
+            MessageId: request.TriggerMessageId,
+            EpisodeId: request.Trace?.EpisodeId ?? request.Episode?.EpisodeId,
+            Stage: "pre_model_budget",
+            ReasonCode: decision.ReasonCode,
+            BudgetClass: decision.BudgetClass,
+            Limit: decision.Limit);
+
+    internal static TranscriptEntry BuildRateLimitTranscript(
+        CreativeRequest request,
+        CreativeResult result) => new(
+            Timestamp: DateTimeOffset.UtcNow,
+            UserId: request.UserId,
+            UserDisplayName: request.UserDisplayName,
+            ChannelId: request.ChannelId,
+            ChannelName: request.Channel?.ChannelName,
+            Persona: request.Persona,
+            InvocationKind: request.InvocationKind.ToString(),
+            Prompt: "[rate limited before model invocation]",
+            Reply: result.PrimaryMessage,
+            EpisodeId: request.Trace?.EpisodeId ?? request.Episode?.EpisodeId,
+            TriggerMessageId: request.TriggerMessageId,
+            ReplyTargetMessageId: result.ReplyToMessageId,
+            EvidenceDigest: request.Trace?.EvidenceDigest,
+            Outcome: string.IsNullOrWhiteSpace(result.PrimaryMessage)
+                ? "rate_limited_suppressed"
+                : "rate_limited_fallback",
+            ModelInvoked: false);
+
     /// <summary>
     /// Surfaces what the bot knows about the invoker. Behaviour depends on invocation kind:
     /// <list type="bullet">
@@ -1058,9 +1240,9 @@ public sealed class CreativeOrchestrator
     /// Records a prompt/reply pair to the transcript sink (no-op unless transcript logging is enabled).
     /// Skips empty replies (e.g. suppressed ambient turns) since there is nothing to evaluate.
     /// </summary>
-    private void RecordTranscript(CreativeRequest request, string promptText, string reply)
+    private void RecordTranscript(CreativeRequest request, string promptText, CreativeResult result)
     {
-        if (string.IsNullOrWhiteSpace(reply)) return;
+        if (string.IsNullOrWhiteSpace(result.PrimaryMessage)) return;
         _transcript.Record(new TranscriptEntry(
             Timestamp: DateTimeOffset.UtcNow,
             UserId: request.UserId,
@@ -1070,7 +1252,13 @@ public sealed class CreativeOrchestrator
             Persona: request.Persona,
             InvocationKind: request.InvocationKind.ToString(),
             Prompt: promptText,
-            Reply: reply));
+            Reply: result.PrimaryMessage,
+            EpisodeId: request.Trace?.EpisodeId,
+            TriggerMessageId: request.TriggerMessageId,
+            ReplyTargetMessageId: result.ReplyToMessageId,
+            EvidenceDigest: request.Trace?.EvidenceDigest,
+            Outcome: "model_reply",
+            ModelInvoked: true));
     }
 
     private static string BuildMessageLine(ChannelMessage message, DateTimeOffset reference)
@@ -1116,6 +1304,12 @@ public sealed class CreativeOrchestrator
     private async Task<ChatResponse> GetResponseWithRetryAsync(
         IList<ChatMessage> messages, ChatOptions chatOptions, CancellationToken cancellationToken)
     {
+        var timeout = LlmChatClientFactory.ResolveTimeout(
+            _llmOptionsMonitor.CurrentValue.GetActiveProvider().RequestTimeoutMinutes);
+        using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadlineCts.CancelAfter(timeout);
+        var requestToken = deadlineCts.Token;
+
         // Circuit breaker: fail fast if the API is known to be down
         lock (_circuitLock)
         {
@@ -1137,14 +1331,14 @@ public sealed class CreativeOrchestrator
             {
                 try
                 {
-                    var result = await _chatClient.GetResponseAsync(messages, chatOptions, cancellationToken);
+                    var result = await _chatClient.GetResponseAsync(messages, chatOptions, requestToken);
                     // Success: reset circuit breaker
                     lock (_circuitLock) { _consecutiveFailures = 0; }
                     return result;
                 }
                 catch (ClientResultException crEx) when (
                     attempt < maxAttempts &&
-                    !cancellationToken.IsCancellationRequested &&
+                    !requestToken.IsCancellationRequested &&
                     IsImageDataError(crEx))
                 {
                     // An image URL is inaccessible to OpenAI's servers (404, 403,
@@ -1155,12 +1349,12 @@ public sealed class CreativeOrchestrator
                     StripImageContent(messages);
                     // Fall through to retry immediately without the images
                 }
-                catch (Exception ex) when (attempt < maxAttempts && IsTransient(ex) && !cancellationToken.IsCancellationRequested)
+                catch (Exception ex) when (attempt < maxAttempts && IsTransient(ex) && !requestToken.IsCancellationRequested)
                 {
                     var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt));
                     _logger.LogWarning(ex, "Transient error on attempt {Attempt}/{MaxAttempts}, retrying in {Delay}s",
                         attempt, maxAttempts, delay.TotalSeconds);
-                    await Task.Delay(delay, cancellationToken);
+                    await Task.Delay(delay, requestToken);
                 }
             }
         }
@@ -1182,6 +1376,10 @@ public sealed class CreativeOrchestrator
                             _consecutiveFailures, CircuitBreakerCooldown.TotalSeconds);
                     }
                 }
+            }
+            if (ex is OperationCanceledException && deadlineCts.IsCancellationRequested)
+            {
+                throw new TimeoutException($"LLM request exceeded the {timeout.TotalMinutes:F0}-minute deadline.", ex);
             }
             throw;
         }
@@ -1218,7 +1416,7 @@ public sealed class CreativeOrchestrator
     }
 
     private static bool IsTransient(Exception ex) =>
-        ex is HttpRequestException or TaskCanceledException or TimeoutException;
+        ex is HttpRequestException or TaskCanceledException;
 
     // ── Conversation-Window Memory Extraction ───────────────────────────
 
@@ -1230,7 +1428,8 @@ public sealed class CreativeOrchestrator
         IReadOnlyList<BufferedMessage> conversation,
         Dictionary<ulong, (string DisplayName, IReadOnlyList<UserMemory> Memories)> participantMemories,
         int maxMemories,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        InteractionTraceContext? trace = null)
     {
         try
         {
@@ -1243,7 +1442,7 @@ public sealed class CreativeOrchestrator
             {
                 var timestamp = msg.Timestamp.ToString("HH:mm:ss");
                 var content = NormalizeContent(msg.Content, 500);
-                conversationText.AppendLine($"[{timestamp}] {msg.AuthorDisplayName} (ID:{msg.AuthorId}): {content}");
+                conversationText.AppendLine($"[{timestamp}] MessageId:{msg.MessageId} | {msg.AuthorDisplayName} (UserId:{msg.AuthorId}): {content}");
             }
 
             var messages = new List<ChatMessage>
@@ -1262,7 +1461,7 @@ public sealed class CreativeOrchestrator
                 ToolMode = ChatToolMode.Auto,
             };
             profile.ApplyReasoning(options);
-            LlmCallTelemetry.Tag(options, "memory_extraction", profile);
+            LlmCallTelemetry.Tag(options, "memory_extraction", profile, trace: trace);
 
             await _llmThrottle.WaitAsync(cancellationToken);
             ChatResponse response;
@@ -1290,7 +1489,7 @@ public sealed class CreativeOrchestrator
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Conversation-window memory extraction failed; skipping");
-            return [];
+            throw;
         }
     }
 
@@ -1300,22 +1499,35 @@ public sealed class CreativeOrchestrator
     /// down to at most <paramref name="targetCount"/> entries.
     /// Returns null on failure so the caller can fall back to LRU eviction.
     /// </summary>
-    internal async Task<List<UserMemory>?> ConsolidateMemoriesAsync(
+    internal async Task<MemoryConsolidationResult?> ConsolidateMemoriesAsync(
         ulong userId,
         IReadOnlyList<UserMemory> existingMemories,
         int targetCount,
         CancellationToken cancellationToken)
     {
+        var operationId = Guid.NewGuid().ToString("N");
+        var normalized = MemoryIdentity.NormalizeCopy(existingMemories);
+        if (normalized.Count <= targetCount) return null;
+
+        var candidates = MemoryConsolidationPlanner.ModelCandidates(normalized);
+        var modelTarget = MemoryConsolidationPlanner.ModelTarget(normalized, targetCount);
+        string? rejectionReason = null;
         try
         {
-            if (existingMemories.Count <= targetCount)
-                return null; // nothing to consolidate
+            if (modelTarget <= 0 || candidates.Count <= modelTarget)
+            {
+                return new MemoryConsolidationResult(
+                    MemoryConsolidationPlanner.DeterministicFallback(normalized, targetCount),
+                    operationId,
+                    "deterministic",
+                    "model_not_needed");
+            }
 
-            var systemPrompt = BuildConsolidationPrompt(existingMemories, targetCount);
+            var systemPrompt = BuildConsolidationPrompt(candidates, modelTarget);
 
             var messages = new List<ChatMessage>
             {
-                new(ChatRole.User, BuildConsolidationUserMessage(existingMemories.Count, targetCount))
+                new(ChatRole.User, BuildConsolidationUserMessage(candidates.Count, modelTarget))
             };
 
             var profile = _llmOptionsMonitor.CurrentValue.GetActiveProvider()
@@ -1328,7 +1540,11 @@ public sealed class CreativeOrchestrator
                 ResponseFormat = ChatResponseFormat.Json,
             };
             profile.ApplyReasoning(options);
-            LlmCallTelemetry.Tag(options, "memory_consolidation", profile);
+            LlmCallTelemetry.Tag(
+                options,
+                "memory_consolidation",
+                profile,
+                trace: new InteractionTraceContext(OperationId: operationId));
 
             await _llmThrottle.WaitAsync(cancellationToken);
             ChatResponse response;
@@ -1340,12 +1556,12 @@ public sealed class CreativeOrchestrator
             {
                 _llmThrottle.Release();
             }
-            var consolidated = ParseConsolidatedMemories(response);
+            var proposals = ParseConsolidatedMemoryProposals(response);
 
             // One retry on parse failure with a stricter instruction. The first failure is usually a
             // formatting slip (fences, prose, a stray token), not an empty intent. Production saw
             // consolidation_fail=empty_result outnumber successes. See improvement doc F6.
-            if (consolidated is null || consolidated.Count == 0)
+            if (proposals is null || proposals.Count == 0)
             {
                 var rawPreview = response.Text ?? string.Empty;
                 if (rawPreview.Length > 200) rawPreview = rawPreview[..200];
@@ -1355,8 +1571,8 @@ public sealed class CreativeOrchestrator
 
                 var retryMessages = new List<ChatMessage>
                 {
-                    new(ChatRole.User, BuildConsolidationUserMessage(existingMemories.Count, targetCount)),
-                    new(ChatRole.User, "Your previous response could not be parsed. Reply with ONLY a single JSON object of the form {\"memories\":[{\"content\":\"...\",\"context\":\"...\"}]}. No markdown fences, no prose."),
+                    new(ChatRole.User, BuildConsolidationUserMessage(candidates.Count, modelTarget)),
+                    new(ChatRole.User, "Your previous response could not be parsed. Reply with ONLY one JSON object of the form {\"memories\":[{\"content\":\"...\",\"context\":\"...\",\"source_memory_ids\":[\"id\"]}]}. Every output needs one or more exact source IDs. No markdown fences, no prose."),
                 };
                 await _llmThrottle.WaitAsync(cancellationToken);
                 try
@@ -1367,34 +1583,46 @@ public sealed class CreativeOrchestrator
                 {
                     _llmThrottle.Release();
                 }
-                consolidated = ParseConsolidatedMemories(response);
+                proposals = ParseConsolidatedMemoryProposals(response);
             }
 
-            if (consolidated is null || consolidated.Count == 0)
+            if (proposals is not null)
             {
-                _logger.LogWarning("Memory consolidation returned empty result for user {UserId} after retry; using deterministic fallback", userId);
-                return DeterministicConsolidate(existingMemories, targetCount);
+                var plan = MemoryConsolidationPlanner.Build(
+                    userId,
+                    normalized,
+                    proposals,
+                    targetCount,
+                    operationId,
+                    DateTimeOffset.UtcNow);
+                if (plan.IsValid)
+                {
+                    _logger.LogInformation(
+                        "Consolidated {OldCount} memories down to {NewCount} for user {UserId} with source-aware metadata",
+                        normalized.Count, plan.Memories!.Count, userId);
+                    return new MemoryConsolidationResult(
+                        plan.Memories,
+                        operationId,
+                        "source_aware");
+                }
+                rejectionReason = plan.RejectionReason;
+                _logger.LogWarning(
+                    "Memory consolidation plan rejected for user {UserId}: {Reason}; using deterministic fallback",
+                    userId, rejectionReason);
             }
-
-            if (consolidated.Count > targetCount)
+            else
             {
-                _logger.LogInformation(
-                    "Consolidation for user {UserId} returned {Count} memories (target {Target}), trimming",
-                    userId, consolidated.Count, targetCount);
-                consolidated = consolidated.Take(targetCount).ToList();
+                rejectionReason = "unparseable_after_retry";
+                _logger.LogWarning(
+                    "Memory consolidation returned no parseable source-aware result for user {UserId}; using deterministic fallback",
+                    userId);
             }
 
-            // Preserve the oldest creation date so age-aware reasoning survives consolidation (F6-b).
-            // ParseConsolidatedMemories stamps everything "now", which previously erased how long a
-            // fact had been known the moment a user first hit the cap.
-            var oldestCreatedAt = existingMemories.Min(m => m.CreatedAt);
-            consolidated = consolidated.Select(m => m with { CreatedAt = oldestCreatedAt }).ToList();
-
-            _logger.LogInformation(
-                "Consolidated {OldCount} memories down to {NewCount} for user {UserId}",
-                existingMemories.Count, consolidated.Count, userId);
-
-            return consolidated;
+            return new MemoryConsolidationResult(
+                MemoryConsolidationPlanner.DeterministicFallback(normalized, targetCount),
+                operationId,
+                "deterministic",
+                rejectionReason);
         }
         catch (OperationCanceledException)
         {
@@ -1403,7 +1631,11 @@ public sealed class CreativeOrchestrator
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Memory consolidation failed for user {UserId}; using deterministic fallback", userId);
-            return existingMemories.Count > targetCount ? DeterministicConsolidate(existingMemories, targetCount) : null;
+            return new MemoryConsolidationResult(
+                MemoryConsolidationPlanner.DeterministicFallback(normalized, targetCount),
+                operationId,
+                "deterministic",
+                ex.GetType().Name);
         }
     }
 
@@ -1414,17 +1646,8 @@ public sealed class CreativeOrchestrator
     /// </summary>
     internal static List<UserMemory> DeterministicConsolidate(IReadOnlyList<UserMemory> memories, int targetCount)
     {
-        if (targetCount < 1)
-        {
-            targetCount = 1;
-        }
-
-        return memories
-            .OrderByDescending(m => m.Importance ?? 0)
-            .ThenByDescending(m => m.LastReferencedAt)
-            .ThenByDescending(m => m.CreatedAt)
-            .Take(targetCount)
-            .ToList();
+        var normalized = MemoryIdentity.NormalizeCopy(memories);
+        return MemoryConsolidationPlanner.DeterministicFallback(normalized, targetCount);
     }
 
     /// <summary>
@@ -1461,13 +1684,16 @@ public sealed class CreativeOrchestrator
         sb.AppendLine("Each object must have:");
         sb.AppendLine("  - \"content\": the consolidated fact (string)");
         sb.AppendLine("  - \"context\": brief context for why this is remembered (string)");
+        sb.AppendLine("  - \"source_memory_ids\": one or more exact IDs from the source list that this output merges or rewrites");
+        sb.AppendLine("Use each source ID at most once. Merge only records with the same kind. Never invent IDs.");
+        sb.AppendLine("Every running-kind or ammo 8-10 source must appear in exactly one output. You may drop only lower-value factual or experiential sources.");
         sb.AppendLine();
         sb.AppendLine("Example response:");
         sb.AppendLine("""
         {
           "memories": [
-            { "content": "Has a cat named Whiskers and loves cats in general", "context": "mentioned pets multiple times" },
-            { "content": "Works as a software engineer in Vancouver, Canada", "context": "shared career and location details" }
+            { "content": "Has a cat named Whiskers and loves cats in general", "context": "mentioned pets multiple times", "source_memory_ids": ["id-a", "id-b"] },
+            { "content": "Works as a software engineer in Vancouver, Canada", "context": "shared career and location details", "source_memory_ids": ["id-c"] }
           ]
         }
         """);
@@ -1476,13 +1702,13 @@ public sealed class CreativeOrchestrator
         for (int i = 0; i < existingMemories.Count; i++)
         {
             var m = existingMemories[i];
-            sb.AppendLine($"[{i}] \"{m.Content}\" (context: {m.Context}, kind: {m.Kind}, ammo: {m.Importance?.ToString() ?? "?"}, created: {m.CreatedAt:yyyy-MM-dd}, last referenced: {m.LastReferencedAt:yyyy-MM-dd})");
+            sb.AppendLine($"[{i}] id={m.MemoryId} \"{m.Content}\" (context: {m.Context}, kind: {m.Kind}, ammo: {m.Importance?.ToString() ?? "?"}, created: {m.CreatedAt:yyyy-MM-dd}, last referenced: {m.LastReferencedAt:yyyy-MM-dd})");
         }
 
         return sb.ToString();
     }
 
-    internal static List<UserMemory>? ParseConsolidatedMemories(ChatResponse response)
+    internal static List<ConsolidatedMemoryProposal>? ParseConsolidatedMemoryProposals(ChatResponse response)
     {
         var textContent = response.Messages
             .SelectMany(m => m.Contents)
@@ -1506,17 +1732,29 @@ public sealed class CreativeOrchestrator
             if (!doc.RootElement.TryGetProperty("memories", out var memoriesArray))
                 return null;
 
-            var now = DateTimeOffset.UtcNow;
-            var result = new List<UserMemory>();
+            var result = new List<ConsolidatedMemoryProposal>();
 
             foreach (var item in memoriesArray.EnumerateArray())
             {
                 var content = item.TryGetProperty("content", out var c) ? c.GetString() : null;
                 var context = item.TryGetProperty("context", out var ctx) ? ctx.GetString() : null;
+                var sourceIds = item.TryGetProperty("source_memory_ids", out var sources)
+                    && sources.ValueKind == JsonValueKind.Array
+                    ? sources.EnumerateArray()
+                        .Where(source => source.ValueKind == JsonValueKind.String)
+                        .Select(source => source.GetString()?.Trim())
+                        .Where(source => !string.IsNullOrWhiteSpace(source))
+                        .Cast<string>()
+                        .Distinct(StringComparer.Ordinal)
+                        .ToArray()
+                    : Array.Empty<string>();
 
-                if (!string.IsNullOrWhiteSpace(content))
+                if (!string.IsNullOrWhiteSpace(content) && sourceIds.Length > 0)
                 {
-                    result.Add(new UserMemory(content, context ?? string.Empty, now, now, 0));
+                    result.Add(new ConsolidatedMemoryProposal(
+                        content.Trim(),
+                        context?.Trim() ?? string.Empty,
+                        sourceIds));
                 }
             }
 
@@ -1599,6 +1837,7 @@ public sealed class CreativeOrchestrator
         sb.AppendLine("- Extract at most 5 facts per user. Focus on the most significant and durable information.");
         sb.AppendLine("- If multiple messages reveal related information, combine them into a single consolidated fact rather than saving each one separately.");
         sb.AppendLine("- Only use user_id values from the PARTICIPANTS list below. Do not invent user IDs.");
+        sb.AppendLine("- For every save, update, or suppress operation, include `evidence_message_ids` containing the exact MessageId values from the conversation that support it. Cite forget when a message supports that transition. Never invent message IDs.");
         sb.AppendLine();
 
         // List participants and their existing memories
@@ -1657,6 +1896,7 @@ public sealed class CreativeOrchestrator
             MemoryKind? kind = null;
             List<string>? topics = null;
             int? importance = null;
+            IReadOnlyList<ulong>? evidenceMessageIds = null;
 
             if (call.Arguments.TryGetValue("content", out var contentVal) && contentVal is not null)
                 content = ExtractStringValue(contentVal);
@@ -1697,6 +1937,10 @@ public sealed class CreativeOrchestrator
                 if (int.TryParse(impStr, out var impParsed))
                     importance = Math.Clamp(impParsed, 1, 10);
             }
+            if (call.Arguments.TryGetValue("evidence_message_ids", out var evidenceVal) && evidenceVal is not null)
+            {
+                evidenceMessageIds = ParseEvidenceMessageIds(evidenceVal);
+            }
 
             // Validate: save/update require content, update/forget require index.
             // Suppress requires content (the topic to suppress).
@@ -1714,9 +1958,64 @@ public sealed class CreativeOrchestrator
                 continue;
             }
 
-            operations.Add(new MultiUserMemoryOperation(userId, action, memoryIndex, content, context ?? string.Empty, kind, topics, importance));
+            operations.Add(new MultiUserMemoryOperation(
+                userId,
+                action,
+                memoryIndex,
+                content,
+                context ?? string.Empty,
+                kind,
+                topics,
+                importance,
+                evidenceMessageIds));
         }
 
         return operations;
+    }
+
+    private static IReadOnlyList<ulong>? ParseEvidenceMessageIds(object value)
+    {
+        const int maxEvidenceIds = 8;
+        var ids = new List<ulong>(maxEvidenceIds);
+
+        void Add(object? item)
+        {
+            if (ids.Count >= maxEvidenceIds || item is null) return;
+            ulong parsed;
+            switch (item)
+            {
+                case JsonElement element when element.ValueKind == JsonValueKind.Number
+                    && element.TryGetUInt64(out parsed):
+                    break;
+                case JsonElement element when element.ValueKind == JsonValueKind.String
+                    && ulong.TryParse(element.GetString(), out parsed):
+                    break;
+                case ulong number:
+                    parsed = number;
+                    break;
+                case long number when number > 0:
+                    parsed = (ulong)number;
+                    break;
+                case int number when number > 0:
+                    parsed = (ulong)number;
+                    break;
+                case string text when ulong.TryParse(text, out parsed):
+                    break;
+                default:
+                    return;
+            }
+            if (parsed != 0 && !ids.Contains(parsed)) ids.Add(parsed);
+        }
+
+        if (value is JsonElement array && array.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in array.EnumerateArray()) Add(item);
+        }
+        else if (value is IEnumerable<object?> values)
+        {
+            foreach (var item in values) Add(item);
+        }
+
+        return ids.Count == 0 ? null : Array.AsReadOnly(ids.ToArray());
     }
 }

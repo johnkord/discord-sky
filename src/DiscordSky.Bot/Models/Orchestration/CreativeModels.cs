@@ -34,7 +34,10 @@ public sealed record CreativeRequest(
     string? TriggerMediaContext = null,
     CreativeActionMode ActionMode = CreativeActionMode.Auto,
     double? VisualWorth = null,
-    string? VisualHook = null
+    string? VisualHook = null,
+    InteractionTraceContext? Trace = null,
+    InteractionEpisode? Episode = null,
+    EpisodeActionDecision? EpisodeDecision = null
 );
 
 /// <summary>
@@ -104,8 +107,17 @@ public sealed record UserMemory(
     MemoryKind Kind = MemoryKind.Factual,
     IReadOnlyList<string>? Topics = null,
     bool Superseded = false,
-    int? Importance = null
+    int? Importance = null,
+    MemoryProvenance? Provenance = null,
+    string? MemoryId = null
 );
+
+public sealed record MemoryProvenance(
+    string OperationId,
+    DateTimeOffset CapturedAt,
+    IReadOnlyList<ulong> EvidenceMessageIds,
+    IReadOnlyList<string>? SourceMemoryIds = null,
+    string? Transition = null);
 
 /// <summary>
 /// A memory operation that targets a specific user, produced by conversation-window extraction.
@@ -118,7 +130,8 @@ public sealed record MultiUserMemoryOperation(
     string? Context,
     MemoryKind? Kind = null,
     IReadOnlyList<string>? Topics = null,
-    int? Importance = null
+    int? Importance = null,
+    IReadOnlyList<ulong>? EvidenceMessageIds = null
 );
 
 public enum MemoryAction { Save, Update, Forget, Suppress }
@@ -127,10 +140,12 @@ public enum MemoryAction { Save, Update, Forget, Suppress }
 /// A single message buffered for conversation-window memory extraction.
 /// </summary>
 public sealed record BufferedMessage(
+    ulong MessageId,
     ulong AuthorId,
     string AuthorDisplayName,
     string Content,
-    DateTimeOffset Timestamp);
+    DateTimeOffset Timestamp,
+    bool HasMedia = false);
 
 /// <summary>
 /// Accumulates messages per channel for debounced conversation-window extraction.

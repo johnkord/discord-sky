@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Models.Orchestration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -12,6 +13,8 @@ public sealed class SafetyFilter : IDisposable
     private readonly ILogger<SafetyFilter> _logger;
     private readonly ConcurrentDictionary<ulong, Queue<DateTimeOffset>> _channelPromptHistory = new();
     private readonly Queue<DateTimeOffset> _globalPromptHistory = new();
+    private readonly ConcurrentDictionary<ulong, Queue<DateTimeOffset>> _explicitChannelReserveHistory = new();
+    private readonly Queue<DateTimeOffset> _explicitGlobalReserveHistory = new();
     private readonly object _rateLimitLock = new();
     private volatile Regex? _banWordRegex;
     private IReadOnlyList<string> _lastBanWords;
@@ -35,41 +38,100 @@ public sealed class SafetyFilter : IDisposable
         });
     }
 
+    public bool ShouldRateLimit(DateTimeOffset timestamp, ulong channelId) =>
+        EvaluateRateLimit(timestamp, channelId, CreativeInvocationKind.Ambient).IsRateLimited;
+
     /// <summary>
-    /// Per-channel rate limiting with a global ceiling.
-    /// The configured MaxPromptsPerHour applies per channel; the global limit is 3x that value.
+    /// Applies a shared per-channel/global budget. Explicit traffic may overflow into a small reserve that
+    /// autonomous traffic cannot consume; both dimensions retain a hard sliding-window ceiling.
     /// </summary>
-    public bool ShouldRateLimit(DateTimeOffset timestamp, ulong channelId)
+    public CreativeRateLimitDecision EvaluateRateLimit(
+        DateTimeOffset timestamp,
+        ulong channelId,
+        CreativeInvocationKind invocationKind)
     {
         var settings = _settingsMonitor.CurrentValue;
         if (settings.MaxPromptsPerHour <= 0)
         {
-            return false;
+            return CreativeRateLimitDecision.Allowed("disabled");
         }
 
         lock (_rateLimitLock)
         {
-            // Global rate limit (3x per-channel limit)
-            var globalLimit = settings.MaxPromptsPerHour * 3;
+            var channelLimit = settings.MaxPromptsPerHour;
+            var globalLimit = MultiplyLimit(channelLimit, 3);
+            var reserveChannelLimit = Math.Max(0, settings.ExplicitReservePromptsPerHour);
+            var reserveGlobalLimit = MultiplyLimit(reserveChannelLimit, 3);
+
             PurgeStale(_globalPromptHistory, timestamp);
-            if (_globalPromptHistory.Count >= globalLimit)
+            PurgeStale(_explicitGlobalReserveHistory, timestamp);
+            var channelHistory = _channelPromptHistory.GetOrAdd(channelId, _ => new Queue<DateTimeOffset>());
+            var explicitChannelReserve = _explicitChannelReserveHistory.GetOrAdd(
+                channelId,
+                _ => new Queue<DateTimeOffset>());
+            PurgeStale(channelHistory, timestamp);
+            PurgeStale(explicitChannelReserve, timestamp);
+
+            var needsGlobalReserve = _globalPromptHistory.Count >= globalLimit;
+            var needsChannelReserve = channelHistory.Count >= channelLimit;
+            var isExplicit = invocationKind != CreativeInvocationKind.Ambient;
+
+            if (!isExplicit && needsGlobalReserve)
             {
                 _logger.LogInformation("Creative request throttled due to global rate limit ({Count}/{Limit})", _globalPromptHistory.Count, globalLimit);
-                return true;
+                return CreativeRateLimitDecision.Limited(
+                    "shared_global",
+                    _globalPromptHistory.Count,
+                    globalLimit,
+                    "global_budget_exhausted");
             }
-
-            // Per-channel rate limit
-            var channelHistory = _channelPromptHistory.GetOrAdd(channelId, _ => new Queue<DateTimeOffset>());
-            PurgeStale(channelHistory, timestamp);
-            if (channelHistory.Count >= settings.MaxPromptsPerHour)
+            if (!isExplicit && needsChannelReserve)
             {
-                _logger.LogInformation("Creative request throttled for channel {ChannelId} ({Count}/{Limit})", channelId, channelHistory.Count, settings.MaxPromptsPerHour);
-                return true;
+                _logger.LogInformation("Creative request throttled for channel {ChannelId} ({Count}/{Limit})", channelId, channelHistory.Count, channelLimit);
+                return CreativeRateLimitDecision.Limited(
+                    "autonomous_channel",
+                    channelHistory.Count,
+                    channelLimit,
+                    "channel_budget_exhausted");
             }
 
-            channelHistory.Enqueue(timestamp);
-            _globalPromptHistory.Enqueue(timestamp);
-            return false;
+            if (isExplicit
+                && needsGlobalReserve
+                && _explicitGlobalReserveHistory.Count >= reserveGlobalLimit)
+            {
+                _logger.LogInformation(
+                    "Explicit creative request throttled due to global reserve ({Count}/{Limit})",
+                    _explicitGlobalReserveHistory.Count,
+                    reserveGlobalLimit);
+                return CreativeRateLimitDecision.Limited(
+                    "explicit_global_reserve",
+                    _explicitGlobalReserveHistory.Count,
+                    reserveGlobalLimit,
+                    "explicit_global_reserve_exhausted");
+            }
+            if (isExplicit
+                && needsChannelReserve
+                && explicitChannelReserve.Count >= reserveChannelLimit)
+            {
+                _logger.LogInformation(
+                    "Explicit creative request throttled for channel {ChannelId} reserve ({Count}/{Limit})",
+                    channelId,
+                    explicitChannelReserve.Count,
+                    reserveChannelLimit);
+                return CreativeRateLimitDecision.Limited(
+                    "explicit_channel_reserve",
+                    explicitChannelReserve.Count,
+                    reserveChannelLimit,
+                    "explicit_channel_reserve_exhausted");
+            }
+
+            if (needsGlobalReserve) _explicitGlobalReserveHistory.Enqueue(timestamp);
+            else _globalPromptHistory.Enqueue(timestamp);
+            if (needsChannelReserve) explicitChannelReserve.Enqueue(timestamp);
+            else channelHistory.Enqueue(timestamp);
+
+            return CreativeRateLimitDecision.Allowed(
+                needsGlobalReserve || needsChannelReserve ? "explicit_reserve" : "shared");
         }
     }
 
@@ -97,6 +159,9 @@ public sealed class SafetyFilter : IDisposable
         }
     }
 
+    private static int MultiplyLimit(int value, int multiplier) =>
+        (int)Math.Min(int.MaxValue, (long)Math.Max(0, value) * multiplier);
+
     private static Regex? BuildBanWordRegex(IReadOnlyList<string> banWords)
     {
         if (banWords.Count == 0)
@@ -116,4 +181,21 @@ public sealed class SafetyFilter : IDisposable
 
         return new Regex(string.Join("|", patterns), RegexOptions.IgnoreCase | RegexOptions.Compiled);
     }
+}
+
+public sealed record CreativeRateLimitDecision(
+    bool IsRateLimited,
+    string BudgetClass,
+    int Count,
+    int Limit,
+    string ReasonCode)
+{
+    public static CreativeRateLimitDecision Allowed(string budgetClass) =>
+        new(false, budgetClass, 0, 0, "allowed");
+
+    public static CreativeRateLimitDecision Limited(
+        string budgetClass,
+        int count,
+        int limit,
+        string reasonCode) => new(true, budgetClass, count, limit, reasonCode);
 }

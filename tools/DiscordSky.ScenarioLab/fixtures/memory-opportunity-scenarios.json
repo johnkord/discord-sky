@@ -1,0 +1,96 @@
+[
+  {
+    "name": "preference-runs",
+    "capturedAt": "2026-07-19T12:00:00Z",
+    "messages": [
+      {
+        "messageId": 1,
+        "authorId": 100,
+        "author": "alice",
+        "content": "I prefer tea to coffee",
+        "timestamp": "2026-07-19T12:00:00Z"
+      }
+    ],
+    "currentMemories": [],
+    "isShutdownFlush": false,
+    "expectWouldRun": true,
+    "expectReason": "preference_identity_change"
+  },
+  {
+    "name": "question-only-skips",
+    "capturedAt": "2026-07-19T12:05:00Z",
+    "messages": [
+      {
+        "messageId": 2,
+        "authorId": 100,
+        "author": "alice",
+        "content": "Did the patch ship?",
+        "timestamp": "2026-07-19T12:05:00Z"
+      },
+      {
+        "messageId": 3,
+        "authorId": 200,
+        "author": "bob",
+        "content": "When is maintenance?",
+        "timestamp": "2026-07-19T12:05:02Z"
+      }
+    ],
+    "currentMemories": [],
+    "isShutdownFlush": false,
+    "expectWouldRun": false,
+    "expectReason": "question_only"
+  },
+  {
+    "name": "media-only-skips",
+    "capturedAt": "2026-07-19T12:10:00Z",
+    "messages": [
+      {
+        "messageId": 4,
+        "authorId": 100,
+        "author": "alice",
+        "content": "",
+        "timestamp": "2026-07-19T12:10:00Z",
+        "hasMedia": true
+      }
+    ],
+    "currentMemories": [],
+    "isShutdownFlush": false,
+    "expectWouldRun": false,
+    "expectReason": "media_only"
+  },
+  {
+    "name": "tiny-chatter-skips",
+    "capturedAt": "2026-07-19T12:15:00Z",
+    "messages": [
+      {
+        "messageId": 5,
+        "authorId": 100,
+        "author": "alice",
+        "content": "gg",
+        "timestamp": "2026-07-19T12:15:00Z"
+      }
+    ],
+    "currentMemories": [],
+    "isShutdownFlush": false,
+    "expectWouldRun": false,
+    "expectReason": "tiny_single_message"
+  },
+  {
+    "name": "new-substantive-topic-runs",
+    "capturedAt": "2026-07-19T12:20:00Z",
+    "messages": [
+      {
+        "messageId": 6,
+        "authorId": 100,
+        "author": "alice",
+        "content": "The pottery workshop opened registration for a long weekend course",
+        "timestamp": "2026-07-19T12:20:00Z"
+      }
+    ],
+    "currentMemories": ["Plays World of Warcraft every weekend"],
+    "isShutdownFlush": false,
+    "priorExtractionAgeMinutes": 120,
+    "expectWouldRun": true,
+    "expectReason": "high_lexical_novelty"
+  }
+]

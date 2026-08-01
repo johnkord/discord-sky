@@ -7,7 +7,9 @@ public sealed record SentMessageInfo(
     string Persona,
     string Source,
     DateTimeOffset CreatedAt,
-    ulong? TriggerMessageId = null);
+    ulong? TriggerMessageId = null,
+    string? EpisodeId = null,
+    ulong? ReplyTargetMessageId = null);
 
 /// <summary>
 /// Shared, bounded registry of messages sent by the bot. Reaction reception, reply-chain persona continuity,
@@ -27,13 +29,21 @@ public sealed class SentMessageRegistry
     public SentMessageRegistry(Func<DateTimeOffset>? clock = null) =>
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
 
-    public void Register(ulong messageId, string persona, string source, ulong? triggerMessageId = null)
+    public void Register(
+        ulong messageId,
+        string persona,
+        string source,
+        ulong? triggerMessageId = null,
+        string? episodeId = null,
+        ulong? replyTargetMessageId = null)
     {
         _messages[messageId] = new SentMessageInfo(
             string.IsNullOrWhiteSpace(persona) ? "unknown" : persona,
             string.IsNullOrWhiteSpace(source) ? "unknown" : source,
             _clock(),
-            triggerMessageId);
+            triggerMessageId,
+            episodeId,
+            replyTargetMessageId);
         EvictIfNeeded();
     }
 

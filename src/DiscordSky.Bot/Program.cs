@@ -12,6 +12,7 @@ using DiscordSky.Bot.Memory.Logging;
 using DiscordSky.Bot.Memory.Reception;
 using DiscordSky.Bot.Memory.Scoring;
 using DiscordSky.Bot.Orchestration;
+using DiscordSky.Bot.Orchestration.Autonomy;
 using DiscordSky.Bot.Orchestration.Empire;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
@@ -30,12 +31,29 @@ builder.Services.Configure<ColdOpenOptions>(builder.Configuration.GetSection(Col
 builder.Services.Configure<LlmOptions>(builder.Configuration.GetSection(LlmOptions.SectionName));
 builder.Services.Configure<ModelEvaluationOptions>(builder.Configuration.GetSection(ModelEvaluationOptions.SectionName));
 builder.Services.Configure<MemoryRelevanceOptions>(builder.Configuration.GetSection(MemoryRelevanceOptions.SectionName));
+builder.Services.Configure<MemoryExtractionOptions>(builder.Configuration.GetSection(MemoryExtractionOptions.SectionName));
+builder.Services.Configure<InteractionEpisodeOptions>(builder.Configuration.GetSection(InteractionEpisodeOptions.SectionName));
 builder.Services.Configure<TelemetryOptions>(builder.Configuration.GetSection(TelemetryOptions.SectionName));
 builder.Services.Configure<TranscriptOptions>(builder.Configuration.GetSection(TranscriptOptions.SectionName));
 builder.Services.Configure<ReactionOptions>(builder.Configuration.GetSection(ReactionOptions.SectionName));
 builder.Services.Configure<ImageOptions>(builder.Configuration.GetSection(ImageOptions.SectionName));
 builder.Services.Configure<ScamGuardOptions>(builder.Configuration.GetSection(ScamGuardOptions.SectionName));
 builder.Services.Configure<EmpireStateOptions>(builder.Configuration.GetSection(EmpireStateOptions.SectionName));
+builder.Services.Configure<WorldAutonomyOptions>(builder.Configuration.GetSection(WorldAutonomyOptions.SectionName));
+builder.Services.AddSingleton(sp => WorldAutonomyConfiguration.FromOptions(
+	sp.GetRequiredService<IOptions<WorldAutonomyOptions>>().Value));
+builder.Services.AddSingleton<FileBackedWorldAutonomyLedger>();
+builder.Services.AddSingleton<IWorldAutonomyLedger>(sp => sp.GetRequiredService<FileBackedWorldAutonomyLedger>());
+builder.Services.AddSingleton<StewardMcpSupervisor>();
+builder.Services.AddSingleton<WorldAutonomyAgentFactory>();
+builder.Services.AddSingleton<IWorldAutonomyMessageTransport, DiscordWorldAutonomyMessageTransport>();
+builder.Services.AddSingleton<WorldAutonomySpeechTool>();
+builder.Services.AddSingleton<WorldAutonomyOrchestrator>();
+builder.Services.AddSingleton<IWorldAutonomyRunner>(sp => sp.GetRequiredService<WorldAutonomyOrchestrator>());
+builder.Services.AddSingleton<WorldAutonomyRouter>();
+builder.Services.AddHostedService<WorldAutonomyStewardProbeService>();
+builder.Services.AddHostedService<WorldAutonomyStewardHealthService>();
+builder.Services.AddHostedService<WorldAutonomyRecoveryService>();
 
 // Phishing-domain feed (Sinking Yachts), opt-in. When enabled it doubles as the IPhishingDomainSource the scam
 // detector consults; otherwise the detector gets a no-op source and leans on its built-in heuristics.
@@ -112,6 +130,8 @@ builder.Services.AddSingleton<IChatClient>(sp =>
 			var profile = provider.GetProfile(workload);
 			return $"{workload}={profile.Model}/{profile.ReasoningEffort ?? "default"}";
 		})));
+	logger.LogInformation("LLM request deadline: {Minutes} minute(s).",
+		Math.Clamp(provider.RequestTimeoutMinutes, 1, 60));
 
 	if (string.IsNullOrWhiteSpace(provider.ApiKey))
 	{
@@ -162,7 +182,11 @@ builder.Services.AddSingleton<ILinkUnfurler>(sp =>
 builder.Services.AddSingleton<SafetyFilter>();
 builder.Services.AddSingleton<MediaSemanticCache>();
 builder.Services.AddSingleton<ContextAggregator>();
+builder.Services.AddSingleton<IEpisodeHistoryReader, DiscordEpisodeHistoryReader>();
+builder.Services.AddSingleton<InteractionEpisodeBuilder>();
 builder.Services.AddSingleton<IMemoryScorer, LexicalMemoryScorer>();
+builder.Services.AddSingleton<MemoryTransitionVerifier>();
+builder.Services.AddSingleton<MemoryOpportunityClassifier>();
 builder.Services.AddSingleton<CreativeOrchestrator>();
 builder.Services.AddSingleton<IUserMemoryStore, FileBackedUserMemoryStore>();
 // Telemetry sink: singleton (for emit) and hosted (for daily-file lifecycle + 30-day retention sweep).
@@ -170,6 +194,7 @@ builder.Services.AddSingleton<IUserMemoryStore, FileBackedUserMemoryStore>();
 builder.Services.AddSingleton<FileBackedTelemetrySink>();
 builder.Services.AddSingleton<IRecallTelemetrySink>(sp => sp.GetRequiredService<FileBackedTelemetrySink>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<FileBackedTelemetrySink>());
+builder.Services.AddHostedService<RuntimeStartedTelemetryService>();
 // Conversation transcript sink: captures full prompt + reply for quality evaluation. Off by default
 // (Transcript:Enabled); writes raw content to the PVC when enabled. See docs/improvement_opportunities_2026-06-10.md H2.
 builder.Services.AddSingleton<FileBackedTranscriptSink>();
@@ -193,15 +218,30 @@ builder.Services.AddSingleton<AmbientVisualBudget>();
 builder.Services.AddSingleton<ImageRewriter>();
 // One cheap-LLM call decides Robotnik's in-character emoji reaction to messages he did NOT reply to.
 builder.Services.AddSingleton<ReactionJudge>();
+builder.Services.AddSingleton<FileBackedReactionCapabilityRegistry>();
+builder.Services.AddSingleton<IReactionCapabilityRegistry>(sp =>
+	sp.GetRequiredService<FileBackedReactionCapabilityRegistry>());
+builder.Services.AddHostedService(sp =>
+	sp.GetRequiredService<FileBackedReactionCapabilityRegistry>());
 // The inner-thought worth gate: one cheap-LLM call scores whether an ambient candidate is worth a real reply.
 builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.ImpulseJudge>();
 builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.AmbientChannelCoordinator>();
+builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.AmbientEpisodeShadowService>();
+builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.IAmbientEpisodeShadowSink>(sp =>
+	sp.GetRequiredService<DiscordSky.Bot.Orchestration.Impulse.AmbientEpisodeShadowService>());
+builder.Services.AddHostedService(sp =>
+	sp.GetRequiredService<DiscordSky.Bot.Orchestration.Impulse.AmbientEpisodeShadowService>());
 // Proactive cold opens: per-channel activity tracker (never-into-silence gate), the composer, and the polling service.
 builder.Services.AddSingleton(new DiscordSky.Bot.Orchestration.Impulse.ChannelPulseTracker());
 builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.ColdOpenComposer>();
 // A skeptical advisory pass that audits checkable flaws after the time-sensitive send and records a separate
 // telemetry event. It never gates humor (round-5 eval showed it killed the owner's best line when used as a gate).
 builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.ColdOpenCritic>();
+builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.FileBackedProactiveEpisodeLedger>();
+builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.IProactiveEpisodeLedger>(sp =>
+	sp.GetRequiredService<DiscordSky.Bot.Orchestration.Impulse.FileBackedProactiveEpisodeLedger>());
+builder.Services.AddHostedService(sp =>
+	sp.GetRequiredService<DiscordSky.Bot.Orchestration.Impulse.FileBackedProactiveEpisodeLedger>());
 builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.GrokColdOpenShadowService>();
 builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.IColdOpenShadowSink>(sp =>
 	sp.GetRequiredService<DiscordSky.Bot.Orchestration.Impulse.GrokColdOpenShadowService>());
@@ -261,12 +301,25 @@ builder.Services.AddHostedService<DiscordBotService>();
 
 var app = builder.Build();
 
-app.MapGet("/healthz", (DiscordSocketClient client) =>
+app.MapGet("/healthz", (DiscordSocketClient client, StewardMcpSupervisor stewardSupervisor) =>
 {
-	var isConnected = client.ConnectionState == ConnectionState.Connected;
-	return isConnected
-		? Results.Ok(new { status = "healthy", connection = "connected" })
-		: Results.Json(new { status = "degraded", connection = client.ConnectionState.ToString() }, statusCode: 503);
+	var discordConnected = client.ConnectionState == ConnectionState.Connected;
+	var steward = stewardSupervisor.GetHealthSnapshot();
+	var healthy = discordConnected && steward.IsHealthy;
+	var payload = new
+	{
+		status = healthy ? "healthy" : "degraded",
+		connection = client.ConnectionState.ToString(),
+		autonomy = new
+		{
+			configuredGuilds = steward.ConfiguredGuilds,
+			healthyGuilds = steward.HealthyGuilds,
+			guilds = steward.Guilds
+		}
+	};
+	return healthy
+		? Results.Ok(payload)
+		: Results.Json(payload, statusCode: 503);
 });
 
 await app.RunAsync();

@@ -1,5 +1,7 @@
 using System.Text.Json;
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Models.Orchestration;
+using DiscordSky.Bot.Orchestration;
 using DiscordSky.Bot.Orchestration.Impulse;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
@@ -30,10 +32,26 @@ using Microsoft.Extensions.Options;
 //   --artifact   also save the complete machine-readable result to a local JSON file.
 //   --review-doc create a balanced blind A/B review doc plus a separate local reveal key (two candidates only).
 
+if (args.Length > 0 && args[0].Equals("episode", StringComparison.OrdinalIgnoreCase))
+{
+    return await RunEpisodeReplayAsync(args[1..]);
+}
+if (args.Length > 0 && args[0].Equals("novelty", StringComparison.OrdinalIgnoreCase))
+{
+    return RunNoveltyReplay(args[1..]);
+}
+if (args.Length > 0 && args[0].Equals("memory", StringComparison.OrdinalIgnoreCase))
+{
+    return RunMemoryReplay(args[1..]);
+}
+
 if (args.Length == 0 || args.Contains("-h") || args.Contains("--help"))
 {
     Console.WriteLine("Usage: dotnet run --project tools/DiscordSky.ScenarioLab -- <fixtures.json|dir> [--candidate <provider[:model[:effort]]>]... [--critic <provider[:model[:effort]]>] [--no-critic] [--model <legacy-override>] [--runs 1] [--json] [--artifact <results.local.json>] [--review-doc <review.md>] [--review-seed <int>]");
     Console.WriteLine("Example: --candidate OpenAI:gpt-5.6-sol:medium --candidate xAI:grok-4.5:medium");
+    Console.WriteLine("Episode replay: dotnet run --project tools/DiscordSky.ScenarioLab -- episode [fixtures.json] [--json]");
+    Console.WriteLine("Novelty replay: dotnet run --project tools/DiscordSky.ScenarioLab -- novelty [fixtures.json] [--json]");
+    Console.WriteLine("Memory replay: dotnet run --project tools/DiscordSky.ScenarioLab -- memory [fixtures.json] [--json]");
     Console.WriteLine("Keys: LLM__Providers__OpenAI__ApiKey / OPENAI_API_KEY and LLM__Providers__xAI__ApiKey / XAI_API_KEY, or ScenarioLab user-secrets.");
     return 0;
 }
@@ -306,6 +324,324 @@ Console.WriteLine($"{records.Count} output(s) from {scenarios.Count} scenario(s)
 return 0;
 
 // --- helpers ---
+
+static async Task<int> RunEpisodeReplayAsync(string[] episodeArgs)
+{
+    var repoRoot = FindRepoRoot();
+    var defaultPath = Path.Combine(
+        repoRoot,
+        "tools",
+        "DiscordSky.ScenarioLab",
+        "fixtures",
+        "episode-scenarios.json");
+    var path = episodeArgs.FirstOrDefault(argument => !argument.StartsWith('-')) ?? defaultPath;
+    var asJson = episodeArgs.Contains("--json", StringComparer.OrdinalIgnoreCase);
+    if (!File.Exists(path))
+    {
+        Console.Error.WriteLine($"Episode fixture file not found: {path}");
+        return 1;
+    }
+
+    List<EpisodeScenario>? scenarios;
+    try
+    {
+        scenarios = JsonSerializer.Deserialize<List<EpisodeScenario>>(
+            File.ReadAllText(path),
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    }
+    catch (JsonException ex)
+    {
+        Console.Error.WriteLine($"Invalid episode fixture JSON: {ex.Message}");
+        return 1;
+    }
+    if (scenarios is not { Count: > 0 })
+    {
+        Console.Error.WriteLine("No episode scenarios parsed.");
+        return 1;
+    }
+
+    var results = new List<EpisodeReplayResult>();
+    foreach (var scenario in scenarios)
+    {
+        var capturedAt = scenario.CapturedAt ?? DateTimeOffset.UtcNow;
+        var history = new ScenarioEpisodeHistoryReader(scenario.RecentMessages ?? Array.Empty<EpisodeFixtureMessage>());
+        var builder = new InteractionEpisodeBuilder(
+            history,
+            new StaticOptionsMonitor<InteractionEpisodeOptions>(new InteractionEpisodeOptions
+            {
+                RecentMessageLimit = 6,
+                RecentWindowMinutes = 10,
+                ReferentConfidenceThreshold = 0.70,
+            }),
+            NullLogger<InteractionEpisodeBuilder>.Instance,
+            () => capturedAt);
+        var trigger = scenario.Trigger ?? throw new InvalidOperationException($"Scenario '{scenario.Name}' has no trigger.");
+        var mediaContext = trigger.HasMedia ? "Visual media present: 1 image(s)." : null;
+        var build = await builder.BuildAsync(new EpisodeTriggerEvidence(
+            ChannelId: scenario.ChannelId,
+            MessageId: trigger.MessageId,
+            AuthorId: trigger.AuthorId,
+            AuthorDisplayName: trigger.Author,
+            ReferencedMessageId: trigger.ReferencedMessageId,
+            View: new SemanticMessageView(
+                trigger.Content,
+                mediaContext,
+                Array.Empty<UnfurledLink>(),
+                Array.Empty<ChannelImage>(),
+                trigger.MessageId,
+                trigger.Timestamp,
+                trigger.HasMedia)),
+            episodeId: $"fixture-{scenario.Name}");
+
+        if (!build.IsSuccess)
+        {
+            results.Add(new EpisodeReplayResult(
+                scenario.Name,
+                Passed: false,
+                Error: build.Failure?.ReasonCode,
+                ReferentRequired: null,
+                CandidateIds: Array.Empty<ulong>(),
+                SelectedReferentId: null,
+                ReferentStatus: null,
+                EvidenceDigest: null,
+                JudgeProjectionDigest: null,
+                GeneratorProjectionDigest: null));
+            continue;
+        }
+
+        var episode = build.Episode!;
+        var verdict = new WorthVerdict(
+            0.8,
+            "fixture",
+            ReferentMessageId: scenario.ModelReferentId,
+            ReferentConfidence: scenario.ModelReferentConfidence,
+            ReferentStatus: scenario.ModelReferentId.HasValue
+                ? ReferentResolutionStatus.Resolved
+                : ReferentResolutionStatus.Unresolved);
+        var decision = ImpulseJudge.ValidateReferentDecision(verdict, episode, 0.70);
+        var judgeProjection = EpisodeProjectionBuilder.BuildJudgeProjection(episode, scenario.MoodLabel);
+        var generatorProjection = EpisodeProjectionBuilder.BuildGeneratorProjection(
+            episode,
+            new EpisodeActionDecision(decision));
+        var candidates = episode.ReferentCandidates.Select(candidate => candidate.MessageId).ToArray();
+        var passed = episode.ReferentRequirement.IsRequired == scenario.ExpectReferentRequired
+            && Nullable.Equals(decision.SelectedMessageId, scenario.ExpectSelectedReferentId)
+            && (scenario.ExpectCandidateIds is null
+                || scenario.ExpectCandidateIds.SequenceEqual(candidates));
+        results.Add(new EpisodeReplayResult(
+            scenario.Name,
+            passed,
+            Error: passed ? null : "expectation_mismatch",
+            episode.ReferentRequirement.IsRequired,
+            candidates,
+            decision.SelectedMessageId,
+            decision.Status.ToString(),
+            episode.Fingerprint.EvidenceDigest,
+            judgeProjection.ProjectionDigest,
+            generatorProjection.ProjectionDigest));
+    }
+
+    if (asJson)
+    {
+        Console.WriteLine(JsonSerializer.Serialize(results, new JsonSerializerOptions { WriteIndented = true }));
+    }
+    else
+    {
+        foreach (var result in results)
+        {
+            Console.WriteLine(
+                $"{(result.Passed ? "PASS" : "FAIL")} {result.Name}: required={result.ReferentRequired} " +
+                $"candidates=[{string.Join(',', result.CandidateIds)}] selected={result.SelectedReferentId?.ToString() ?? "none"} " +
+                $"status={result.ReferentStatus ?? result.Error}");
+        }
+        Console.WriteLine($"{results.Count(result => result.Passed)}/{results.Count} episode fixture(s) passed.");
+    }
+    return results.All(result => result.Passed) ? 0 : 1;
+}
+
+static int RunNoveltyReplay(string[] noveltyArgs)
+{
+    var repoRoot = FindRepoRoot();
+    var defaultPath = Path.Combine(
+        repoRoot,
+        "tools",
+        "DiscordSky.ScenarioLab",
+        "fixtures",
+        "novelty-scenarios.json");
+    var path = noveltyArgs.FirstOrDefault(argument => !argument.StartsWith('-')) ?? defaultPath;
+    var asJson = noveltyArgs.Contains("--json", StringComparer.OrdinalIgnoreCase);
+    if (!File.Exists(path))
+    {
+        Console.Error.WriteLine($"Novelty fixture file not found: {path}");
+        return 1;
+    }
+
+    List<NoveltyScenario>? scenarios;
+    try
+    {
+        scenarios = JsonSerializer.Deserialize<List<NoveltyScenario>>(
+            File.ReadAllText(path),
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    }
+    catch (JsonException ex)
+    {
+        Console.Error.WriteLine($"Invalid novelty fixture JSON: {ex.Message}");
+        return 1;
+    }
+    if (scenarios is not { Count: > 0 })
+    {
+        Console.Error.WriteLine("No novelty scenarios parsed.");
+        return 1;
+    }
+
+    var results = new List<NoveltyReplayResult>();
+    foreach (var scenario in scenarios)
+    {
+        if (!Enum.TryParse<ColdOpenEpisodeNoveltyMode>(scenario.Mode, true, out var mode))
+        {
+            results.Add(new NoveltyReplayResult(scenario.Name, false, "invalid_mode", null, null, null));
+            continue;
+        }
+        var candidate = (scenario.Candidate ?? Array.Empty<NoveltyEvidenceFixture>())
+            .Select(item => new ColdOpenRoomEvidence(
+                item.MessageId,
+                item.ReferencedMessageId,
+                item.Timestamp,
+                item.Author ?? "user",
+                item.RenderedLine ?? "user: fixture",
+                item.TopicAnchors ?? Array.Empty<string>(),
+                item.ResourceIds ?? Array.Empty<string>()))
+            .ToArray();
+        var prior = scenario.Prior ?? Array.Empty<ColdOpenEpisodeSnapshot>();
+        var decision = ColdOpenNoveltyEvaluator.Evaluate(candidate, prior, mode);
+        var passed = decision.Stage.ToString().Equals(scenario.ExpectStage, StringComparison.OrdinalIgnoreCase)
+            && decision.ShouldSuppress == scenario.ExpectShouldSuppress;
+        results.Add(new NoveltyReplayResult(
+            scenario.Name,
+            passed,
+            passed ? null : "expectation_mismatch",
+            decision.Stage.ToString(),
+            decision.WouldSuppress,
+            decision.ShouldSuppress));
+    }
+
+    if (asJson)
+    {
+        Console.WriteLine(JsonSerializer.Serialize(results, new JsonSerializerOptions { WriteIndented = true }));
+    }
+    else
+    {
+        foreach (var result in results)
+        {
+            Console.WriteLine(
+                $"{(result.Passed ? "PASS" : "FAIL")} {result.Name}: stage={result.Stage ?? result.Error} " +
+                $"would_suppress={result.WouldSuppress} should_suppress={result.ShouldSuppress}");
+        }
+        Console.WriteLine($"{results.Count(result => result.Passed)}/{results.Count} novelty fixture(s) passed.");
+    }
+    return results.All(result => result.Passed) ? 0 : 1;
+}
+
+static int RunMemoryReplay(string[] memoryArgs)
+{
+    var repoRoot = FindRepoRoot();
+    var defaultPath = Path.Combine(
+        repoRoot,
+        "tools",
+        "DiscordSky.ScenarioLab",
+        "fixtures",
+        "memory-opportunity-scenarios.json");
+    var path = memoryArgs.FirstOrDefault(argument => !argument.StartsWith('-')) ?? defaultPath;
+    var asJson = memoryArgs.Contains("--json", StringComparer.OrdinalIgnoreCase);
+    if (!File.Exists(path))
+    {
+        Console.Error.WriteLine($"Memory opportunity fixture file not found: {path}");
+        return 1;
+    }
+
+    List<MemoryOpportunityScenario>? scenarios;
+    try
+    {
+        scenarios = JsonSerializer.Deserialize<List<MemoryOpportunityScenario>>(
+            File.ReadAllText(path),
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    }
+    catch (JsonException ex)
+    {
+        Console.Error.WriteLine($"Invalid memory opportunity fixture JSON: {ex.Message}");
+        return 1;
+    }
+    if (scenarios is not { Count: > 0 })
+    {
+        Console.Error.WriteLine("No memory opportunity scenarios parsed.");
+        return 1;
+    }
+
+    var classifier = new DiscordSky.Bot.Memory.MemoryOpportunityClassifier();
+    var results = new List<MemoryOpportunityReplayResult>();
+    foreach (var scenario in scenarios)
+    {
+        var messages = (scenario.Messages ?? Array.Empty<MemoryOpportunityMessageFixture>())
+            .Select(message => new BufferedMessage(
+                message.MessageId,
+                message.AuthorId,
+                message.Author ?? "user",
+                message.Content ?? string.Empty,
+                message.Timestamp,
+                message.HasMedia))
+            .ToArray();
+        if (messages.Length == 0)
+        {
+            results.Add(new MemoryOpportunityReplayResult(
+                scenario.Name, false, "no_messages", null, null, null, null, null));
+            continue;
+        }
+        var memories = (scenario.CurrentMemories ?? Array.Empty<string>())
+            .Select(content => new UserMemory(
+                content,
+                "fixture",
+                scenario.CapturedAt,
+                scenario.CapturedAt,
+                0))
+            .ToArray();
+        var features = DiscordSky.Bot.Memory.MemoryOpportunityFeatureExtractor.Extract(
+            messages,
+            memories,
+            scenario.IsShutdownFlush,
+            scenario.PriorExtractionAgeMinutes.HasValue
+                ? TimeSpan.FromMinutes(scenario.PriorExtractionAgeMinutes.Value)
+                : null);
+        var decision = classifier.Classify(features);
+        var passed = decision.WouldRun == scenario.ExpectWouldRun
+            && decision.ReasonCodes.Contains(scenario.ExpectReason, StringComparer.Ordinal);
+        results.Add(new MemoryOpportunityReplayResult(
+            scenario.Name,
+            passed,
+            passed ? null : "expectation_mismatch",
+            decision.WouldRun,
+            decision.ReasonCodes.FirstOrDefault(),
+            features.LexicalNovelty,
+            features.FirstPersonAssertionCount,
+            features.PreferenceIdentityChangeCount));
+    }
+
+    if (asJson)
+    {
+        Console.WriteLine(JsonSerializer.Serialize(results, new JsonSerializerOptions { WriteIndented = true }));
+    }
+    else
+    {
+        foreach (var result in results)
+        {
+            Console.WriteLine(
+                $"{(result.Passed ? "PASS" : "FAIL")} {result.Name}: would_run={result.WouldRun} " +
+                $"reason={result.Reason ?? result.Error} novelty={result.LexicalNovelty:0.00} " +
+                $"first_person={result.FirstPersonAssertions} cues={result.PreferenceCues}");
+        }
+        Console.WriteLine($"{results.Count(result => result.Passed)}/{results.Count} memory opportunity fixture(s) passed.");
+    }
+    return results.All(result => result.Passed) ? 0 : 1;
+}
 
 static TrialCandidate BuildTrial(
     string rawSpec,
@@ -632,6 +968,130 @@ internal sealed record OutputRecord(
     string Scenario, int Run, string Status, string? Error,
     double? Worth, string? Hook, string? Line, bool Declined,
     long ComposeLatencyMs, double? CriticWorth, string? CriticFlaw, long? CriticLatencyMs);
+
+internal sealed record EpisodeScenario(
+    string Name,
+    ulong ChannelId,
+    DateTimeOffset? CapturedAt,
+    string? MoodLabel,
+    EpisodeFixtureMessage? Trigger,
+    IReadOnlyList<EpisodeFixtureMessage>? RecentMessages,
+    ulong? ModelReferentId,
+    double? ModelReferentConfidence,
+    bool ExpectReferentRequired,
+    IReadOnlyList<ulong>? ExpectCandidateIds,
+    ulong? ExpectSelectedReferentId);
+
+internal sealed record EpisodeFixtureMessage(
+    ulong MessageId,
+    ulong AuthorId,
+    string Author,
+    string Content,
+    DateTimeOffset Timestamp,
+    ulong? ReferencedMessageId = null,
+    bool IsBot = false,
+    bool HasMedia = false)
+{
+    public EpisodeMessage ToEpisodeMessage() => new(
+        MessageId,
+        AuthorId,
+        Author,
+        Content,
+        Timestamp,
+        ReferencedMessageId,
+        IsBot,
+        HasMedia ? "Visual media present: 1 image(s)." : null);
+}
+
+internal sealed record EpisodeReplayResult(
+    string Name,
+    bool Passed,
+    string? Error,
+    bool? ReferentRequired,
+    IReadOnlyList<ulong> CandidateIds,
+    ulong? SelectedReferentId,
+    string? ReferentStatus,
+    string? EvidenceDigest,
+    string? JudgeProjectionDigest,
+    string? GeneratorProjectionDigest);
+
+internal sealed class ScenarioEpisodeHistoryReader : IEpisodeHistoryReader
+{
+    private readonly IReadOnlyList<EpisodeFixtureMessage> _messages;
+
+    public ScenarioEpisodeHistoryReader(IReadOnlyList<EpisodeFixtureMessage> messages) => _messages = messages;
+
+    public Task<IReadOnlyList<EpisodeMessage>> GetRecentAsync(
+        ulong channelId,
+        ulong triggerMessageId,
+        int limit,
+        DateTimeOffset after,
+        CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<EpisodeMessage>>(_messages
+        .Where(message => message.MessageId != triggerMessageId && message.Timestamp >= after)
+        .OrderBy(message => message.Timestamp)
+        .TakeLast(limit)
+        .Select(message => message.ToEpisodeMessage())
+        .ToArray());
+
+    public Task<EpisodeMessage?> GetMessageAsync(
+        ulong channelId,
+        ulong messageId,
+        CancellationToken cancellationToken) => Task.FromResult(
+        _messages.FirstOrDefault(message => message.MessageId == messageId)?.ToEpisodeMessage());
+}
+
+internal sealed record NoveltyScenario(
+    string Name,
+    string Mode,
+    IReadOnlyList<NoveltyEvidenceFixture>? Candidate,
+    IReadOnlyList<ColdOpenEpisodeSnapshot>? Prior,
+    string ExpectStage,
+    bool ExpectShouldSuppress);
+
+internal sealed record NoveltyEvidenceFixture(
+    ulong MessageId,
+    ulong? ReferencedMessageId,
+    DateTimeOffset Timestamp,
+    string? Author,
+    string? RenderedLine,
+    IReadOnlyList<string>? TopicAnchors,
+    IReadOnlyList<string>? ResourceIds);
+
+internal sealed record NoveltyReplayResult(
+    string Name,
+    bool Passed,
+    string? Error,
+    string? Stage,
+    bool? WouldSuppress,
+    bool? ShouldSuppress);
+
+internal sealed record MemoryOpportunityScenario(
+    string Name,
+    DateTimeOffset CapturedAt,
+    IReadOnlyList<MemoryOpportunityMessageFixture>? Messages,
+    IReadOnlyList<string>? CurrentMemories,
+    bool IsShutdownFlush,
+    double? PriorExtractionAgeMinutes,
+    bool ExpectWouldRun,
+    string ExpectReason);
+
+internal sealed record MemoryOpportunityMessageFixture(
+    ulong MessageId,
+    ulong AuthorId,
+    string? Author,
+    string? Content,
+    DateTimeOffset Timestamp,
+    bool HasMedia = false);
+
+internal sealed record MemoryOpportunityReplayResult(
+    string Name,
+    bool Passed,
+    string? Error,
+    bool? WouldRun,
+    string? Reason,
+    double? LexicalNovelty,
+    int? FirstPersonAssertions,
+    int? PreferenceCues);
 
 /// <summary>Fixed-value IOptionsMonitor, matching the repo's test double signature so it builds warning-free.</summary>
 internal sealed class StaticOptionsMonitor<T> : IOptionsMonitor<T>

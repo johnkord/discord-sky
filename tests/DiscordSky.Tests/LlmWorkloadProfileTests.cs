@@ -8,31 +8,31 @@ public class LlmWorkloadProfileTests
     private static LlmProviderOptions OpenAi(Dictionary<string, string>? overrides = null) => new()
     {
         ChatModel = "gpt-5.6-sol",
-        AmbientModel = "gpt-5.6-terra",
+        AmbientModel = "gpt-5.6-sol",
         UtilityModel = "gpt-5.4-mini",
         ColdOpenModel = "gpt-5.6-sol",
-        ColdOpenCriticModel = "gpt-5.6-terra",
-        ImageRewriteModel = "gpt-5.6-terra",
+        ColdOpenCriticModel = "gpt-5.6-sol",
+        ImageRewriteModel = "gpt-5.6-sol",
         MemoryExtractionModel = "gpt-5.6-luna",
         MemoryConsolidationModel = "gpt-5.6-luna",
-        ReasoningEffort = "medium",
-        AmbientReasoningEffort = "low",
+        ReasoningEffort = "ExtraHigh",
+        AmbientReasoningEffort = "ExtraHigh",
         UtilityReasoningEffort = "none",
-        ColdOpenReasoningEffort = "medium",
-        ColdOpenCriticReasoningEffort = "low",
-        ImageRewriteReasoningEffort = "medium",
+        ColdOpenReasoningEffort = "ExtraHigh",
+        ColdOpenCriticReasoningEffort = "ExtraHigh",
+        ImageRewriteReasoningEffort = "ExtraHigh",
         MemoryExtractionReasoningEffort = "none",
         MemoryConsolidationReasoningEffort = "none",
         IntentModelOverrides = overrides ?? new Dictionary<string, string>(),
     };
 
     [Theory]
-    [InlineData(LlmWorkload.Main, "gpt-5.6-sol", "medium")]
-    [InlineData(LlmWorkload.Ambient, "gpt-5.6-terra", "low")]
+    [InlineData(LlmWorkload.Main, "gpt-5.6-sol", "ExtraHigh")]
+    [InlineData(LlmWorkload.Ambient, "gpt-5.6-sol", "ExtraHigh")]
     [InlineData(LlmWorkload.Utility, "gpt-5.4-mini", "none")]
-    [InlineData(LlmWorkload.ColdOpen, "gpt-5.6-sol", "medium")]
-    [InlineData(LlmWorkload.ColdOpenCritic, "gpt-5.6-terra", "low")]
-    [InlineData(LlmWorkload.ImageRewrite, "gpt-5.6-terra", "medium")]
+    [InlineData(LlmWorkload.ColdOpen, "gpt-5.6-sol", "ExtraHigh")]
+    [InlineData(LlmWorkload.ColdOpenCritic, "gpt-5.6-sol", "ExtraHigh")]
+    [InlineData(LlmWorkload.ImageRewrite, "gpt-5.6-sol", "ExtraHigh")]
     [InlineData(LlmWorkload.MemoryExtraction, "gpt-5.6-luna", "none")]
     [InlineData(LlmWorkload.MemoryConsolidation, "gpt-5.6-luna", "none")]
     public void GetProfile_RoutesOpenAiWorkloads(LlmWorkload workload, string model, string effort)
@@ -73,11 +73,30 @@ public class LlmWorkloadProfileTests
     [InlineData("none", ReasoningEffort.None)]
     [InlineData("low", ReasoningEffort.Low)]
     [InlineData("medium", ReasoningEffort.Medium)]
+    [InlineData("ExtraHigh", ReasoningEffort.ExtraHigh)]
     public void ApplyReasoning_ParsesConfiguredEffort(string configured, ReasoningEffort expected)
     {
         var options = new ChatOptions();
         new LlmWorkloadProfile("model", configured).ApplyReasoning(options);
         Assert.NotNull(options.Reasoning);
         Assert.Equal(expected, options.Reasoning!.Effort);
+    }
+
+    [Fact]
+    public void MaximumReasoning_ExpandsOutputHeadroom()
+    {
+        var profile = new LlmWorkloadProfile("model", "ExtraHigh");
+
+        Assert.True(profile.HasMaximumReasoning);
+        Assert.Equal(16_384, profile.WithReasoningHeadroom(900));
+    }
+
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(15, 15)]
+    [InlineData(90, 60)]
+    public void RequestTimeout_IsClamped(int configuredMinutes, int expectedMinutes)
+    {
+        Assert.Equal(TimeSpan.FromMinutes(expectedMinutes), LlmChatClientFactory.ResolveTimeout(configuredMinutes));
     }
 }

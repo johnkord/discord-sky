@@ -251,6 +251,43 @@ public class ConversationWindowExtractionTests
         Assert.Equal(123456789UL, ops[0].UserId);
     }
 
+    [Fact]
+    public void ParseMultiUserMemoryOperations_EvidenceIdsParseDeduplicateAndCap()
+    {
+        using var document = JsonDocument.Parse(
+            "{\"ids\":[1,\"2\",2,0,\"bad\",3,4,5,6,7,8,9,10]}");
+        var call = new FunctionCallContent("call-evidence", CreativeOrchestrator.UpdateUserMemoryConversationToolName,
+            new Dictionary<string, object?>
+            {
+                ["user_id"] = "100",
+                ["action"] = "save",
+                ["content"] = "Likes meteor showers",
+                ["evidence_message_ids"] = document.RootElement.GetProperty("ids"),
+            });
+
+        var operations = CreativeOrchestrator.ParseMultiUserMemoryOperations(BuildResponseWithToolCalls(call));
+
+        var operation = Assert.Single(operations);
+        Assert.Equal(new ulong[] { 1, 2, 3, 4, 5, 6, 7, 8 }, operation.EvidenceMessageIds);
+    }
+
+    [Fact]
+    public void ParseMultiUserMemoryOperations_LegacyOperationWithoutEvidenceRemainsValid()
+    {
+        var call = new FunctionCallContent("call-legacy", CreativeOrchestrator.UpdateUserMemoryConversationToolName,
+            new Dictionary<string, object?>
+            {
+                ["user_id"] = "100",
+                ["action"] = "save",
+                ["content"] = "Likes pizza",
+            });
+
+        var operation = Assert.Single(CreativeOrchestrator.ParseMultiUserMemoryOperations(
+            BuildResponseWithToolCalls(call)));
+
+        Assert.Null(operation.EvidenceMessageIds);
+    }
+
     // ── BuildConversationExtractionPrompt ────────────────────────────────
 
     [Fact]
@@ -258,8 +295,8 @@ public class ConversationWindowExtractionTests
     {
         var conversation = new List<BufferedMessage>
         {
-            new(100, "Alice", "I just got a new cat!", DateTimeOffset.UtcNow),
-            new(100, "Alice", "Her name is Luna", DateTimeOffset.UtcNow.AddSeconds(30))
+            new(MessageId: 1, AuthorId: 100, AuthorDisplayName: "Alice", Content: "I just got a new cat!", Timestamp: DateTimeOffset.UtcNow),
+            new(MessageId: 2, AuthorId: 100, AuthorDisplayName: "Alice", Content: "Her name is Luna", Timestamp: DateTimeOffset.UtcNow.AddSeconds(30))
         };
 
         var participants = new Dictionary<ulong, (string DisplayName, IReadOnlyList<UserMemory> Memories)>
@@ -272,6 +309,7 @@ public class ConversationWindowExtractionTests
         Assert.Contains("Alice (ID:100)", prompt);
         Assert.Contains("No existing memories", prompt);
         Assert.Contains("conversation", prompt.ToLowerInvariant());
+        Assert.Contains("evidence_message_ids", prompt);
     }
 
     [Fact]
@@ -279,9 +317,9 @@ public class ConversationWindowExtractionTests
     {
         var conversation = new List<BufferedMessage>
         {
-            new(100, "Alice", "Hey Bob, how's the project?", DateTimeOffset.UtcNow),
-            new(200, "Bob", "Going well! Almost done.", DateTimeOffset.UtcNow.AddSeconds(10)),
-            new(300, "Charlie", "Nice work team!", DateTimeOffset.UtcNow.AddSeconds(20))
+            new(MessageId: 1, AuthorId: 100, AuthorDisplayName: "Alice", Content: "Hey Bob, how's the project?", Timestamp: DateTimeOffset.UtcNow),
+            new(MessageId: 2, AuthorId: 200, AuthorDisplayName: "Bob", Content: "Going well! Almost done.", Timestamp: DateTimeOffset.UtcNow.AddSeconds(10)),
+            new(MessageId: 3, AuthorId: 300, AuthorDisplayName: "Charlie", Content: "Nice work team!", Timestamp: DateTimeOffset.UtcNow.AddSeconds(20))
         };
 
         var participants = new Dictionary<ulong, (string DisplayName, IReadOnlyList<UserMemory> Memories)>
@@ -305,7 +343,7 @@ public class ConversationWindowExtractionTests
     {
         var conversation = new List<BufferedMessage>
         {
-            new(100, "Alice", "I moved to New York!", DateTimeOffset.UtcNow)
+            new(MessageId: 1, AuthorId: 100, AuthorDisplayName: "Alice", Content: "I moved to New York!", Timestamp: DateTimeOffset.UtcNow)
         };
 
         var participants = new Dictionary<ulong, (string DisplayName, IReadOnlyList<UserMemory> Memories)>
@@ -328,7 +366,7 @@ public class ConversationWindowExtractionTests
     {
         var conversation = new List<BufferedMessage>
         {
-            new(100, "Alice", "My brother Bob just got promoted!", DateTimeOffset.UtcNow)
+            new(MessageId: 1, AuthorId: 100, AuthorDisplayName: "Alice", Content: "My brother Bob just got promoted!", Timestamp: DateTimeOffset.UtcNow)
         };
 
         var participants = new Dictionary<ulong, (string DisplayName, IReadOnlyList<UserMemory> Memories)>
@@ -350,7 +388,7 @@ public class ConversationWindowExtractionTests
     {
         var conversation = new List<BufferedMessage>
         {
-            new(100, "Alice", "Did you hear Bob got a dog?", DateTimeOffset.UtcNow)
+            new(MessageId: 1, AuthorId: 100, AuthorDisplayName: "Alice", Content: "Did you hear Bob got a dog?", Timestamp: DateTimeOffset.UtcNow)
         };
 
         var participants = new Dictionary<ulong, (string DisplayName, IReadOnlyList<UserMemory> Memories)>
@@ -370,10 +408,33 @@ public class ConversationWindowExtractionTests
     public void BufferedMessage_RecordEquality()
     {
         var now = DateTimeOffset.UtcNow;
-        var msg1 = new BufferedMessage(100, "Alice", "Hello!", now);
-        var msg2 = new BufferedMessage(100, "Alice", "Hello!", now);
+        var msg1 = new BufferedMessage(MessageId: 1, AuthorId: 100, AuthorDisplayName: "Alice", Content: "Hello!", Timestamp: now);
+        var msg2 = new BufferedMessage(MessageId: 1, AuthorId: 100, AuthorDisplayName: "Alice", Content: "Hello!", Timestamp: now);
 
         Assert.Equal(msg1, msg2);
+    }
+
+    [Fact]
+    public void ExtractionWindow_CapturesImmutableFeaturesAndUniqueIds()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var messages = new List<BufferedMessage>
+        {
+            new(MessageId: 1, AuthorId: 100, AuthorDisplayName: "Alice", Content: "hello", Timestamp: now),
+            new(MessageId: 2, AuthorId: 200, AuthorDisplayName: "Bob", Content: "world!", Timestamp: now.AddSeconds(30)),
+        };
+
+        var first = ExtractionWindow.Capture(10, messages, isShutdownFlush: false, capturedAt: now);
+        var second = ExtractionWindow.Capture(10, messages, isShutdownFlush: false, capturedAt: now);
+        messages.Clear();
+
+        Assert.NotEqual(first.OperationId, second.OperationId);
+        Assert.Equal(32, first.OperationId.Length);
+        Assert.Equal(2, first.Messages.Count);
+        Assert.Equal(new ulong[] { 100, 200 }, first.ParticipantIds);
+        Assert.Equal(11, first.Features.CharacterCount);
+        Assert.Equal(TimeSpan.FromSeconds(30), first.Features.WindowDuration);
+        Assert.False(first.Features.IsShutdownFlush);
     }
 
     [Fact]
@@ -522,7 +583,7 @@ public class ConversationWindowExtractionTests
     {
         var conversation = new List<BufferedMessage>
         {
-            new(100, "Alice", "test", DateTimeOffset.UtcNow)
+            new(MessageId: 1, AuthorId: 100, AuthorDisplayName: "Alice", Content: "test", Timestamp: DateTimeOffset.UtcNow)
         };
 
         var participants = new Dictionary<ulong, (string DisplayName, IReadOnlyList<UserMemory> Memories)>

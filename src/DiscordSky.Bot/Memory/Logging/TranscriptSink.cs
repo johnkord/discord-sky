@@ -34,7 +34,14 @@ public sealed record TranscriptEntry(
     [property: JsonPropertyName("persona")] string Persona,
     [property: JsonPropertyName("kind")] string InvocationKind,
     [property: JsonPropertyName("prompt")] string Prompt,
-    [property: JsonPropertyName("reply")] string Reply);
+    [property: JsonPropertyName("reply")] string Reply,
+    [property: JsonPropertyName("transcript_schema_version")] int? TranscriptSchemaVersion = null,
+    [property: JsonPropertyName("episode_id")] string? EpisodeId = null,
+    [property: JsonPropertyName("trigger_message_id")] ulong? TriggerMessageId = null,
+    [property: JsonPropertyName("reply_target_message_id")] ulong? ReplyTargetMessageId = null,
+    [property: JsonPropertyName("evidence_digest")] string? EvidenceDigest = null,
+    [property: JsonPropertyName("outcome")] string? Outcome = null,
+    [property: JsonPropertyName("model_invoked")] bool? ModelInvoked = null);
 
 /// <summary>Default sink used when transcript logging is disabled or in tests. Discards entries.</summary>
 public sealed class NoOpTranscriptSink : ITranscriptSink
@@ -50,6 +57,8 @@ public sealed class NoOpTranscriptSink : ITranscriptSink
 /// </summary>
 public sealed class FileBackedTranscriptSink : ITranscriptSink, IHostedService
 {
+    internal const int CurrentSchemaVersion = 2;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
@@ -71,6 +80,16 @@ public sealed class FileBackedTranscriptSink : ITranscriptSink, IHostedService
 
         try
         {
+            if (entry.TranscriptSchemaVersion is null
+                && (entry.EpisodeId is not null
+                    || entry.TriggerMessageId.HasValue
+                    || entry.ReplyTargetMessageId.HasValue
+                    || entry.EvidenceDigest is not null
+                    || entry.Outcome is not null
+                    || entry.ModelInvoked.HasValue))
+            {
+                entry = entry with { TranscriptSchemaVersion = CurrentSchemaVersion };
+            }
             var path = PathForDate(entry.Timestamp);
             var line = JsonSerializer.Serialize(entry, JsonOptions) + "\n";
             var bytes = System.Text.Encoding.UTF8.GetBytes(line);

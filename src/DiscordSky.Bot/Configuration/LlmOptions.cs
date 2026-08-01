@@ -22,6 +22,13 @@ public readonly record struct LlmWorkloadProfile(
     public bool HasReasoning =>
         !string.IsNullOrWhiteSpace(ReasoningEffort) || !string.IsNullOrWhiteSpace(ReasoningSummary);
 
+    public bool HasMaximumReasoning =>
+        Enum.TryParse<ReasoningEffort>(ReasoningEffort, ignoreCase: true, out var effort)
+        && effort == Microsoft.Extensions.AI.ReasoningEffort.ExtraHigh;
+
+    public int WithReasoningHeadroom(int normalMaxOutputTokens) =>
+        HasMaximumReasoning ? Math.Max(normalMaxOutputTokens, 16_384) : normalMaxOutputTokens;
+
     public void ApplyReasoning(ChatOptions options)
     {
         if (!HasReasoning) return;
@@ -111,6 +118,9 @@ public sealed class LlmProviderOptions
     /// </summary>
     public int MaxTokens { get; init; } = 1200;
 
+    /// <summary>End-to-end deadline for one provider call. Clamped to 1-60 minutes by the client factory.</summary>
+    public int RequestTimeoutMinutes { get; init; } = 15;
+
     /// <summary>
     /// Per-persona model overrides. Key = persona name, Value = model name.
     /// All models must be available on this provider.
@@ -135,7 +145,7 @@ public sealed class LlmProviderOptions
     public string? UtilityModel { get; init; }
 
     /// <summary>
-    /// Reasoning effort level (e.g. "low", "medium", "high").
+    /// Reasoning effort level ("none", "low", "medium", "high", or "ExtraHigh" for OpenAI xhigh).
     /// Leave null/empty for models that don't support it (e.g. grok-4-0709 which always reasons).
     /// </summary>
     public string? ReasoningEffort { get; init; }

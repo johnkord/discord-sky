@@ -6,7 +6,6 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OpenAI;
-using OpenAI.Responses;
 
 // Pre-deploy smoke test for the LIVE image pipeline. It runs the bot's ACTUAL code end to end: the
 // ImageRewriter (the configured balanced chat model on the Responses API) turns a raw request into an in-character prompt + caption,
@@ -31,7 +30,7 @@ string GetArg(string name, string fallback)
     return idx >= 0 && idx + 1 < args.Length ? args[idx + 1] : fallback;
 }
 
-var chatModel = GetArg("--chat-model", "gpt-5.6-terra");
+var chatModel = GetArg("--chat-model", "gpt-5.6-sol");
 var imageModel = GetArg("--model", "gpt-image-2");
 var quality = GetArg("--quality", "medium");
 var size = GetArg("--size", "1024x1024");
@@ -50,10 +49,18 @@ var llmOptions = new LlmOptions
     ActiveProvider = "OpenAI",
     Providers =
     {
-        ["OpenAI"] = new LlmProviderOptions { ApiKey = apiKey, ChatModel = chatModel, UseResponsesApi = true },
+        ["OpenAI"] = new LlmProviderOptions
+        {
+            ApiKey = apiKey,
+            ChatModel = chatModel,
+            ImageRewriteModel = chatModel,
+            ImageRewriteReasoningEffort = "ExtraHigh",
+            RequestTimeoutMinutes = 15,
+            UseResponsesApi = true,
+        },
     },
 };
-var chatClient = new OpenAIClient(apiKey).GetResponsesClient(chatModel).AsIChatClient();
+var chatClient = LlmChatClientFactory.Create(llmOptions.GetActiveProvider(), chatModel);
 var memoryScorer = new LexicalMemoryScorer(new StaticOptionsMonitor<MemoryRelevanceOptions>(new MemoryRelevanceOptions()));
 var rewriter = new ImageRewriter(
     chatClient, new StaticOptionsMonitor<LlmOptions>(llmOptions), memoryScorer, loggerFactory.CreateLogger<ImageRewriter>());

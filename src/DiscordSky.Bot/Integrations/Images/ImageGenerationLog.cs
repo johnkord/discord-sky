@@ -30,7 +30,9 @@ public sealed record ImageGenerationRecord(
     [property: JsonPropertyName("tool_selected")] bool? ToolSelected = null,
     [property: JsonPropertyName("visual_worth")] double? VisualWorth = null,
     [property: JsonPropertyName("reason")] string? Reason = null,
-    [property: JsonPropertyName("guild_id")] ulong? GuildId = null)
+    [property: JsonPropertyName("guild_id")] ulong? GuildId = null,
+    [property: JsonPropertyName("evidence_message_ids")] IReadOnlyList<ulong>? EvidenceMessageIds = null,
+    [property: JsonPropertyName("prompt_digest")] string? PromptDigest = null)
 {
     public const string OutcomeOk = "ok";
     public const string OutcomeRefused = "refused";

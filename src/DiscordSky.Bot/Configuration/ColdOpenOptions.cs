@@ -1,5 +1,13 @@
 namespace DiscordSky.Bot.Configuration;
 
+public enum ColdOpenEpisodeNoveltyMode
+{
+    Off,
+    Shadow,
+    Exact,
+    Calibrated,
+}
+
 /// <summary>
 /// Configuration for proactive cold opens: rare, unprompted, in-character bulletins dropped into a LIVE lull in
 /// an opted-in channel, never into silence. Ships off and in shadow mode. See
@@ -56,6 +64,12 @@ public sealed class ColdOpenOptions
 
     /// <summary>How often (seconds) the service checks the gate.</summary>
     public int PollSeconds { get; init; } = 45;
+
+    public ColdOpenEpisodeNoveltyMode EpisodeNoveltyMode { get; init; } = ColdOpenEpisodeNoveltyMode.Off;
+    public int NoveltyRetentionHours { get; init; } = 48;
+    public string NoveltyLedgerPath { get; init; } = Path.Combine("data", "cold_open_novelty.json");
+    public int NoveltyLedgerMaxEntries { get; init; } = 256;
+    public double SemanticNoveltySampleRate { get; init; } = 1.0;
 }
 
 /// <summary>One opted-in cold-open target: a guild name (optional; blank matches any) and a channel name.</summary>

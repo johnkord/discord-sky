@@ -56,6 +56,13 @@ env-inventory.md
 # User memory data
 data/
 
+# Private disposable-guild and production autonomy profiles.
+config/world-autonomy/
+
+# Optional self-contained Discord Steward bundle used by the autonomy image build.
+/artifacts/discord-steward/*
+!/artifacts/discord-steward/.gitkeep
+
 # Image smoke-test artifacts (tools/DiscordSky.ImageSmoke output)
 robotnik-smoke.*
 

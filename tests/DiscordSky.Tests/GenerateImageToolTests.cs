@@ -39,6 +39,14 @@ public class GenerateImageToolTests
         Assert.Equal(string.Empty, CreativeOrchestrator.ParseImagePrompt(call));
     }
 
+    [Fact]
+    public void ParseImageSourceMessageIds_AcceptsNumbersAndStrings()
+    {
+        var call = MakeCall("generate_image", new { source_message_ids = new object[] { 10, "11", 10, "bad" } });
+
+        Assert.Equal(new ulong[] { 10, 11 }, CreativeOrchestrator.ParseImageSourceMessageIds(call));
+    }
+
     private static FunctionCallContent MakeCall(string name, object args)
     {
         var json = JsonSerializer.Serialize(args);

@@ -1,0 +1,115 @@
+[
+  {
+    "name": "meteor-deictic",
+    "channelId": 900,
+    "capturedAt": "2026-07-19T12:00:00Z",
+    "moodLabel": "scheming",
+    "trigger": {
+      "messageId": 103,
+      "authorId": 20,
+      "author": "Carol",
+      "content": "what is that?",
+      "timestamp": "2026-07-19T12:00:00Z"
+    },
+    "recentMessages": [
+      {
+        "messageId": 100,
+        "authorId": 10,
+        "author": "Alice",
+        "content": "A meteor just appeared over the town.",
+        "timestamp": "2026-07-19T11:59:48Z"
+      },
+      {
+        "messageId": 101,
+        "authorId": 11,
+        "author": "Bob",
+        "content": "Everyone get inside.",
+        "timestamp": "2026-07-19T11:59:53Z"
+      }
+    ],
+    "modelReferentId": 100,
+    "modelReferentConfidence": 0.91,
+    "expectReferentRequired": true,
+    "expectCandidateIds": [101, 100],
+    "expectSelectedReferentId": 100
+  },
+  {
+    "name": "explicit-reply",
+    "channelId": 900,
+    "capturedAt": "2026-07-19T12:05:00Z",
+    "trigger": {
+      "messageId": 202,
+      "authorId": 20,
+      "author": "Carol",
+      "content": "what is that?",
+      "timestamp": "2026-07-19T12:05:00Z",
+      "referencedMessageId": 200
+    },
+    "recentMessages": [
+      {
+        "messageId": 200,
+        "authorId": 10,
+        "author": "Alice",
+        "content": "This machine predicts storms.",
+        "timestamp": "2026-07-19T12:04:55Z"
+      }
+    ],
+    "modelReferentId": null,
+    "modelReferentConfidence": null,
+    "expectReferentRequired": false,
+    "expectCandidateIds": [200],
+    "expectSelectedReferentId": 200
+  },
+  {
+    "name": "ambiguous-abstain",
+    "channelId": 900,
+    "capturedAt": "2026-07-19T12:10:00Z",
+    "trigger": {
+      "messageId": 303,
+      "authorId": 20,
+      "author": "Carol",
+      "content": "look at that",
+      "timestamp": "2026-07-19T12:10:00Z"
+    },
+    "recentMessages": [
+      {
+        "messageId": 300,
+        "authorId": 10,
+        "author": "Alice",
+        "content": "A gold airship arrived.",
+        "timestamp": "2026-07-19T12:09:50Z"
+      },
+      {
+        "messageId": 301,
+        "authorId": 11,
+        "author": "Bob",
+        "content": "A tower collapsed behind it.",
+        "timestamp": "2026-07-19T12:09:55Z"
+      }
+    ],
+    "modelReferentId": null,
+    "modelReferentConfidence": 0.30,
+    "expectReferentRequired": true,
+    "expectCandidateIds": [301, 300],
+    "expectSelectedReferentId": null
+  },
+  {
+    "name": "self-contained-media",
+    "channelId": 900,
+    "capturedAt": "2026-07-19T12:15:00Z",
+    "trigger": {
+      "messageId": 402,
+      "authorId": 20,
+      "author": "Carol",
+      "content": "that rules",
+      "timestamp": "2026-07-19T12:15:00Z",
+      "hasMedia": true
+    },
+    "recentMessages": [],
+    "modelReferentId": null,
+    "modelReferentConfidence": null,
+    "expectReferentRequired": false,
+    "expectCandidateIds": [],
+    "expectSelectedReferentId": null
+  }
+]

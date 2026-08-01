@@ -54,6 +54,8 @@ public sealed class RecallTelemetryTests : IDisposable
         Assert.Equal(TelemetryEventTypes.RecallToolOk, doc.RootElement.GetProperty("event").GetString());
         Assert.Equal("deadbeef00", doc.RootElement.GetProperty("user").GetString());
         Assert.Equal(5, doc.RootElement.GetProperty("count").GetInt32());
+        Assert.Equal(FileBackedTelemetrySink.CurrentSchemaVersion,
+            doc.RootElement.GetProperty("telemetry_schema_version").GetInt32());
     }
 
     [Fact]
@@ -129,6 +131,57 @@ public sealed class RecallTelemetryTests : IDisposable
     }
 
     [Fact]
+    public async Task Emit_PersistsTraceAndTerminalYieldFields()
+    {
+        var sink = BuildSink();
+        await sink.StartAsync(CancellationToken.None);
+
+        sink.Emit(new TelemetryEvent(
+            Timestamp: new DateTimeOffset(2026, 7, 19, 12, 0, 0, TimeSpan.Zero),
+            EventType: "memory_extraction",
+            OperationId: "op-1",
+            EpisodeId: "episode-1",
+            EpisodeSchemaVersion: 1,
+            Stage: "terminal",
+            ReasonCode: "ok_applied",
+            ReferentMessageId: 42,
+            ContextMessageCount: 3,
+            OldestContextAgeMs: 12_000,
+            EvidenceMask: "trigger,recent",
+            EvidenceDigest: "evidence-hash",
+            ProjectionDigest: "projection-hash",
+            ProposedCount: 4,
+            AppliedCount: 2,
+            RejectedCount: 2,
+            HttpStatus: 403,
+            ProviderErrorCode: 90_001));
+
+        var line = (await ReadOnlyLineAsync())!;
+        using var doc = JsonDocument.Parse(line);
+        var root = doc.RootElement;
+        Assert.Equal("op-1", root.GetProperty("operation_id").GetString());
+        Assert.Equal("episode-1", root.GetProperty("episode_id").GetString());
+        Assert.Equal("terminal", root.GetProperty("stage").GetString());
+        Assert.Equal(2, root.GetProperty("applied_count").GetInt32());
+        Assert.Equal(90_001, root.GetProperty("provider_error_code").GetInt32());
+    }
+
+    [Fact]
+    public void TelemetryEvent_DeserializesVersionZeroAndIgnoresFutureFields()
+    {
+        const string json = """
+            {"ts":"2026-07-19T12:00:00+00:00","event":"persona_invoked","user":"abc","future_field":"ignored"}
+            """;
+
+        var evt = JsonSerializer.Deserialize<TelemetryEvent>(json);
+
+        Assert.NotNull(evt);
+        Assert.Null(evt!.TelemetrySchemaVersion);
+        Assert.Equal("persona_invoked", evt.EventType);
+        Assert.Equal("abc", evt.UserHash);
+    }
+
+    [Fact]
     public async Task StartAsync_PrunesFilesOlderThanRetention()
     {
         // Pre-seed: one old (>30d) and one fresh.
@@ -187,6 +240,23 @@ public sealed class RecallTelemetryTests : IDisposable
         sink.Emit(new TelemetryEvent(DateTimeOffset.UtcNow, TelemetryEventTypes.RecallToolOk, UserHash: "u1"));
         sink.Emit(new TelemetryEvent(DateTimeOffset.UtcNow, TelemetryEventTypes.RecallHintEmitted, UserHash: "u2"));
         Assert.Equal(2, sink.Events.Count);
+    }
+
+    [Fact]
+    public async Task RuntimeStartedService_EmitsContentFreeStartupBoundary()
+    {
+        var sink = new InMemoryTelemetrySink();
+        var service = new RuntimeStartedTelemetryService(sink);
+
+        await service.StartAsync(CancellationToken.None);
+
+        var evt = Assert.Single(sink.Events);
+        Assert.Equal(TelemetryEventTypes.RuntimeStarted, evt.EventType);
+        Assert.Equal("ok", evt.Outcome);
+        Assert.Equal("startup", evt.Stage);
+        Assert.Null(evt.Note);
+        Assert.Null(evt.Room);
+        Assert.Null(evt.UserHash);
     }
 
     private async Task<string?> ReadOnlyLineAsync()

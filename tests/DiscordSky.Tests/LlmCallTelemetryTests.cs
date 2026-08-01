@@ -1,5 +1,6 @@
 using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Memory.Logging;
+using DiscordSky.Bot.Models.Orchestration;
 using Microsoft.Extensions.AI;
 
 namespace DiscordSky.Tests;
@@ -31,7 +32,13 @@ public sealed class LlmCallTelemetryTests
             "ambient_reply",
             new LlmWorkloadProfile("requested-model", "low"),
             messageId: 123,
-            evaluationId: "eval-1");
+            evaluationId: "eval-1",
+            trace: new InteractionTraceContext(
+                EpisodeId: "episode-1",
+                OperationId: "operation-1",
+                EpisodeSchemaVersion: 1,
+                EvidenceDigest: "evidence-1",
+                ProjectionDigest: "projection-1"));
 
         await client.GetResponseAsync([new ChatMessage(ChatRole.User, "secret prompt")], options);
 
@@ -45,6 +52,11 @@ public sealed class LlmCallTelemetryTests
         Assert.Equal("low", evt.ReasoningEffort);
         Assert.Equal((ulong)123, evt.MessageId);
         Assert.Equal("eval-1", evt.EvaluationId);
+        Assert.Equal("episode-1", evt.EpisodeId);
+        Assert.Equal("operation-1", evt.OperationId);
+        Assert.Equal(1, evt.EpisodeSchemaVersion);
+        Assert.Equal("evidence-1", evt.EvidenceDigest);
+        Assert.Equal("projection-1", evt.ProjectionDigest);
         Assert.Equal(1, evt.CallIndex);
         Assert.Equal(100, evt.InputTokens);
         Assert.Equal(40, evt.OutputTokens);

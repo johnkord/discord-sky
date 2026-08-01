@@ -42,6 +42,7 @@ public sealed class ColdOpenService : IHostedService, IDisposable
     private readonly SentMessageRegistry? _sentMessages;
     private readonly IColdOpenShadowSink? _providerShadow;
     private readonly ContextAggregator? _contextAggregator;
+    private readonly IProactiveEpisodeLedger? _noveltyLedger;
 
     private readonly SemaphoreSlim _lock = new(1, 1);
     private readonly Dictionary<ulong, ChannelBudget> _budgets = new();
@@ -60,7 +61,8 @@ public sealed class ColdOpenService : IHostedService, IDisposable
         ColdOpenCritic? critic = null,
         SentMessageRegistry? sentMessages = null,
         IColdOpenShadowSink? providerShadow = null,
-        ContextAggregator? contextAggregator = null)
+        ContextAggregator? contextAggregator = null,
+        IProactiveEpisodeLedger? noveltyLedger = null)
     {
         _client = client;
         _options = options;
@@ -74,6 +76,7 @@ public sealed class ColdOpenService : IHostedService, IDisposable
         _sentMessages = sentMessages;
         _providerShadow = providerShadow;
         _contextAggregator = contextAggregator;
+        _noveltyLedger = noveltyLedger;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -86,8 +89,8 @@ public sealed class ColdOpenService : IHostedService, IDisposable
         }
 
         _logger.LogInformation(
-            "Cold opens enabled: {Mode}, {Channels} channel(s), poll {Poll}s, worth>={Worth:F2}, cap {Cap}/day, cooldown {Cooldown}m.",
-            opts.ShadowMode ? "SHADOW (no posting)" : "LIVE", opts.Channels.Count, opts.PollSeconds, opts.WorthThreshold, opts.MaxPerDay, opts.CooldownMinutes);
+            "Cold opens enabled: {Mode}, novelty={NoveltyMode}, {Channels} channel(s), poll {Poll}s, worth>={Worth:F2}, cap {Cap}/day, cooldown {Cooldown}m.",
+            opts.ShadowMode ? "SHADOW (no posting)" : "LIVE", opts.EpisodeNoveltyMode, opts.Channels.Count, opts.PollSeconds, opts.WorthThreshold, opts.MaxPerDay, opts.CooldownMinutes);
 
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _loop = RunLoopAsync(_cts.Token);
@@ -165,8 +168,9 @@ public sealed class ColdOpenService : IHostedService, IDisposable
             if (budget.LastJudgedAt is { } judged && now - judged < judgeCooldown) continue;
             budget.LastJudgedAt = now;
 
-            var recentLines = await GatherRecentLinesAsync(channel, now, window, ct);
-            var context = BuildContext(recentLines);
+            var roomEvidence = await GatherRecentEvidenceAsync(channel, now, window, ct);
+            var recentLines = roomEvidence.Select(item => item.RenderedLine).ToArray();
+            var context = BuildContext(roomEvidence);
             var evaluationId = Guid.NewGuid().ToString("N");
             var draft = await _composer.ComposeAsync(context, evaluationId, ct);
             _providerShadow?.TryEnqueue(new ColdOpenShadowOpportunity(
@@ -184,6 +188,12 @@ public sealed class ColdOpenService : IHostedService, IDisposable
                 continue; // a decline does NOT consume the fire cooldown or the daily cap, only the judge cooldown
             }
 
+            var sourceValidation = ColdOpenSourceValidator.Validate(draft, roomEvidence);
+            EmitSourceValidation(channel.Name, evaluationId, now, sourceValidation);
+            var noveltyEvidence = sourceValidation.SelectedEvidence.Count > 0
+                ? sourceValidation.SelectedEvidence
+                : roomEvidence;
+
             var normalizedHook = NormalizeHook(draft.Hook);
             var hookCooldown = TimeSpan.FromMinutes(Math.Max(1, opts.HookCooldownMinutes));
             if (!string.IsNullOrEmpty(normalizedHook)
@@ -195,6 +205,37 @@ public sealed class ColdOpenService : IHostedService, IDisposable
                 _logger.LogInformation(
                     "cold_open outcome=declined reason=repeated_hook worth={Worth:F2} hook={Hook} channel={Channel}",
                     draft.Worth, draft.Hook, channel.Name);
+                continue;
+            }
+
+            var novelty = opts.EpisodeNoveltyMode == ColdOpenEpisodeNoveltyMode.Off
+                || _noveltyLedger is null
+                ? new ColdOpenNoveltyDecision(false, ColdOpenNoveltyStage.Off, false, false, null, "off")
+                : ColdOpenNoveltyEvaluator.Evaluate(
+                    noveltyEvidence,
+                    _noveltyLedger.GetRecent(channel.Id),
+                    opts.EpisodeNoveltyMode);
+            if (novelty.Evaluated)
+            {
+                EmitNovelty(channel.Name, evaluationId, now, noveltyEvidence, novelty, opts.EpisodeNoveltyMode);
+            }
+            if (novelty.ShouldSuppress)
+            {
+                Emit(
+                    "declined",
+                    channel.Name,
+                    draft.Hook,
+                    draft.Worth,
+                    draft.Line,
+                    recentLines,
+                    $"novelty_{novelty.ReasonCode}",
+                    evaluationId,
+                    now);
+                _logger.LogInformation(
+                    "cold_open outcome=declined reason={Reason} matching_episode={MatchingEpisode} channel={Channel}",
+                    novelty.ReasonCode,
+                    novelty.MatchingEpisodeId,
+                    channel.Name);
                 continue;
             }
 
@@ -211,12 +252,19 @@ public sealed class ColdOpenService : IHostedService, IDisposable
             else
             {
                 var sent = await channel.SendMessageAsync(draft.Line, allowedMentions: AllowedMentions.None);
-                _sentMessages?.Register(sent.Id, GetPersona(), "cold_open");
+                _sentMessages?.Register(sent.Id, GetPersona(), "cold_open", episodeId: evaluationId);
                 _pulse.RecordBot(channel.Id, DateTimeOffset.UtcNow);
                 Emit("fired", channel.Name, draft.Hook, draft.Worth, draft.Line, recentLines, null, evaluationId, now);
                 _logger.LogInformation("cold_open outcome=fired worth={Worth:F2} hook={Hook} channel={Channel}",
                     draft.Worth, draft.Hook, channel.Name);
             }
+
+            _noveltyLedger?.Record(BuildEpisodeSnapshot(
+                evaluationId,
+                channel.Id,
+                now,
+                noveltyEvidence,
+                normalizedHook));
 
             // A fire (shadow or live) consumes the daily cap and the fire cooldown, so the shadow cadence mirrors live.
             budget.FiredToday++;
@@ -232,13 +280,19 @@ public sealed class ColdOpenService : IHostedService, IDisposable
         }
     }
 
-    private ColdOpenContext BuildContext(IReadOnlyList<string> recentLines)
+    private ColdOpenContext BuildContext(IReadOnlyList<ColdOpenRoomEvidence> roomEvidence)
     {
         var state = _empireState?.Current;
         var mood = _empireState is { Enabled: true } ? state?.Mood.Label : null;
         var situation = state?.Body ?? string.Empty;
         var people = _recentParticipants?.Names(6) ?? Array.Empty<string>();
-        return new ColdOpenContext(GetPersona(), mood, situation, people, recentLines);
+        return new ColdOpenContext(
+            GetPersona(),
+            mood,
+            situation,
+            people,
+            roomEvidence.Select(item => item.RenderedLine).ToArray(),
+            roomEvidence);
     }
 
     private async Task ReviewCritiqueAsync(
@@ -289,7 +343,7 @@ public sealed class ColdOpenService : IHostedService, IDisposable
     /// callback to catch. Bounded; the bot's own and other bots' messages are skipped; marked untrusted
     /// downstream. Fail-open to empty, in which case the composer has no hook and should stay silent.
     /// </summary>
-    private async Task<IReadOnlyList<string>> GatherRecentLinesAsync(
+    private async Task<IReadOnlyList<ColdOpenRoomEvidence>> GatherRecentEvidenceAsync(
         SocketTextChannel channel,
         DateTimeOffset now,
         TimeSpan window,
@@ -307,29 +361,101 @@ public sealed class ColdOpenService : IHostedService, IDisposable
                 .OrderBy(m => m.Timestamp)
                 .TakeLast(MaxLines)
                 .ToArray();
-            var lines = new List<string>(candidates.Length);
+            var evidence = new List<ColdOpenRoomEvidence>(candidates.Length);
             foreach (var message in candidates)
             {
                 var name = (message.Author as SocketGuildUser)?.DisplayName ?? message.Author.Username;
                 var text = message.Content.Replace('\n', ' ').Replace('\r', ' ').Trim();
                 string? mediaContext = null;
+                IReadOnlyList<Uri> knownUris = Array.Empty<Uri>();
                 if (_contextAggregator is not null)
                 {
                     var view = await _contextAggregator.BuildMessageViewAsync(
                         message, includeHttpUnfurls: false, cancellationToken);
                     text = view.Text.Replace('\n', ' ').Replace('\r', ' ').Trim();
                     mediaContext = view.MediaContext?.Replace('\n', ' ').Replace('\r', ' ').Trim();
+                    knownUris = view.UnfurledLinks.Select(link => link.OriginalUrl).ToArray();
                 }
                 var line = FormatRecentLine(name, text, mediaContext, MaxLineChars);
-                if (line is not null) lines.Add(line);
+                if (line is null) continue;
+                evidence.Add(new ColdOpenRoomEvidence(
+                    message.Id,
+                    message.Reference?.MessageId.IsSpecified == true ? message.Reference.MessageId.Value : null,
+                    message.Timestamp,
+                    name,
+                    line,
+                    ColdOpenEvidenceExtractor.ExtractTopicAnchors(text, mediaContext),
+                    ColdOpenEvidenceExtractor.ExtractResourceIds(text, knownUris)));
             }
-            return lines;
+            return evidence;
         }
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "Cold-open recent-line gather failed; proceeding with Empire State only.");
-            return Array.Empty<string>();
+            return Array.Empty<ColdOpenRoomEvidence>();
         }
+    }
+
+    internal static ColdOpenEpisodeSnapshot BuildEpisodeSnapshot(
+        string episodeId,
+        ulong channelId,
+        DateTimeOffset firedAt,
+        IReadOnlyList<ColdOpenRoomEvidence> evidence,
+        string? hook) => new(
+            episodeId,
+            channelId,
+            firedAt,
+            evidence.Select(item => item.MessageId).Distinct().OrderBy(id => id).ToArray(),
+            evidence.Where(item => item.ReferencedMessageId.HasValue).Select(item => item.ReferencedMessageId!.Value).Distinct().OrderBy(id => id).ToArray(),
+            evidence.SelectMany(item => item.ResourceIds).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray(),
+            evidence.SelectMany(item => item.TopicAnchors).Distinct(StringComparer.Ordinal).OrderBy(value => value, StringComparer.Ordinal).ToArray(),
+            hook);
+
+    private void EmitNovelty(
+        string channel,
+        string episodeId,
+        DateTimeOffset opportunityAt,
+        IReadOnlyList<ColdOpenRoomEvidence> evidence,
+        ColdOpenNoveltyDecision decision,
+        ColdOpenEpisodeNoveltyMode mode)
+    {
+        _telemetry.Emit(new TelemetryEvent(
+            Timestamp: DateTimeOffset.UtcNow,
+            EventType: TelemetryEventTypes.ColdOpenNovelty,
+            Channel: channel,
+            Outcome: decision.ShouldSuppress ? "suppressed" : "allowed",
+            Count: evidence.Count,
+            ReasonCode: decision.ReasonCode,
+            EvaluationId: episodeId,
+            OpportunityAt: opportunityAt,
+            EpisodeId: episodeId,
+            Stage: "deterministic",
+            NoveltyMode: mode.ToString(),
+            NoveltyStage: decision.Stage.ToString(),
+            WouldSuppress: decision.WouldSuppress,
+            MatchingEpisodeId: decision.MatchingEpisodeId));
+    }
+
+    private void EmitSourceValidation(
+        string channel,
+        string episodeId,
+        DateTimeOffset opportunityAt,
+        ColdOpenSourceValidation validation)
+    {
+        _telemetry.Emit(new TelemetryEvent(
+            Timestamp: DateTimeOffset.UtcNow,
+            EventType: TelemetryEventTypes.ColdOpenSource,
+            Channel: channel,
+            Outcome: validation.Status,
+            Count: validation.CitedCount,
+            EvaluationId: episodeId,
+            OpportunityAt: opportunityAt,
+            EpisodeId: episodeId,
+            Stage: "shadow_validation",
+            SourceCitationStatus: validation.Status,
+            SourceMessageCount: validation.CitedCount,
+            ValidSourceCount: validation.ValidCount,
+            InvalidSourceCount: validation.InvalidCount));
     }
 
     private static string GetPersona() => "Robotnik from Adventures of Sonic the Hedgehog";
@@ -441,7 +567,8 @@ public sealed class ColdOpenService : IHostedService, IDisposable
             Reason: reason,
             Room: roomLines is { Count: > 0 } ? roomLines : null,
             EvaluationId: evaluationId,
-            OpportunityAt: opportunityAt));
+            OpportunityAt: opportunityAt,
+            EpisodeId: evaluationId));
     }
 
     public void Dispose()

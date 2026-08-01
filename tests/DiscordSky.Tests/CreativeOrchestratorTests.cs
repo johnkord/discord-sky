@@ -146,6 +146,43 @@ public class CreativeOrchestratorTests
         Assert.Equal(expected, actual);
     }
 
+    [Fact]
+    public void ResolveReplyTarget_TraceMetadataCannotChangeOwnership()
+    {
+        var baseline = new CreativeRequest(
+            "Robotnik", "topic", "user", 1, 2, 3, DateTimeOffset.UtcNow,
+            CreativeInvocationKind.Ambient, TriggerMessageId: 999);
+        var traced = baseline with
+        {
+            Trace = new InteractionTraceContext(
+                EpisodeId: "episode-1",
+                OperationId: "operation-1",
+                EvidenceDigest: "evidence-1")
+        };
+
+        var withoutTrace = CreativeOrchestrator.ResolveReplyTarget(baseline, "reply", 100, KnownMessages);
+        var withTrace = CreativeOrchestrator.ResolveReplyTarget(traced, "reply", 100, KnownMessages);
+
+        Assert.Equal(withoutTrace, withTrace);
+        Assert.Equal(999UL, withTrace);
+    }
+
+    [Fact]
+    public void ResolveReplyTarget_EpisodeReferentCannotChangeOwnership()
+    {
+        var episode = Episode();
+        var request = Request(CreativeInvocationKind.Ambient, triggerMessageId: 999) with
+        {
+            Episode = episode,
+            EpisodeDecision = new EpisodeActionDecision(
+                new ReferentDecision(100, 1.0, ReferentResolutionStatus.Resolved))
+        };
+
+        var actual = CreativeOrchestrator.ResolveReplyTarget(request, "reply", 100, KnownMessages);
+
+        Assert.Equal(999UL, actual);
+    }
+
     [Theory]
     [InlineData(true, CreativeInvocationKind.Ambient, CreativeActionMode.ImageRequired, true)]
     [InlineData(true, CreativeInvocationKind.Ambient, CreativeActionMode.TextOnly, false)]
@@ -204,6 +241,58 @@ public class CreativeOrchestratorTests
         Assert.Null(missing.AttachmentBytes);
     }
 
+    [Fact]
+    public void RateLimitOutcome_CarriesBudgetEpisodeAndDeliveryMetadataWithoutModelClaim()
+    {
+        var request = Request(CreativeInvocationKind.DirectReply, triggerMessageId: 123) with
+        {
+            Channel = new ChannelContext("general", null, "server", false, null, 10, 2, null),
+            Trace = new InteractionTraceContext(EpisodeId: "episode-1", EvidenceDigest: "evidence-1"),
+        };
+        var decision = CreativeRateLimitDecision.Limited(
+            "explicit_channel_reserve",
+            4,
+            4,
+            "explicit_channel_reserve_exhausted");
+        var result = CreativeOrchestrator.BuildProviderFallback(request, "try again");
+
+        var telemetry = CreativeOrchestrator.BuildRateLimitTelemetry(request, decision);
+        var transcript = CreativeOrchestrator.BuildRateLimitTranscript(request, result);
+
+        Assert.Equal(TelemetryEventTypes.CreativeRateLimited, telemetry.EventType);
+        Assert.Equal("episode-1", telemetry.EpisodeId);
+        Assert.Equal("DirectReply", telemetry.Kind);
+        Assert.Equal("explicit_channel_reserve", telemetry.BudgetClass);
+        Assert.Equal(4, telemetry.Count);
+        Assert.Equal(4, telemetry.Limit);
+        Assert.False(string.IsNullOrWhiteSpace(telemetry.ChannelHash));
+        Assert.Equal("try again", transcript.Reply);
+        Assert.Equal(123UL, transcript.ReplyTargetMessageId);
+        Assert.Equal("rate_limited_fallback", transcript.Outcome);
+        Assert.False(transcript.ModelInvoked);
+        Assert.Equal("[rate limited before model invocation]", transcript.Prompt);
+    }
+
+    [Theory]
+    [InlineData(CreativeInvocationKind.DirectReply, CreativeActionMode.ImageRequired, 123UL)]
+    [InlineData(CreativeInvocationKind.Command, CreativeActionMode.ImageRequired, null)]
+    [InlineData(CreativeInvocationKind.Ambient, CreativeActionMode.ImageRequired, null)]
+    public void RateLimitFallback_IsClearForExplicitImagesAndSilentForAmbient(
+        CreativeInvocationKind invocationKind,
+        CreativeActionMode actionMode,
+        ulong? expectedTarget)
+    {
+        var request = Request(invocationKind, triggerMessageId: 123, actionMode);
+
+        var result = CreativeOrchestrator.BuildRateLimitFallback(request);
+
+        Assert.Equal(expectedTarget, result.ReplyToMessageId);
+        Assert.Equal(
+            invocationKind == CreativeInvocationKind.Ambient ? string.Empty : "I'm catching my breath, try again soon!",
+            result.PrimaryMessage);
+        Assert.Null(result.AttachmentBytes);
+    }
+
     private static CreativeRequest Request(
         CreativeInvocationKind invocationKind,
         ulong? triggerMessageId,
@@ -219,4 +308,22 @@ public class CreativeOrchestratorTests
             invocationKind,
             TriggerMessageId: triggerMessageId,
             ActionMode: actionMode);
+
+    private static InteractionEpisode Episode()
+    {
+        var now = new DateTimeOffset(2026, 7, 19, 12, 0, 0, TimeSpan.Zero);
+        return InteractionEpisode.Create(
+            "episode-1",
+            now,
+            2,
+            999,
+            new[]
+            {
+                new EpisodeMessage(100, 10, "Alice", "meteor incoming", now.AddSeconds(-5)),
+                new EpisodeMessage(999, 20, "Bob", "what is that?", now),
+            },
+            null,
+            new ReferentRequirement(true, "deictic_question"),
+            new[] { new ReferentCandidate(100, 0.75, "recent_message") });
+    }
 }

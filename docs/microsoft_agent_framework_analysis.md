@@ -2,11 +2,23 @@
 
 ## Executive Summary
 
-This document evaluates whether adopting the **Microsoft Agent Framework (MAF)** would benefit the Discord Sky bot.
+Revised 2026-07-28. The original version of this document was written when Discord Sky talked to
+OpenAI through hand-rolled HTTP, and it recommended adopting MAF largely to delete that code. That
+recommendation has been overtaken by events: the raw HTTP layer is gone, and the deletion benefit was
+already captured by moving to `Microsoft.Extensions.AI` directly. This revision reassesses MAF against
+the codebase as it actually is.
 
-A critical clarification: **MAF is not Semantic Kernel**. MAF is the official *successor* to both Semantic Kernel and AutoGen, announced in October 2025 and reaching **Release Candidate (1.0.0-rc1)** on February 19, 2026. In Microsoft's own words: *"Think of Microsoft Agent Framework as Semantic Kernel v2.0 (it's built by the same team!)"* — Semantic Kernel will receive critical bug fixes for at least one year after MAF reaches GA, but all new feature development is happening in MAF.
+The short version: MAF is now used only by the unrestricted-autonomy subsystem. `DiscordSky.Bot.csproj`
+pins `Microsoft.Agents.AI.OpenAI` 1.15.0, `Microsoft.Extensions.AI` 10.8.3, and MCP 1.4.1. The normal
+reply path stays on `CreativeOrchestrator`'s existing hand-rolled loop.
 
-Crucially, **MAF targets .NET 8.0, .NET Standard 2.0, and .NET Framework 4.7.2** — there is no TFM blocker. Discord Sky can reference MAF packages today on its existing `net8.0` target. Combined with a significantly simpler API, native OpenAI Responses API support, and graph-based workflows, MAF merits serious consideration for the project's next evolution.
+That division is deliberate. A bot whose ordinary reply ends in a single terminal
+`send_discord_message` call gains little from agent conversion. Unrestricted autonomy needs a real
+agent that calls native MCP tools and records every mutation before it can execute. MAF's tool-approval
+model supplies that suspend point even though approval is automatic.
+
+MAF targets `net8.0`, so there is no TFM blocker. The upgrade preserves the existing reply behavior;
+Sky's full pre-autonomy suite passed after the OpenAI 2.10 Responses-client construction update.
 
 ---
 
@@ -14,16 +26,16 @@ Crucially, **MAF targets .NET 8.0, .NET Standard 2.0, and .NET Framework 4.7.2**
 
 | | Semantic Kernel | Microsoft Agent Framework |
 |---|---|---|
-| **Status** | Legacy (maintenance mode) | Active development, RC as of Feb 2026 |
-| **Positioning** | "v1.x" | "v2.0" — the successor |
+| **Status** | Maintenance-focused | Active development |
+| **Positioning** | "v1.x" | "v2.0", the successor |
 | **GitHub** | `microsoft/semantic-kernel` | `microsoft/agent-framework` |
 | **NuGet (.NET)** | `Microsoft.SemanticKernel.*` | `Microsoft.Agents.AI.*` |
 | **PyPI (Python)** | `semantic-kernel` | `agent-framework` |
-| **.NET TFM** | `net10.0+` (current main) | `net8.0` / `netstandard2.0` / `net472` |
+| **.NET TFM** | `net8.0` / `netstandard2.0` | `net8.0` / `netstandard2.0` / `net472` |
 | **Core abstractions** | `Kernel`, `KernelFunction`, `ChatCompletionAgent` | `AIAgent`, `AIFunctionFactory`, `ChatClientAgent` |
 | **Message types** | `ChatMessageContent` (SK-specific) | `Microsoft.Extensions.AI` types (industry standard) |
-| **Tool registration** | `[KernelFunction]` attribute + Plugin class + Kernel | `AIFunctionFactory.Create(method)` — one line |
-| **Agent invocation** | `agent.InvokeAsync()` → `IAsyncEnumerable<AgentResponseItem>` | `agent.RunAsync()` → `AgentResponse` |
+| **Tool registration** | `[KernelFunction]` attribute + Plugin class + Kernel | `AIFunctionFactory.Create(method)`, one line |
+| **Agent invocation** | `agent.InvokeAsync()` returns `IAsyncEnumerable<AgentResponseItem>` | `agent.RunAsync()` returns `AgentResponse` |
 | **Workflows** | Experimental orchestration patterns | Graph-based workflows with streaming, checkpointing, human-in-the-loop |
 | **New features** | Critical fixes only | All new development |
 | **Support timeline** | At least 1 year after MAF GA | Long-term |
@@ -34,23 +46,35 @@ Crucially, **MAF targets .NET 8.0, .NET Standard 2.0, and .NET Framework 4.7.2**
 
 ## Current Discord Sky Architecture
 
-Discord Sky is a creative persona bot (~2,000 lines of C#) built on five focused components:
+The architecture this document originally described no longer exists. `OpenAiClient`, `OpenAiTooling`,
+`OpenAiResponseParser`, and `OpenAiChatModels` have all been removed. The relevant shape today:
 
 | Component | Responsibility |
 |-----------|----------------|
-| `DiscordBotService` | Listens for messages via Discord.NET, routes to command/ambient/direct-reply handlers |
-| `ContextAggregator` | Gathers channel history, collects images for vision, walks reply chains up to configurable depth |
-| `CreativeOrchestrator` | Builds system prompts per persona, resolves per-persona model overrides, manages reasoning token budgets, forces structured tool-call output |
-| `OpenAiClient` | Direct HTTP client to OpenAI's **Responses API** (`v1/responses`), with retry logic and moderation |
-| `SafetyFilter` | Rate limiting, ban-word scrubbing |
+| `DiscordBotService` | Discord.Net gateway, routes to command, ambient, and direct-reply handlers |
+| `ContextAggregator` | Channel history, vision images, reply-chain walking |
+| `CreativeOrchestrator` | Prompt assembly, tool declarations, and a hand-rolled tool loop |
+| `LlmChatClientFactory` | Builds a bare `IChatClient` from the OpenAI SDK |
+| `SafetyFilter` | Rate limiting and ban-word scrubbing |
+| `WorldAutonomyRouter` | Serializes one autonomous MAF run per exact configured guild |
+| `StewardMcpSupervisor` | Starts one bound Steward stdio child and discovers its complete native catalog |
+| `SqliteWorldAutonomyLedger` | Persists runs and write dispatches before native invocation |
 
 ### Key Design Decisions Worth Noting
 
-1. **Responses API, not Chat Completions**: The project targets OpenAI's `v1/responses` endpoint with custom `HttpClient` calls and manual JSON serialization.
-2. **Forced tool calls**: Every response must come through the `send_discord_message` function call, enforced via `ToolChoice = { type: "function", name: "send_discord_message" }`.
-3. **Custom vision pipeline**: `ContextAggregator` collects images from Discord attachments and inline URLs, filters by allowed hosts, and passes them as `input_image` content parts.
-4. **Per-persona model routing**: `IntentModelOverrides` allows specific personas to use different models.
-5. **Reasoning token budgets**: When reasoning models are active, the orchestrator triples the output token limit and configures `ReasoningEffort`/`ReasoningSummary` at the request level.
+1. **Already on `Microsoft.Extensions.AI`.** `LlmChatClientFactory` calls `GetResponsesClient().AsIChatClient(model)`
+   and wraps it in a `TimeoutChatClient`. Tools are declared with `AIFunctionFactory.CreateDeclaration`
+   and JSON Schema literals.
+2. **No auto-invocation anywhere.** There is no `UseFunctionInvocation()`, no `ChatClientBuilder`
+   pipeline, and no `FunctionInvokingChatClient`. `CreativeOrchestrator` runs its own `while (true)`,
+   inspects `FunctionCallContent`, performs side effects itself, and appends `FunctionResultContent`.
+3. **Declaration-only tools by design.** `send_discord_message` is a structured output mechanism, not a
+   function with a return value, so a declaration that the loop interprets is the correct shape.
+4. **Provider-native message structure is preserved.** The loop appends assistant messages exactly as
+   returned rather than flattening contents, with a comment warning that flattening destroys reasoning
+   items.
+5. **Responses API by default.** `UseResponsesApi` is on, and per-request `ChatOptions.ModelId`
+   overrides drive per-workload model routing.
 
 ---
 
@@ -62,7 +86,7 @@ Microsoft Agent Framework is a comprehensive open-source framework for building,
 
 - **Unified agent type**: A single `AIAgent` / `ChatClientAgent` base type works with any provider (no more `ChatCompletionAgent` vs `OpenAIAssistantAgent` vs `AzureAIAgent` distinctions)
 - **Simple agent creation**: Extension methods like `.AsAIAgent()` directly on provider SDK clients
-- **Direct tool registration**: `AIFunctionFactory.Create(method)` — no attributes, no plugin classes, no kernel required
+- **Direct tool registration**: `AIFunctionFactory.Create(method)`, with no attributes, plugin classes, or kernel required
 - **Graph-based workflows**: Sequential, concurrent, handoff, and group chat patterns with streaming, checkpointing, and human-in-the-loop support
 - **Multi-provider support**: OpenAI, Azure OpenAI, GitHub Copilot, Anthropic Claude, AWS Bedrock, Ollama, Microsoft Foundry
 - **Interoperability standards**: A2A (Agent-to-Agent protocol), AG-UI, MCP (Model Context Protocol)
@@ -85,257 +109,326 @@ Microsoft Agent Framework is a comprehensive open-source framework for building,
 
 ### 1. No .NET TFM Blocker
 
-The single biggest advantage over Semantic Kernel: **MAF targets `net8.0`**. Discord Sky can add MAF packages today with zero infrastructure changes — no Dockerfile updates, no CI/CD changes, no Discord.NET compatibility risk.
+Both current Semantic Kernel and MAF packages support `net8.0`. TFM compatibility is therefore a
+prerequisite, not a reason to prefer MAF. MAF is preferred because it is the active successor and its
+approval pipeline fits unrestricted Discord autonomy directly.
 
 ```xml
 <!-- Just add to DiscordSky.Bot.csproj -->
-<PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.0.0-rc1" />
+<PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.15.0" />
+<PackageReference Include="Microsoft.Extensions.AI" Version="10.8.3" />
 ```
 
 ### 2. Native OpenAI Responses API Support
 
-MAF's OpenAI provider uses the official OpenAI .NET SDK under the hood—including `ResponsesClient`. The quickstart example literally uses `.GetResponsesClient()`:
+MAF's OpenAI provider uses the official OpenAI .NET SDK under the hood, including `ResponsesClient`. The quickstart example literally uses `.GetResponsesClient()`:
 
 ```csharp
 var agent = new OpenAIClient("<apikey>")
-    .GetResponsesClient("gpt-4.1-mini")
-    .AsAIAgent(name: "Sky", instructions: "You are a mischievous Discord companion.");
+   .GetResponsesClient()
+   .AsAIAgent(model: "gpt-4.1-mini", name: "Sky", instructions: "You are a mischievous Discord companion.");
 
 AgentResponse response = await agent.RunAsync("Write a roast about pineapple pizza");
 Console.WriteLine(response.Text);
 ```
 
-This means Discord Sky wouldn't be forced to switch from the Responses API to Chat Completions — a constraint that made Semantic Kernel's `ChatCompletionAgent` a poor fit.
+This means Discord Sky is not forced to switch from the Responses API to Chat Completions, which was a
+constraint that made Semantic Kernel's `ChatCompletionAgent` a poor fit. Sky already relies on this:
+`LlmChatClientFactory` calls `GetResponsesClient().AsIChatClient(model)` today.
 
-### 3. Dramatically Simpler Tool Registration
+### 3. Tool approval, the primitive that actually matters now
 
-The current `OpenAiTooling` class manually constructs JSON schemas. MAF eliminates this entirely:
+This is the reason to revisit MAF. The planned autonomy feature gives Sky's model direct access to the
+complete Discord Steward MCP catalog. Its defining correctness property is that a mutation must be
+durably recorded before it can execute, so that a crash mid-write is always reconcilable. Approval is
+automatic; it is not a human or policy decision.
 
-```csharp
-// Current Discord Sky: 50+ lines of manual schema construction
-public static OpenAiTool CreateSendDiscordMessageTool()
-{
-    var schema = new { type = "object", properties = new { mode = new { ... }, text = new { ... } } };
-    return new OpenAiTool { Type = "function", Name = "send_discord_message", Parameters = schema };
-}
-
-// MAF: One line per tool, schema auto-generated from method signature
-var tools = new[]
-{
-    AIFunctionFactory.Create(SendDiscordMessage, "send_discord_message",
-        "Send a Discord message, optionally replying to a specific message.")
-};
-
-var agent = responsesClient.AsAIAgent(
-    name: "Sky",
-    instructions: systemPrompt,
-    tools: tools);
-
-// The tool method itself — no attributes required
-static string SendDiscordMessage(
-    [Description("'reply' or 'broadcast'")] string mode,
-    [Description("Message text")] string text,
-    [Description("Target message ID")] string? target_message_id = null)
-{
-    return $"mode={mode}, text={text}, target={target_message_id}";
-}
-```
-
-This eliminates `OpenAiTooling`, `OpenAiResponseParser`, and most of the manual serialization code in `OpenAiClient`.
-
-### 4. Simpler Invocation Pattern
+`Microsoft.Extensions.AI` provides the boundary:
 
 ```csharp
-// Current: Build request → serialize → HTTP POST → deserialize → parse tool call
-var completion = await _openAiClient.CreateResponseAsync(responseRequest, cancellationToken);
-if (!OpenAiResponseParser.TryParseSendDiscordMessageCall(completion, out var toolCall))
-    // handle fallback...
-
-// MAF: One call, response includes structured tool results
-AgentResponse response = await agent.RunAsync(userContent, session);
-string resultText = response.Text;
+// Reads stay plain and auto-invoke. Writes suspend for approval.
+tools.Add(isMutation
+    ? new ApprovalRequiredAIFunction(mcpTool)
+    : mcpTool);
 ```
 
-The framework handles the tool-call loop internally: it sends the request, receives the tool call, marshals the arguments to your method, calls it, and returns the final response. All of the parsing logic in `OpenAiResponseParser` becomes unnecessary.
+`ApprovalRequiredAIFunction` derives from `DelegatingAIFunction`, so it inherits `Name`, `Description`,
+and `JsonSchema` from the wrapped tool. The model sees Steward's exact native contract; only the
+invocation behavior changes. `FunctionInvokingChatClient` invokes ordinary tools and loops their
+results back, but for an approval-required tool it replaces the `FunctionCallContent` with an approval
+request and hands control to the caller.
 
-### 5. Multi-Provider Support Without Code Changes
+The shipped 1.15.0/10.8.3 assemblies use `ToolApprovalRequestContent` and
+`ToolApprovalResponseContent`; some Microsoft Learn pages show newer `FunctionApproval*` names. Sky's
+implementation uses `ToolApprovalAgentOptions.AutoApprovalRules` directly and does not need to create
+approval-response content itself, so no compatibility adapter or reflection layer is present.
 
-If you ever need Azure OpenAI, Claude, or a local model:
+That maps onto the unrestricted-autonomy design almost one to one:
 
-```csharp
-// OpenAI direct
-var agent = new OpenAIClient(apiKey).GetResponsesClient("gpt-4.1-mini").AsAIAgent(...);
+| Design requirement | Primitive |
+|---|---|
+| Reads run freely, writes intercept | plain tool vs `ApprovalRequiredAIFunction` |
+| Automatic durable approval | `ToolApprovalAgentOptions.AutoApprovalRules` |
+| Persist before dispatch | canonicalize and fsync every write, then return `true` |
+| Persistence failure | return `false` or throw; do not invoke an unrecorded call |
+| Bounded run segment | `MaximumIterationsPerRequest` |
+| No parallel-mutation hazard | `AllowConcurrentInvocation` defaults to `false` |
+| Correlation metadata | `McpClientTool.WithMeta`, bound by the host, invisible to the model |
 
-// Azure OpenAI
-var agent = new OpenAIClient(bearerPolicy, azureOptions).GetResponsesClient("gpt-4.1").AsAIAgent(...);
+`ToolApprovalAgent.AutoApprovalRules` are asynchronous context-aware callbacks, not static tool-name
+allowlists. A rule receives the exact function call plus `Agent`, `Session`, `RequestMessages`, and
+`RunOptions`. Sky's rule canonicalizes the model-authored call, commits `dispatch_pending`, and returns
+`true` only after that commit succeeds. It performs no content, target, field, risk, cadence, consent,
+or reversibility checks. Standing "always approve" rules are deliberately not used because they would
+skip Sky's durable intent record.
 
-// Any IChatClient implementation (Ollama, Claude via Agent Framework Claude SDK, etc.)
-var agent = new ChatClientAgent(chatClient, instructions: "...", name: "Sky");
-```
+Committed tests now cover the default `ChatClientAgent` approval decorators, a durable pre-dispatch
+record before native write invocation, foreign request-ID rejection, `McpClientTool.WithMeta(JsonObject)`,
+and hosted tool-search serialization. A real cross-repository stdio test starts the sibling Steward
+binary with its `UnrestrictedAutonomy` profile and verifies its complete catalog and capability output.
 
-The `AIAgent` abstraction is backed by `IChatClient` from `Microsoft.Extensions.AI`, which is the emerging standard interface for .NET AI services — not an SK-specific type.
+One caveat is load-bearing. The framework documents `ApprovalRequiredAIFunction` as an advisory marker
+that "does not enforce the requirement for user approval." Enforcement exists only because
+`FunctionInvokingChatClient` is in the pipeline. Keep `UseProvidedChatClientAsIs = false`, the default,
+so `ChatClientAgent` installs FICC, approval-response binding, and non-approval bypass itself. A
+startup probe and integration test verify that composition after every MAF upgrade.
 
-### 6. Graph-Based Workflows
+### 4. The unrestricted Discord agent
 
-MAF replaces SK's experimental orchestration patterns with a more mature graph-based workflow engine. Potential use in Discord Sky:
+Use `ChatClientAgent`'s default decorated chat-client pipeline. Its FICC processes function calls
+serially and permits up to 40 iterations per request. Forty is intentional here: the product permits
+multi-write campaigns, and this limit exists only to terminate accidental software loops. A separate
+wall-clock timeout bounds a run.
 
-```csharp
-// Sequential: Creative agent writes → Safety agent reviews
-var writer = chatClient.AsAIAgent(instructions: personaPrompt, name: "creative");
-var reviewer = chatClient.AsAIAgent(instructions: "Review for safety", name: "safety");
+The default non-approval bypass lets native reads execute even when a response also contains a guarded
+write. Approval-response binding ensures a response can approve only a request the framework actually
+surfaced and cannot substitute different arguments.
 
-Workflow workflow = AgentWorkflowBuilder.BuildSequential(writer, reviewer);
+The compatibility tests invoke fake approval-required functions and verify the durable dispatch state
+before invocation. The live provider smoke remains pending until an OpenAI API key is available.
 
-List<ChatMessage> messages = [new(ChatRole.User, userContent)];
-await using StreamingRun run = await InProcessExecution.RunStreamingAsync(workflow, messages);
-```
+`ToolApprovalAgent` wraps that agent. Its one Sky auto-approval rule commits the exact write to the
+SQLite ledger with `PRAGMA synchronous = FULL` and returns `true`; it does not decide whether Robotnik
+is allowed to perform the operation. A delegating native-function wrapper records whether transport
+returned an accepted result or threw an uncertain outcome.
 
-This is more compelling than SK's orchestration patterns because:
-- It's graph-based (not limited to predefined patterns)
-- It supports streaming natively
-- It has checkpointing and human-in-the-loop built in
-- It's part of the RC release (not experimental)
+An ordinary run completes in one `RunAsync` because every durably recorded write auto-approves. A
+failed persistence attempt surfaces an approval request and ends that run; after infrastructure
+recovery, start a new run from persisted Discord and operation state rather than resuming stale model
+context.
 
-### 7. Middleware System
+### 5. Large-catalog tool search
 
-MAF has a middleware pipeline for request/response processing — useful for cross-cutting concerns like logging, rate limiting, or content filtering:
+Steward's roughly 173 native operations should not be attached as 173 complete schemas to every model
+request. OpenAI recommends fewer than 20 initially loaded functions and supports `tool_search`,
+namespaces, and deferred functions on GPT-5.4 and later. That preserves unrestricted authority while
+loading schemas only when the model asks for them.
 
-```csharp
-// Middleware could replace SafetyFilter's scrubbing logic
-var agent = chatClient.AsAIAgent(
-    instructions: "...",
-    middleware: [new BanWordScrubbingMiddleware(chaosSettings)]);
-```
+This provider path is compile- and serialization-proven. M.E.AI 10.8.3 exposes experimental
+`HostedToolSearchTool`; MAF 1.15.0 resolves OpenAI 2.10.0; and a disposable test captured a Responses
+request containing `tool_search`, namespace metadata, `defer_loading`, and a deferred
+`ApprovalRequiredAIFunction`. Release 0 commits that test and adds one live GPT-5.5 smoke. Never
+truncate the manifest or substitute a generic invocation facade.
 
-This is a natural fit for the safety filter logic that currently lives as a separate service.
+### 6. Capability disposition
+
+| MAF capability | Decision | Reason |
+|---|---|---|
+| `ChatClientAgent` and FICC | Use now | Native read/tool-result loop |
+| `ApprovalRequiredAIFunction` | Use now | Preserves native tool contract while suspending writes |
+| `ToolApprovalAgent.AutoApprovalRules` | Use now | Automatic persist-before-dispatch hook |
+| `AgentSession` | Use now | Carries one short unrestricted tool conversation |
+| Function middleware | Use now | Result capture and latency telemetry |
+| OpenTelemetry agent wrapper | Use now, sensitive data off | Standard spans and token metrics without duplicating private arguments |
+| Responses tool search | Use now, experimental | Complete catalog access with lazy schema loading |
+| Local evaluation APIs | Defer to ScenarioLab integration | Useful after the core call path is stable |
+| Agent skills | Reject for Steward tools | Provider tool search preserves native schemas; skills would turn operations into docs or scripts |
+| Workflow checkpointing | Reject | SQLite and Steward reconciliation are the durable operation truth |
+| `LoopAgent` | Reject | FICC already owns the tool loop; a second loop obscures termination |
+| Background agents | Reject | Reintroduces intent translation without useful parallel work |
+| `AgentModeProvider` | Reject | Guild enablement is deployment configuration, not a model mode |
+| Standing "always approve" rules | Reject | Would bypass Sky's pre-dispatch intent persistence |
+
+### 7. Observability
+
+MAF's OpenTelemetry wrapper emits agent, chat, and tool spans plus token metrics. Production keeps
+sensitive-data capture disabled because prompts, native arguments, and tool results already have a
+private durable home. Existing `world_autonomy` JSONL and SQLite records remain the product evidence;
+OpenTelemetry is operational correlation, not a replacement ledger.
 
 ---
 
-## What MAF Doesn't Solve
+## What MAF Does Not Solve
 
-### 1. Custom Context Aggregation
+MAF does not replace Discord-specific context aggregation, exact-guild routing, wakeup scheduling,
+per-workload model selection, reasoning budgets, operation persistence, crash reconciliation,
+reception analysis, or the existing safety filter. Those remain ordinary Sky services. The framework
+contributes a tool loop, a durable suspend/resume protocol, sessions, middleware, and observability.
+Treating it as more than that would turn adoption into a rewrite.
 
-`ContextAggregator` is deeply Discord-specific: it fetches messages via Discord.NET's `IAsyncEnumerable`, walks reply chains, collects images from attachments and inline URLs, filters by allowed hosts, and formats metadata for the model. No framework can replace this — it would survive any migration intact.
-
-### 2. Per-Persona Model Routing
-
-`IntentModelOverrides` lets different personas use different models. With MAF, you'd need to create separate `AIAgent` instances per model or resolve the correct `ResponsesClient` dynamically. This is achievable but requires explicit wiring that the framework doesn't automate.
-
-### 3. Reasoning Token Budget Logic
-
-The custom logic that triples output tokens for reasoning models would need to be implemented via `AgentRunOptions` / `ChatClientAgentRunOptions`:
-
-```csharp
-var options = new ChatClientAgentRunOptions(new ChatOptions { MaxOutputTokens = maxOutputTokens });
-var response = await agent.RunAsync(userContent, session, options);
-```
-
-The calculation logic stays in your code — MAF just provides a cleaner way to pass it to the API.
-
-### 4. Forced Tool Choice (Validated)
+### Forced tool choice in the existing reply path
 
 Discord Sky requires the model to always use the `send_discord_message` tool. MAF supports this through `ChatToolMode.RequireSpecific("send_discord_message")` in `Microsoft.Extensions.AI.ChatOptions.ToolMode`, which maps to `tool_choice: { type: "function", name: "send_discord_message" }` at the API level.
 
-However, there's a critical interaction with MAF's auto-invoke loop: MAF's `ChatClientAgent` uses `FunctionInvokingChatClient` internally, which automatically invokes tool functions and loops back to the model. With `RequireSpecific`, the model is forced to call the tool on every response — including after receiving tool results — creating an infinite loop. This is a [known issue](https://github.com/microsoft/agent-framework/issues/2879) with three documented workarounds:
+There is a critical interaction with the auto-invoke loop. `ChatClientAgent` uses
+`FunctionInvokingChatClient` internally, which invokes tool functions and loops back to the model.
+With `RequireSpecific`, the model is forced to call the tool on every response, including after
+receiving tool results, which creates an infinite loop. This is a
+[known issue](https://github.com/microsoft/agent-framework/issues/2879) with three documented
+workarounds:
 
-1. **`AIFunctionDeclaration` (recommended)**: Define the tool as a schema-only declaration (not an invocable `AIFunction`). `FunctionInvokingChatClient` will NOT auto-invoke it and will pass the `FunctionCallContent` back to the caller. This preserves the current flow: one API call, extract args from the response, no loop.
+1. **`AIFunctionDeclaration` (recommended)**: Define the tool as a schema-only declaration (not an invocable `AIFunction`). `FunctionInvokingChatClient` will not auto-invoke it and will pass the `FunctionCallContent` back to the caller. This preserves the current flow: one API call, extract args from the response, no loop.
 2. **`MaximumIterationsPerRequest = 1`**: Limit the auto-invoke loop to one round-trip, then stop. This invokes the function once but adds an extra API call.
 3. **Middleware**: Flip `ToolMode` to `Auto` after the first tool invocation.
 
-The `AIFunctionDeclaration` approach is ideal for Discord Sky because `send_discord_message` isn't a function that returns a result to the model — it's a structured output mechanism where the bot extracts the arguments and acts on them externally.
+The declaration approach suits `send_discord_message`, which is a structured output mechanism rather
+than a function returning a result to the model. Unrestricted Discord autonomy is the opposite: its
+MCP tools are real functions whose results feed the next turn, and automatic approval provides the
+right durability suspend point.
 
 ---
 
-## What a Migration to MAF Would Look Like
+## What adoption looks like now
 
-### Validated Prerequisites
+The original migration plan is obsolete. The files it proposed deleting no longer exist, and the
+`Microsoft.Extensions.AI` move already delivered the code reduction it promised. What remains is a
+narrower, more deliberate adoption.
 
-All three critical capabilities have been confirmed:
+### Implementation Status
 
-1. **Forced tool choice** — ✅ Supported via `ChatToolMode.RequireSpecific("send_discord_message")`. Use `AIFunctionDeclaration` to avoid the auto-invoke loop ([issue #2879](https://github.com/microsoft/agent-framework/issues/2879)).
-2. **Vision inputs** — ✅ Supported via `UriContent` in `ChatMessage` ([multimodal docs](https://learn.microsoft.com/en-us/agent-framework/agents/multimodal)). Images passed as `new UriContent(url, "image/jpeg")` alongside `TextContent`.
-3. **Reasoning configuration** — ✅ `ChatOptions.Reasoning` property exists in `Microsoft.Extensions.AI.ChatOptions`, passed through via `ChatClientAgentRunOptions`.
+Implemented in the current working tree:
 
-### Migration Steps
+- MAF/MCP package upgrade and the OpenAI 2.10 Responses API compatibility fix;
+- exact guild-to-Steward child-process bindings, full native tool discovery, hosted tool search, and
+   host-bound MCP metadata;
+- durable SQLite runs, pre-dispatch write records, automatic MAF approval, and startup reconciliation
+   through native `get_operation` and `reconcile_operation`;
+- one concurrent autonomous session per configured guild, triggered by human guild messages;
+- focused unit tests, hosted-search request serialization, and a real sibling-Steward stdio integration test.
 
-1. Add package: `Microsoft.Agents.AI.OpenAI` (prerelease)
-2. Create an `OpenAIClient` → `ResponsesClient` in DI setup
-3. Define `send_discord_message` as an `AIFunctionDeclaration` (schema only, no implementation) to avoid the auto-invoke loop while preserving forced tool choice via `RequireSpecific`
-4. Replace `OpenAiClient.CreateResponseAsync()` → `agent.RunAsync()`, extract `FunctionCallContent` from the response
-5. **Delete** `OpenAiResponseParser` — extract tool call args directly from `FunctionCallContent.Arguments`
-6. **Delete** most of `OpenAiClient` (MAF handles HTTP, retry via the OpenAI SDK)
-7. Keep `ContextAggregator` as-is — translate its output to the agent's input format
-8. Keep `SafetyFilter` as-is, or explore MAF middleware as a replacement
-9. Handle per-persona model routing by creating agents per model or using a factory pattern
-10. Test all three invocation paths: command, ambient, direct reply
+Still pending before production enablement: a live GPT-5.5 hosted-tool-search smoke with a configured
+API key and disposable-guild validation across real Discord R0 through R5 operations.
 
-### What Gets Deleted
+### Prerequisites
 
-| File | Fate |
-|------|------|
-| `OpenAiClient.cs` | **Delete** — replaced by MAF's provider |
-| `IOpenAiClient.cs` | **Delete** |
-| `OpenAiTooling.cs` | **Delete** — replaced by `AIFunctionFactory` |
-| `OpenAiResponseParser.cs` | **Delete** — MAF handles parsing |
-| `OpenAiChatModels.cs` | **Mostly delete** — MAF + OpenAI SDK types replace request/response models |
-| `CreativeOrchestrator.cs` | **Refactor** — simplifies significantly with MAF agent invocation |
+| Capability | Status |
+|---|---|
+| `net8.0` target | Available, no TFM change |
+| Responses API | Already in use through `GetResponsesClient().AsIChatClient(model)` |
+| Declaration-only tools | `AIFunctionDeclaration` remains the right shape for `send_discord_message` |
+| Tool approval types | Require an upgrade, see below |
 
-### What Survives
+The implemented package graph includes:
 
-| File | Fate |
-|------|------|
-| `DiscordBotService.cs` | Untouched |
-| `ContextAggregator.cs` | Untouched |
-| `SafetyFilter.cs` | Untouched (or converted to middleware) |
-| `BotOptions.cs` | Untouched |
-| `ChaosSettings.cs` | Untouched |
-| `OpenAIOptions.cs` | Simplified (MAF handles endpoint/auth) |
-| `CreativeModels.cs` | Untouched |
-| `PromptRepository.cs` | Untouched |
+- `Microsoft.Agents.AI.OpenAI` 1.15.0.
+- An explicit `Microsoft.Extensions.AI` 10.8.3 reference.
+- `ModelContextProtocol` 1.4.1.
 
-**Estimated effort**: 3–5 days for the migration, plus 2–3 days for thorough testing. No TFM upgrade, no infrastructure changes.
+MAF 1.15.0 declares a minimum `Microsoft.Extensions.AI` dependency of 10.6.0. Pinning 10.8.3 removes
+transitive ambiguity and targets the current package pair reviewed here.
+
+### Historical sequencing
+
+1. **Upgrade and compatibility-test only.** Bump both packages, commit the minimal approval spike and
+   full-catalog tool-search spike as tests, change no production behavior, run the suite, deploy, and
+   watch replies, cold opens, images, reactions, and consolidation for a full cycle. This is the
+   entire release.
+2. **Use the agent layer for unrestricted Discord autonomy only.** Build that session as a
+   `ChatClientAgent` with durability-wrapped write tools. Leave `CreativeOrchestrator` on its
+   hand-rolled loop, which works, is well tested, and gains nothing from conversion.
+3. **Reassess the reply path later, if ever.** Converting it is optional and should be justified by a
+   concrete benefit rather than consistency.
+
+### What does not change
+
+`ContextAggregator`, `SafetyFilter`, normal-reply prompt assembly, per-workload model routing,
+reasoning budgets, and the existing memory and telemetry stack remain intact. `DiscordBotService` adds
+an optional exact-guild autonomy opportunity route but leaves its normal `CreativeOrchestrator` reply
+loop unchanged. MAF is not a substitute for any of these components.
+
+The risk worth naming is blast radius. The upgrade touches the shared LLM path used by every feature,
+which is why it ships alone.
 
 ---
 
 ## Risk Assessment
 
-### MAF is at Release Candidate, Not GA
+### Version currency
 
-The API surface is declared stable and feature-complete for 1.0, but it hasn't shipped GA yet. From the RC blog post: *"the API surface is stable, and all features that we intend to release with version 1.0 are complete."*
+Sky now pins MAF 1.15.0 and the approval types this implementation uses. The remaining version risk is
+future package drift in the experimental hosted-search and approval APIs.
 
-**Risk**: Minor API adjustments may still happen between RC and GA. The team is explicitly asking for feedback before final release.
+**Risk**: the package graph spans MAF, `Microsoft.Extensions.AI`, MCP, and the OpenAI SDK, while the
+underlying provider client is shared by replies, cold opens, images, reactions, and consolidation.
 
-**Mitigation**: RC is specifically designed for production evaluation. The risk of breaking changes between RC and GA is significantly lower than building on SK's experimental orchestration patterns. The migration from RC to GA should be minimal.
+**Mitigation**: retain the focused compatibility tests, the full Sky suite, and the real Steward stdio
+integration test. Run the pending live GPT-5.5 smoke before enabling any guild binding in production.
+
+### Approval enforcement is opt-in by construction
+
+`ApprovalRequiredAIFunction` does not enforce anything by itself; the pipeline does. A refactor that
+changes how the agent is built can silently disable the guarantee without failing a test that only
+checks tool registration.
+
+**Mitigation**: assert the enforcing pipeline at binding startup and test the negative case.
+
+### Documentation and package naming drift
+
+Microsoft Learn currently shows `FunctionApproval*` names while the reviewed NuGet assemblies expose
+`ToolApproval*`. Copying the current docs into code would not compile against the pinned packages.
+
+**Mitigation**: pin exact versions, compile against the package XML/assemblies, and isolate approval
+request/response names behind one adapter. Upgrade that adapter deliberately when the package API
+changes.
+
+### Responses tool search is experimental
+
+`HostedToolSearchTool` serializes correctly through the target stack but carries the `MEAI001`
+experimental warning and may change between package releases.
+
+**Mitigation**: keep the request-serialization test and one live GPT-5.5 smoke in Release 0. If the
+API changes, update the pinned compatibility layer or use client-executed search. Never silently fall
+back to a restricted subset.
 
 ### Semantic Kernel Being Sunset
 
-SK will receive critical fixes for "at least one year" after MAF GA. If you stay on the current raw-API approach, this doesn't affect you. But if you were ever going to adopt an abstraction layer, MAF is the one to pick — not SK, which is now in maintenance mode.
+SK will receive critical fixes for "at least one year" after MAF GA. This does not affect Sky directly,
+but if an abstraction layer is ever adopted, MAF is the one to pick.
 
 ### Community and Ecosystem Maturity
 
-MAF is 10 months old (first commit ~April 2025), with 7.4k GitHub stars, 108 contributors, and 58 releases. It has the same core team as Semantic Kernel (Dmytro Struk, Stephen Toub, etc.) and Microsoft's full backing. It already has integrations with Claude Agent SDK, GitHub Copilot SDK, and Azure Functions.
+MAF has the same core team as Semantic Kernel and Microsoft's full backing, with integrations spanning
+Claude Agent SDK, GitHub Copilot SDK, and Azure Functions.
 
 ---
 
 ## Recommendation
 
-**MAF is worth evaluating for Discord Sky's next development phase.** Unlike the earlier Semantic Kernel analysis, there are no hard blockers:
+Adopt MAF, but narrowly and in a specific order.
 
-1. **No TFM barrier** — MAF targets `net8.0`, matching the project exactly
-2. **Native Responses API support** — no forced API switch
-3. **Simpler, not more complex** — MAF's API is leaner than both SK and the current raw approach
-4. **The right framework to invest in** — SK is maintenance-mode; MAF is the future
-
-### Recommended Approach
-
-1. **Short-term (now)**: All three prerequisites have been validated. Migrate `OpenAiClient` + `OpenAiTooling` + `OpenAiResponseParser` → MAF. Use `AIFunctionDeclaration` for forced tool choice without auto-invoke loop, `UriContent` for vision, and `ChatOptions.Reasoning` for reasoning configuration. This deletes ~500 lines of manual HTTP/serialization/parsing code and replaces them with ~50 lines of MAF setup. Keep `ContextAggregator`, `SafetyFilter`, and `DiscordBotService` untouched.
-2. **Integration test**: Verify end-to-end behavior across all three invocation paths (command, ambient, direct reply) with the MAF-based pipeline.
-3. **Future**: Once stable on MAF, explore graph-based workflows for a sequential "creative agent → safety review agent" pipeline, and middleware for content filtering.
+1. **Upgrade the packages as an isolated release.** Nothing else can proceed without the tool approval
+   types, and this is the change with real blast radius.
+2. **Build unrestricted Discord autonomy on the agent layer.** The approval protocol is the first
+   concrete problem in this project that MAF solves better than hand-rolled code, because it provides
+   a persist-before-dispatch suspend point without limiting Robotnik's authority.
+3. **Leave the reply path alone.** `CreativeOrchestrator` works, is well tested, and its terminal
+   `send_discord_message` shape gains nothing from an agent abstraction.
 
 ### What Not to Do
 
-- **Do not adopt Semantic Kernel.** It requires .NET 10, is in maintenance mode, and all new development is in MAF.
-- **Do not wait indefinitely.** MAF is at RC with a stable API surface — this is the right time to evaluate.
+- **Do not adopt Semantic Kernel.** It is maintenance-focused and does not provide a better approval
+   boundary for this feature. TFM support is not the differentiator.
+- **Do not convert everything for consistency.** A second paradigm introduced for one feature is
+  acceptable; a rewrite of working paths is not.
+- **Do not rely on `ApprovalRequiredAIFunction` alone for safety.** It is an advisory marker. Assert
+  that the approval-enforcing pipeline is present, and test it.
+- **Do not use standing or built-in "approve everything" rules.** Use one durable auto-approval
+   callback that records every write before returning `true`; it does not decide what Robotnik may do.
+- **Do not use `WithName` or `WithDescription` on MCP tools.** Renaming a server's tools rebuilds the
+   facade the unrestricted design explicitly rejects.
+
+See `docs/discord_steward_unrestricted_autonomy_design_2026-07-28.md` for the design that consumes
+these primitives.
 
 ---
 
@@ -343,17 +436,25 @@ MAF is 10 months old (first commit ~April 2025), with 7.4k GitHub stars, 108 con
 
 - [Microsoft Agent Framework Documentation](https://learn.microsoft.com/en-us/agent-framework/)
 - [GitHub: microsoft/agent-framework](https://github.com/microsoft/agent-framework)
-- [Semantic Kernel and Microsoft Agent Framework (blog)](https://devblogs.microsoft.com/semantic-kernel/semantic-kernel-and-microsoft-agent-framework/) — relationship explained
-- [Migrate SK/AutoGen to MAF RC (blog)](https://devblogs.microsoft.com/semantic-kernel/migrate-your-semantic-kernel-and-autogen-projects-to-microsoft-agent-framework-release-candidate/) — migration guide
+- [MAF tool approval](https://learn.microsoft.com/en-us/agent-framework/agents/tools/tool-approval)
+- [MAF middleware](https://learn.microsoft.com/en-us/agent-framework/agents/middleware/)
+- [MAF observability](https://learn.microsoft.com/en-us/agent-framework/agents/observability)
+- [OpenAI tool search](https://developers.openai.com/api/docs/guides/tools-tool-search)
+- [OpenAI function calling](https://developers.openai.com/api/docs/guides/function-calling)
+- [NuGet: Microsoft.Agents.AI.OpenAI 1.15.0](https://www.nuget.org/packages/Microsoft.Agents.AI.OpenAI/1.15.0)
+- [NuGet: Microsoft.Extensions.AI 10.8.3](https://www.nuget.org/packages/Microsoft.Extensions.AI/10.8.3)
+- [Semantic Kernel and Microsoft Agent Framework (blog)](https://devblogs.microsoft.com/semantic-kernel/semantic-kernel-and-microsoft-agent-framework/), relationship explained
+- [Migrate SK/AutoGen to MAF RC (blog)](https://devblogs.microsoft.com/semantic-kernel/migrate-your-semantic-kernel-and-autogen-projects-to-microsoft-agent-framework-release-candidate/), migration guide
 - [MAF Migration Guide from SK](https://learn.microsoft.com/en-us/agent-framework/migration-guide/from-semantic-kernel)
-- [NuGet: Microsoft.Agents.AI](https://www.nuget.org/packages/Microsoft.Agents.AI/) — targets net8.0/netstandard2.0/net472
-- [NuGet: Microsoft.Agents.AI.OpenAI](https://www.nuget.org/packages/Microsoft.Agents.AI.OpenAI/) — OpenAI provider
-- [MAF Running Agents (docs)](https://learn.microsoft.com/en-us/agent-framework/agents/running-agents) — AgentRunOptions, ChatClientAgentRunOptions, response types
-- [MAF Tools Overview (docs)](https://learn.microsoft.com/en-us/agent-framework/agents/tools/) — function tools, tool approval, provider support matrix
-- [MAF Multimodal (docs)](https://learn.microsoft.com/en-us/agent-framework/agents/multimodal) — vision/image input via UriContent
-- [ChatToolMode.RequireSpecific (API ref)](https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.ai.chattoolmode) — forced tool choice
-- [FunctionInvokingChatClient (API ref)](https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.ai.functioninvokingchatclient) — MaximumIterationsPerRequest, AIFunctionDeclaration handling
-- [GitHub Issue #2879: Excessive tool calls with tool_choice="required"](https://github.com/microsoft/agent-framework/issues/2879) — confirmed behavior + workarounds
+- [NuGet: Microsoft.Agents.AI](https://www.nuget.org/packages/Microsoft.Agents.AI/), targets net8.0/netstandard2.0/net472
+- [NuGet: Microsoft.Agents.AI.OpenAI](https://www.nuget.org/packages/Microsoft.Agents.AI.OpenAI/), OpenAI provider
+- [MAF Running Agents (docs)](https://learn.microsoft.com/en-us/agent-framework/agents/running-agents), AgentRunOptions, ChatClientAgentRunOptions, response types
+- [MAF Tools Overview (docs)](https://learn.microsoft.com/en-us/agent-framework/agents/tools/), function tools, tool approval, provider support matrix
+- [MAF Multimodal (docs)](https://learn.microsoft.com/en-us/agent-framework/agents/multimodal), vision/image input via UriContent
+- [ChatToolMode.RequireSpecific (API ref)](https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.ai.chattoolmode), forced tool choice
+- [FunctionInvokingChatClient (API ref)](https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.ai.functioninvokingchatclient), MaximumIterationsPerRequest and AIFunctionDeclaration handling
+- [ApprovalRequiredAIFunction (API ref)](https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.ai.approvalrequiredaifunction), delegating wrapper, advisory marker semantics
+- [GitHub Issue #2879: Excessive tool calls with tool_choice="required"](https://github.com/microsoft/agent-framework/issues/2879), confirmed behavior and workarounds
 - [Build AI Agents with Claude Agent SDK and MAF](https://devblogs.microsoft.com/semantic-kernel/build-ai-agents-with-claude-agent-sdk-and-microsoft-agent-framework/)
 - [Build AI Agents with GitHub Copilot SDK and MAF](https://devblogs.microsoft.com/semantic-kernel/build-ai-agents-with-github-copilot-sdk-and-microsoft-agent-framework/)
 - [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses)

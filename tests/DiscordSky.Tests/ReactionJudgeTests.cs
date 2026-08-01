@@ -1,5 +1,13 @@
 using System.Collections.Generic;
+using System.Text.Json;
+using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Integrations.Reactions;
+using DiscordSky.Bot.Memory.Logging;
+using DiscordSky.Bot.Memory.Scoring;
+using DiscordSky.Bot.Orchestration;
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace DiscordSky.Tests;
 
@@ -70,19 +78,15 @@ public class ReactionJudgeTests
         Assert.Equal("clown", v!.Token);
     }
 
-    [Theory]
-    [InlineData("angry", "anger")]
-    [InlineData("eye_roll", "eyeroll")]
-    [InlineData("thumbs-down", "thumbsdown")]
-    [InlineData("chart_down", "chartdown")]
-    public void ParseVerdict_CommonAlias_ReturnsCanonicalToken(string modelToken, string canonical)
+    [Fact]
+    public void ParseVerdict_LegacyEggsAlias_ReturnsCanonicalToken()
     {
         var v = ReactionJudge.ParseVerdict(
-            $"{{\"emote\":\"{modelToken}\",\"why\":\"apt\"}}",
-            Allowed(canonical));
+            "{\"emote\":\"eggs\",\"why\":\"apt\"}",
+            Allowed("egg"));
 
         Assert.NotNull(v);
-        Assert.Equal(canonical, v!.Token);
+        Assert.Equal("egg", v!.Token);
     }
 
     [Fact]
@@ -295,5 +299,152 @@ public class ReactionJudgeTests
     {
         var prompt = ReactionJudge.BuildSystemPrompt("Robotnik");
         Assert.Contains("vary your reactions", prompt);
+    }
+
+    [Fact]
+    public void BuildChooseReactionTool_EnumContainsOnlyOfferedTokensPlusNone()
+    {
+        var tool = ReactionJudge.BuildChooseReactionTool(new[]
+        {
+            new AllowedEmote("egg", "signature", false),
+            new AllowedEmote("KEKW", "", true),
+            new AllowedEmote("egg", "duplicate", false),
+        });
+
+        var tokens = tool.JsonSchema.GetProperty("properties")
+            .GetProperty("emote")
+            .GetProperty("enum")
+            .EnumerateArray()
+            .Select(element => element.GetString())
+            .ToArray();
+        Assert.Equal(ReactionJudge.ChooseReactionToolName, tool.Name);
+        Assert.Equal(new[] { "none", "egg", "KEKW" }, tokens);
+        Assert.DoesNotContain("sadge", tokens);
+        Assert.True(tool.JsonSchema.GetRawText().Length < 4_000);
+    }
+
+    [Fact]
+    public void ParseToolDecision_ValidDeclineAndUnknownAreDistinct()
+    {
+        var valid = ReactionJudge.ParseToolDecision(
+            ResponseWithTool("egg", "mine"),
+            Allowed("egg", "KEKW"));
+        var decline = ReactionJudge.ParseToolDecision(
+            ResponseWithTool("none", "mundane"),
+            Allowed("egg"));
+        var unknown = ReactionJudge.ParseToolDecision(
+            ResponseWithTool("sadge", "not offered"),
+            Allowed("egg"));
+
+        Assert.Equal(ReactionDecisionKind.React, valid.Kind);
+        Assert.Equal("egg", valid.Verdict?.Token);
+        Assert.Equal(ReactionDecisionKind.Decline, decline.Kind);
+        Assert.Equal("mundane", decline.Rationale);
+        Assert.Equal(ReactionDecisionKind.Invalid, unknown.Kind);
+        Assert.Equal("unknown_token:sadge", unknown.Rationale);
+    }
+
+    [Fact]
+    public void ParseToolDecision_MissingOrMultipleCallsAreInvalid()
+    {
+        var missing = ReactionJudge.ParseToolDecision(
+            new ChatResponse(new ChatMessage(ChatRole.Assistant, "free prose")),
+            Allowed("egg"));
+        var multipleMessage = new ChatMessage(ChatRole.Assistant, new List<AIContent>
+        {
+            ToolCall("egg", "one"),
+            ToolCall("none", "two"),
+        });
+        var multiple = ReactionJudge.ParseToolDecision(new ChatResponse(multipleMessage), Allowed("egg"));
+
+        Assert.Equal("missing_tool_call", missing.Rationale);
+        Assert.Equal("multiple_tool_calls", multiple.Rationale);
+    }
+
+    [Fact]
+    public async Task Judge_ConstrainedAndLegacyModesSetExpectedProviderContract()
+    {
+        var constrainedClient = new CapturingChatClient(ResponseWithTool("KEKW", "apt"));
+        var constrained = BuildJudge(constrainedClient, constrainedTool: true);
+        var constrainedDecision = await constrained.JudgeAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(ReactionDecisionKind.React, constrainedDecision.Kind);
+        Assert.Single(constrainedClient.Options!.Tools!);
+        Assert.NotNull(constrainedClient.Options.ToolMode);
+        Assert.Contains("choose_reaction", constrainedClient.Options.Instructions);
+
+        var legacyClient = new CapturingChatClient(new ChatResponse(new ChatMessage(
+            ChatRole.Assistant,
+            "{\"emote\":\"egg\",\"why\":\"legacy\"}")));
+        var legacy = BuildJudge(legacyClient, constrainedTool: false);
+        var legacyDecision = await legacy.JudgeAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(ReactionDecisionKind.React, legacyDecision.Kind);
+        Assert.True(legacyClient.Options?.Tools is null or { Count: 0 });
+        Assert.Null(legacyClient.Options?.ToolMode);
+    }
+
+    private static ReactionRequest Request() => new(
+        "Robotnik",
+        "Alice",
+        "a foolish boast",
+        null,
+        new[]
+        {
+            new AllowedEmote("egg", "signature", false),
+            new AllowedEmote("KEKW", "", true),
+        });
+
+    private static ChatResponse ResponseWithTool(string emote, string why) =>
+        new(new ChatMessage(ChatRole.Assistant, new List<AIContent> { ToolCall(emote, why) }));
+
+    private static FunctionCallContent ToolCall(string emote, string why) => new(
+        "call-1",
+        ReactionJudge.ChooseReactionToolName,
+        new Dictionary<string, object?> { ["emote"] = emote, ["why"] = why });
+
+    private static ReactionJudge BuildJudge(CapturingChatClient client, bool constrainedTool)
+    {
+        var llmOptions = new TestOptionsMonitor<LlmOptions>(new LlmOptions
+        {
+            ActiveProvider = "OpenAI",
+            Providers = new Dictionary<string, LlmProviderOptions>
+            {
+                ["OpenAI"] = new() { ChatModel = "test", UtilityModel = "test" },
+            },
+        });
+        var relevance = new TestOptionsMonitor<MemoryRelevanceOptions>(new MemoryRelevanceOptions());
+        return new ReactionJudge(
+            client,
+            llmOptions,
+            new LexicalMemoryScorer(relevance),
+            NullLogger<ReactionJudge>.Instance,
+            Options.Create(new ReactionOptions { ConstrainedToolEnabled = constrainedTool }));
+    }
+
+    private sealed class CapturingChatClient : IChatClient
+    {
+        private readonly ChatResponse _response;
+
+        public CapturingChatClient(ChatResponse response) => _response = response;
+
+        public ChatOptions? Options { get; private set; }
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            Options = options;
+            return Task.FromResult(_response);
+        }
+
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
     }
 }

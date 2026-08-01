@@ -118,7 +118,8 @@ public static class UserMemoryStoreExtensions
                 LastReferencedAt: now,
                 ReferenceCount: 0,
                 Kind: MemoryKind.Suppressed,
-                Topics: new[] { normalized }));
+                Topics: new[] { normalized },
+                MemoryId: MemoryIdentity.NewId()));
         }
 
         // Compute suppression index over the new state (includes the suppression we just appended).

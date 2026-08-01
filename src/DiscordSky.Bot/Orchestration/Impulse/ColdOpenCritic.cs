@@ -66,7 +66,7 @@ public sealed class ColdOpenCritic
             {
                 ModelId = profile.Model,
                 Instructions = BuildSystemPrompt(context.PersonaName),
-                MaxOutputTokens = 1500,
+                MaxOutputTokens = profile.WithReasoningHeadroom(1500),
             };
             profile.ApplyReasoning(options);
             LlmCallTelemetry.Tag(options, "cold_open_critic", profile, evaluationId: evaluationId);

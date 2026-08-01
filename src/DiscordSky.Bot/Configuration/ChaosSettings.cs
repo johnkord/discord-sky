@@ -3,6 +3,11 @@ namespace DiscordSky.Bot.Configuration;
 public sealed class ChaosSettings
 {
     public int MaxPromptsPerHour { get; init; } = 20;
+    /// <summary>
+    /// Additional per-channel burst capacity reserved for explicit commands, mentions, and direct replies
+    /// after the shared prompt budget is full. Ambient traffic can never consume this reserve.
+    /// </summary>
+    public int ExplicitReservePromptsPerHour { get; init; } = 4;
     public List<string> BanWords { get; init; } = new();
     /// <summary>
     /// Probability (0.0 - 1.0) that the bot will spontaneously reply to a non-command message

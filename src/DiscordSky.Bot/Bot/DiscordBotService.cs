@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Text;
 using Discord;
 using Discord.Commands;
 using Discord.WebSocket;
@@ -13,6 +15,7 @@ using DiscordSky.Bot.Memory.Logging;
 using DiscordSky.Bot.Memory.Reception;
 using DiscordSky.Bot.Models.Orchestration;
 using DiscordSky.Bot.Orchestration;
+using DiscordSky.Bot.Orchestration.Autonomy;
 using DiscordSky.Bot.Orchestration.Empire;
 using DiscordSky.Bot.Orchestration.Impulse;
 using Microsoft.Extensions.Hosting;
@@ -34,9 +37,15 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly IOptionsMonitor<MemoryRelevanceOptions> _memoryRelevanceMonitor;
     private readonly ILinkUnfurler _linkUnfurler;
     private readonly IRandomProvider _randomProvider;
+    private readonly MemoryExtractionOptions _memoryExtractionOptions;
+    private readonly MemoryTransitionVerifier _memoryTransitionVerifier;
+    private readonly MemoryOpportunityClassifier _memoryOpportunityClassifier;
     private readonly IReactionSink _reactionSink;
     private readonly int _reactionExcerptLength;
     private readonly ReactionJudge? _reactionJudge;
+    private readonly IReactionCapabilityRegistry? _reactionCapabilities;
+    private readonly bool _reactionCapabilityCooldownEnabled;
+    private readonly bool _reactionConstrainedToolEnabled;
     private readonly ImpulseJudge? _impulseJudge;
     private readonly AmbientChannelCoordinator _ambientCoordinator;
     private readonly TimeSpan _ambientReplyQuiet;
@@ -55,6 +64,9 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly ImageToolService? _imageToolService;
     private readonly ImageRewriter? _imageRewriter;
     private readonly AmbientVisualBudget? _ambientVisualBudget;
+    private readonly InteractionEpisodeBuilder? _episodeBuilder;
+    private readonly IAmbientEpisodeShadowSink? _ambientEpisodeShadow;
+    private readonly InteractionEpisodeOptions _episodeOptions;
     private readonly ScamGuardOptions _scamGuard;
     private readonly IPhishingDomainSource _phishingDomains;
     private readonly RaidTracker _raidTracker;
@@ -64,10 +76,25 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly SentMessageRegistry _sentMessages;
     private readonly ConcurrentDictionary<ulong, ChannelMessageBuffer> _channelBuffers = new();
     private readonly ConcurrentDictionary<ulong, SemaphoreSlim> _userMemoryLocks = new();
+    private readonly ConcurrentDictionary<ulong, DateTimeOffset> _lastSuccessfulExtraction = new();
     private readonly CancellationTokenSource _shutdownCts = new();
+    private readonly WorldAutonomyRouter? _worldAutonomyRouter;
     internal const int DiscordMaxMessageLength = 2000;
 
-    private sealed record AmbientGateDecision(SemanticMessageView? MessageView, WorthVerdict? Verdict);
+    /// <summary>How much of the room's recent conversation an autonomy run is briefed with.</summary>
+    private const int AutonomyHistoryLimit = 15;
+
+    /// <summary>Per-line cap on that briefing, so one wall of text cannot crowd out the rest of the room.</summary>
+    private const int AutonomyHistoryLineLength = 300;
+
+    private sealed record AmbientGateDecision(
+        SemanticMessageView? MessageView,
+        WorthVerdict? Verdict,
+        InteractionEpisode? Episode = null,
+        EpisodeActionDecision? EpisodeDecision = null,
+        InteractionTraceContext? Trace = null,
+        bool SuppressAmbient = false,
+        string? SuppressReason = null);
 
     public DiscordBotService(
         DiscordSocketClient client,
@@ -98,7 +125,15 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         ChannelPulseTracker? channelPulse = null,
         SentMessageRegistry? sentMessages = null,
         AmbientChannelCoordinator? ambientCoordinator = null,
-        AmbientVisualBudget? ambientVisualBudget = null)
+        AmbientVisualBudget? ambientVisualBudget = null,
+        IOptions<MemoryExtractionOptions>? memoryExtractionOptions = null,
+        InteractionEpisodeBuilder? episodeBuilder = null,
+        IAmbientEpisodeShadowSink? ambientEpisodeShadow = null,
+        IOptions<InteractionEpisodeOptions>? episodeOptions = null,
+        MemoryTransitionVerifier? memoryTransitionVerifier = null,
+        IReactionCapabilityRegistry? reactionCapabilities = null,
+        MemoryOpportunityClassifier? memoryOpportunityClassifier = null,
+        WorldAutonomyRouter? worldAutonomyRouter = null)
     {
         _client = client;
         _options = options.Value;
@@ -111,9 +146,15 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _logger = logger;
         _telemetry = telemetry;
         _randomProvider = randomProvider ?? DefaultRandomProvider.Instance;
+        _memoryExtractionOptions = memoryExtractionOptions?.Value ?? new MemoryExtractionOptions();
+        _memoryTransitionVerifier = memoryTransitionVerifier ?? new MemoryTransitionVerifier();
+        _memoryOpportunityClassifier = memoryOpportunityClassifier ?? new MemoryOpportunityClassifier();
         _reactionSink = reactionSink ?? new NoOpReactionSink();
         _reactionExcerptLength = reactionOptions?.Value.ReplyExcerptLength ?? 200;
         _reactionJudge = reactionJudge;
+        _reactionCapabilities = reactionCapabilities;
+        _reactionCapabilityCooldownEnabled = reactionOptions?.Value.CapabilityCooldownEnabled ?? false;
+        _reactionConstrainedToolEnabled = reactionOptions?.Value.ConstrainedToolEnabled ?? false;
         _emojiReactEnabled = reactionOptions?.Value.EmojiReactEnabled ?? false;
         _maxCustomEmotes = Math.Max(0, reactionOptions?.Value.MaxCustomEmotes ?? 40);
         _reactMinInterval = TimeSpan.FromSeconds(Math.Max(0, reactionOptions?.Value.EmojiReactMinIntervalSeconds ?? 15));
@@ -121,6 +162,9 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _imageToolService = imageToolService;
         _imageRewriter = imageRewriter;
         _ambientVisualBudget = ambientVisualBudget;
+        _episodeBuilder = episodeBuilder;
+        _ambientEpisodeShadow = ambientEpisodeShadow;
+        _episodeOptions = episodeOptions?.Value ?? new InteractionEpisodeOptions();
         _scamGuard = scamGuardOptions?.Value ?? new ScamGuardOptions { Enabled = false };
         _phishingDomains = phishingDomains ?? NullPhishingDomainSource.Instance;
         _raidTracker = raidTracker ?? new RaidTracker();
@@ -134,10 +178,19 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _sentMessages = sentMessages ?? new SentMessageRegistry();
         _ambientCoordinator = ambientCoordinator ?? new AmbientChannelCoordinator();
         _ambientReplyQuiet = TimeSpan.FromSeconds(Math.Max(0, chaosSettings.CurrentValue.AmbientReplyQuietSeconds));
+        _worldAutonomyRouter = worldAutonomyRouter;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        _logger.LogInformation(
+            "Coordination modes: episode={EpisodeMode} deictic_abstention={Deictic} memory_evidence_required={EvidenceRequired} memory_gate={MemoryGate} reaction_tool_constrained={ReactionTool} reaction_capability_cooldown={ReactionCooldown}.",
+            _episodeOptions.Mode,
+            _episodeOptions.DeicticAbstentionEnabled,
+            _memoryExtractionOptions.EvidenceRequired,
+            _memoryExtractionOptions.OpportunityGateMode,
+            _reactionConstrainedToolEnabled,
+            _reactionCapabilityCooldownEnabled);
         _client.Log += OnLogAsync;
         _client.MessageReceived += OnMessageReceivedAsync;
         _client.ReactionAdded += OnReactionAddedAsync;
@@ -226,7 +279,10 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 MessageId: reaction.MessageId,
                 Persona: cached.Persona,
                 ReplyExcerpt: excerpt,
-                Source: cached.Source));
+                Source: cached.Source,
+                EpisodeId: cached.EpisodeId,
+                TriggerMessageId: cached.TriggerMessageId,
+                ReplyTargetMessageId: cached.ReplyTargetMessageId));
         }
         catch (Exception ex)
         {
@@ -390,6 +446,45 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             return;
         }
 
+        var content = message.Content.Trim();
+        var hasPrefix = !string.IsNullOrWhiteSpace(_options.CommandPrefix)
+            && content.StartsWith(_options.CommandPrefix, StringComparison.OrdinalIgnoreCase);
+        var payload = hasPrefix ? content[_options.CommandPrefix.Length..].TrimStart() : string.Empty;
+        var mentionsBotDirectly = _client.CurrentUser is not null
+            && message.MentionedUsers.Any(u => u.Id == _client.CurrentUser.Id);
+        var isLocallyHandledImage = _imageToolService?.IsEnabled == true
+            && ImageIntentDetector.LooksLikeImageRequest(content)
+            && (mentionsBotDirectly || MentionsBotName(content));
+        var autonomyOwnsMessage = ShouldWorldAutonomyOwnMessage(
+            hasPrefix,
+            payload,
+            isLocallyHandledImage);
+        bool? repliedToBot = null;
+        var recordedForContext = false;
+
+        // World autonomy. In a guild that has granted Robotnik real administrative control, one agent owns
+        // the whole opportunity: silence, reaction, speech, and server action. The ordinary ambient/persona
+        // machinery must not compete for the same message. Bot-management commands, explicit persona
+        // overrides, and image generation keep their specialized local handlers.
+        // Deliberately ahead of the ban-word and allow-list gates below: those scope where the bot chats,
+        // not where he governs.
+        if (_worldAutonomyRouter is not null
+            && message.Channel is SocketGuildChannel autonomyChannel
+            && _worldAutonomyRouter.IsEnabled(autonomyChannel.Guild.Id)
+            && autonomyOwnsMessage)
+        {
+            RecordMessageForContext(message);
+            recordedForContext = true;
+            repliedToBot = await IsReplyToBotAsync(message);
+            var isDirectAddress = repliedToBot.Value
+                || mentionsBotDirectly
+                || hasPrefix;
+            if (await TryHandleWorldAutonomyAsync(autonomyChannel, message, content, isDirectAddress))
+            {
+                return;
+            }
+        }
+
         if (_chaosSettingsMonitor.CurrentValue.ContainsBanWord(message.Content))
         {
             _logger.LogDebug("Skipping message containing ban words.");
@@ -403,53 +498,23 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             return;
         }
 
-        // Feed the recent-participants tracker (empire state's razz candidates and activity gate). Harmless when disabled.
-        _recentParticipants?.Record(message.Author.Id, (message.Author as SocketGuildUser)?.DisplayName ?? message.Author.Username);
-
-        // Conversation-window memory extraction: buffer messages and process in batches
-        if (_options.EnableUserMemory && !string.IsNullOrWhiteSpace(message.Content))
+        if (!recordedForContext)
         {
-            BufferMessageForExtraction(message);
+            RecordMessageForContext(message);
         }
 
         var context = new SocketCommandContext(_client, message);
-        var content = message.Content.Trim();
 
-        // Check if this is a reply to the bot
-        if (message.Reference?.MessageId.IsSpecified == true)
+        if (repliedToBot ?? await IsReplyToBotAsync(message))
         {
-            // Try to get the referenced message - it might be cached or we need to fetch it
-            IMessage? referencedMessage = message.ReferencedMessage;
-            if (referencedMessage == null)
-            {
-                try
-                {
-                    referencedMessage = await message.Channel.GetMessageAsync(message.Reference.MessageId.Value);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug(ex, "Failed to fetch referenced message {MessageId}", message.Reference.MessageId.Value);
-                }
-            }
-
-            if (_client.CurrentUser is not null && referencedMessage?.Author.Id == _client.CurrentUser.Id)
-            {
-                _logger.LogDebug(
-                    "Direct reply detected: {UserId} replied to bot message {BotMessageId}",
-                    message.Author.Id,
-                    referencedMessage.Id);
-
-                await HandleDirectReplyAsync(context, message);
-                return;
-            }
+            _logger.LogDebug("Direct reply detected: {UserId} replied to a bot message.", message.Author.Id);
+            await HandleDirectReplyAsync(context, message);
+            return;
         }
-
-        var hasPrefix = !string.IsNullOrWhiteSpace(_options.CommandPrefix) && content.StartsWith(_options.CommandPrefix, StringComparison.OrdinalIgnoreCase);
 
         if (hasPrefix)
         {
             // Handle memory management commands before normal persona flow
-            var payload = content[_options.CommandPrefix.Length..].TrimStart();
             if (payload.Equals("forget-me", StringComparison.OrdinalIgnoreCase))
             {
                 await HandleForgetMeAsync(context);
@@ -567,7 +632,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 var lease = ambientLease!;
                 using (lease)
                 {
-                    var gate = await EvaluateAmbientWorthGateAsync(message, chaosSettings);
+                    var ambientTrace = new InteractionTraceContext(EpisodeId: Guid.NewGuid().ToString("N"));
+                    var gate = await EvaluateAmbientWorthGateAsync(message, chaosSettings, ambientTrace);
                     semanticView = gate.MessageView;
                     var visualEnabled = _imageToolService?.IsEnabled == true
                         && _ambientVisualBudget?.Enabled == true;
@@ -578,7 +644,18 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                         visualEnabled,
                         _ambientVisualBudget?.WorthThreshold ?? 1.0,
                         _ambientVisualBudget?.MinLead ?? 0.0);
-                    string? decisionReason = null;
+                    string? decisionReason = gate.SuppressReason;
+                    if (gate.SuppressAmbient)
+                    {
+                        action = AmbientActionKind.Silence;
+                    }
+                    else if (_episodeOptions.DeicticAbstentionEnabled
+                        && gate.Episode?.ReferentRequirement.IsRequired == true
+                        && gate.EpisodeDecision?.ReferentDecision.SelectedMessageId is null)
+                    {
+                        action = AmbientActionKind.Silence;
+                        decisionReason = "referent_unresolved";
+                    }
                     AmbientVisualLease? visualLease = null;
                     if (action == AmbientActionKind.Image)
                     {
@@ -612,10 +689,41 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                             Note: gate.Verdict.Thought,
                             Reason: decisionReason,
                             VisualWorth: gate.Verdict.VisualWorth,
-                            VisualHook: gate.Verdict.VisualHook));
+                            VisualHook: gate.Verdict.VisualHook,
+                            EpisodeId: gate.Trace?.EpisodeId,
+                            EpisodeSchemaVersion: gate.Trace?.EpisodeSchemaVersion,
+                            Stage: gate.Episode is null ? "legacy_judge" : "episode_judge",
+                            ReasonCode: decisionReason ?? gate.EpisodeDecision?.ReferentDecision.ReasonCode,
+                            ReferentMessageId: gate.EpisodeDecision?.ReferentDecision.SelectedMessageId,
+                            ContextMessageCount: gate.Episode?.Messages.Count,
+                            EvidenceMask: gate.Episode?.EvidenceMask.ToString(),
+                            EvidenceDigest: gate.Trace?.EvidenceDigest,
+                            ProjectionDigest: gate.Trace?.ProjectionDigest));
                         _logger.LogInformation(
                             "impulse_judged action={Action} text_worth={TextWorth:F2} visual_worth={VisualWorth:F2} reason={Reason} channel={Channel}",
                             action, gate.Verdict.Worth, gate.Verdict.VisualWorth, decisionReason ?? "-", message.Channel.Name);
+                    }
+
+                    var hasExplicitReply = message.Reference?.MessageId.IsSpecified == true;
+                    var referentRequirement = AmbientReferentDetector.Detect(
+                        gate.MessageView?.Text ?? content,
+                        hasExplicitReply,
+                        gate.MessageView?.HasMedia == true || message.Attachments.Count > 0);
+                    var priorityShadowCapture = hasExplicitReply || referentRequirement.IsRequired;
+                    if (_episodeBuilder is not null
+                        && _ambientEpisodeShadow?.ShouldCapture(priorityShadowCapture) == true)
+                    {
+                        _ = CaptureAmbientEpisodeShadowAsync(
+                            message,
+                            gate.MessageView,
+                            ambientTrace,
+                            gate.Verdict,
+                            action,
+                            chaosSettings.AmbientWorthThreshold,
+                            visualEnabled,
+                            _ambientVisualBudget?.WorthThreshold ?? 1.0,
+                            _ambientVisualBudget?.MinLead ?? 0.0,
+                            priorityShadowCapture);
                     }
 
                     if (action != AmbientActionKind.Silence)
@@ -628,7 +736,10 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                             var sent = await HandlePersonaAsync(
                                 context, _options.CommandPrefix + " " + content, message,
                                 CreativeInvocationKind.Ambient, semanticView, actionMode,
-                                gate.Verdict?.VisualWorth, gate.Verdict?.VisualHook);
+                                gate.Verdict?.VisualWorth, gate.Verdict?.VisualHook,
+                                trace: gate.Trace ?? ambientTrace,
+                                episode: gate.Episode,
+                                episodeDecision: gate.EpisodeDecision);
                             if (sent)
                             {
                                 var sentAt = DateTimeOffset.UtcNow;
@@ -658,11 +769,12 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     /// tuned on live data.
     /// </summary>
     private async Task<AmbientGateDecision> EvaluateAmbientWorthGateAsync(
-        SocketUserMessage message, ChaosSettings chaos)
+        SocketUserMessage message, ChaosSettings chaos, InteractionTraceContext? trace = null)
     {
-        if (!chaos.UseWorthGate || _impulseJudge is null)
+        var liveEpisode = _episodeOptions.Mode == InteractionEpisodeMode.Live;
+        if (!liveEpisode && (!chaos.UseWorthGate || _impulseJudge is null))
         {
-            return new AmbientGateDecision(null, null);
+            return new AmbientGateDecision(null, null, Trace: trace);
         }
 
         SemanticMessageView? messageView = null;
@@ -671,22 +783,91 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             messageView = await _contextAggregator.BuildMessageViewAsync(
                 message, includeHttpUnfurls: true, _shutdownCts.Token);
             var authorName = (message.Author as SocketGuildUser)?.DisplayName ?? message.Author.Username;
-            var request = new AmbientImpulseRequest(
-                PersonaName: GetDefaultPersona(),
-                AuthorDisplayName: authorName,
-                MessageText: messageView.Text,
-                Context: BuildReactionContext(message),
-                MoodLabel: _empireState is { Enabled: true } ? _empireState.Current.Mood.Label : null,
-                MediaContext: messageView.MediaContext,
-                MessageId: message.Id);
+            var mood = _empireState is { Enabled: true } ? _empireState.Current.Mood.Label : null;
 
-            var verdict = await _impulseJudge.JudgeAmbientAsync(request, _shutdownCts.Token);
-            if (verdict is null)
+            if (liveEpisode)
             {
-                // Judge failed or returned nothing usable: fail open (do not swallow a granted reply).
-                return new AmbientGateDecision(messageView, null);
+                if (_episodeBuilder is null)
+                {
+                    return await HandleLiveEpisodeFailureAsync(
+                        message,
+                        messageView,
+                        authorName,
+                        mood,
+                        trace,
+                        chaos,
+                        "builder_unavailable",
+                        null);
+                }
+
+                var evidence = new EpisodeTriggerEvidence(
+                    message.Channel.Id,
+                    message.Id,
+                    message.Author.Id,
+                    authorName,
+                    message.Reference?.MessageId.IsSpecified == true ? message.Reference.MessageId.Value : null,
+                    messageView);
+                var build = await _episodeBuilder.BuildAsync(evidence, trace?.EpisodeId, _shutdownCts.Token);
+                if (!build.IsSuccess)
+                {
+                    return await HandleLiveEpisodeFailureAsync(
+                        message,
+                        messageView,
+                        authorName,
+                        mood,
+                        trace,
+                        chaos,
+                        build.Failure?.ReasonCode ?? "build_failed",
+                        build.Failure?.Detail);
+                }
+
+                var episode = build.Episode!;
+                var projection = EpisodeProjectionBuilder.BuildJudgeProjection(episode, mood);
+                var liveTrace = (trace ?? new InteractionTraceContext(EpisodeId: episode.EpisodeId)) with
+                {
+                    EpisodeId = episode.EpisodeId,
+                    EpisodeSchemaVersion = episode.SchemaVersion,
+                    EvidenceDigest = episode.Fingerprint.EvidenceDigest,
+                    ProjectionDigest = projection.ProjectionDigest,
+                };
+                EmitEpisodeStage(message, episode, "created", "live_capture", null, liveTrace);
+
+                WorthVerdict? verdict = null;
+                if (chaos.UseWorthGate && _impulseJudge is not null)
+                {
+                    verdict = await _impulseJudge.JudgeAmbientAsync(new AmbientImpulseRequest(
+                        PersonaName: GetDefaultPersona(),
+                        AuthorDisplayName: authorName,
+                        MessageText: messageView.Text,
+                        Context: null,
+                        MoodLabel: mood,
+                        MediaContext: messageView.MediaContext,
+                        MessageId: message.Id,
+                        EpisodeProjection: projection.Text,
+                        ReferentCandidateIds: episode.ReferentCandidates.Select(candidate => candidate.MessageId).ToArray(),
+                        Trace: liveTrace),
+                        _shutdownCts.Token);
+                }
+
+                var referent = ImpulseJudge.ValidateReferentDecision(
+                    verdict ?? new WorthVerdict(0.0, string.Empty),
+                    episode,
+                    _episodeOptions.ReferentConfidenceThreshold);
+                return new AmbientGateDecision(
+                    messageView,
+                    verdict,
+                    episode,
+                    new EpisodeActionDecision(referent),
+                    liveTrace);
             }
-            return new AmbientGateDecision(messageView, verdict);
+
+            var legacyVerdict = await JudgeLegacyAmbientAsync(
+                message,
+                messageView,
+                authorName,
+                mood,
+                trace);
+            return new AmbientGateDecision(messageView, legacyVerdict, Trace: trace);
         }
         catch (OperationCanceledException)
         {
@@ -694,9 +875,209 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            // Fail-open: a broken gate should never silence a reply the roll already granted.
+            if (liveEpisode && _episodeOptions.OnBuildError == EpisodeFailurePolicy.SilenceAmbient)
+            {
+                _logger.LogWarning(ex, "Live ambient episode path failed; suppressing ambient action.");
+                _telemetry.Emit(new TelemetryEvent(
+                    Timestamp: DateTimeOffset.UtcNow,
+                    EventType: TelemetryEventTypes.InteractionEpisode,
+                    UserHash: UserIdHash.Hash(message.Author.Id),
+                    Channel: message.Channel.Name,
+                    Outcome: "build_failed",
+                    MessageId: message.Id,
+                    ReasonCode: "live_exception",
+                    FailureClass: ex.GetType().Name,
+                    EpisodeId: trace?.EpisodeId,
+                    Stage: "live_capture"));
+                return new AmbientGateDecision(
+                    messageView,
+                    null,
+                    Trace: trace,
+                    SuppressAmbient: true,
+                    SuppressReason: "episode_build_failed");
+            }
+
+            // Legacy behavior and the explicit compatibility fallback remain fail-open.
             _logger.LogDebug(ex, "Ambient worth gate failed; allowing the reply.");
-            return new AmbientGateDecision(messageView, null);
+            return new AmbientGateDecision(messageView, null, Trace: trace);
+        }
+    }
+
+    private async Task<AmbientGateDecision> HandleLiveEpisodeFailureAsync(
+        SocketUserMessage message,
+        SemanticMessageView messageView,
+        string authorName,
+        string? mood,
+        InteractionTraceContext? trace,
+        ChaosSettings chaos,
+        string reasonCode,
+        string? failureClass)
+    {
+        _telemetry.Emit(new TelemetryEvent(
+            Timestamp: DateTimeOffset.UtcNow,
+            EventType: TelemetryEventTypes.InteractionEpisode,
+            UserHash: UserIdHash.Hash(message.Author.Id),
+            Channel: message.Channel.Name,
+            Outcome: "build_failed",
+            MessageId: message.Id,
+            ReasonCode: reasonCode,
+            FailureClass: failureClass,
+            EpisodeId: trace?.EpisodeId,
+            Stage: "live_capture"));
+
+        if (_episodeOptions.OnBuildError != EpisodeFailurePolicy.UseLegacyPath)
+        {
+            return new AmbientGateDecision(
+                messageView,
+                null,
+                Trace: trace,
+                SuppressAmbient: true,
+                SuppressReason: "episode_build_failed");
+        }
+
+        _telemetry.Emit(new TelemetryEvent(
+            Timestamp: DateTimeOffset.UtcNow,
+            EventType: TelemetryEventTypes.InteractionEpisode,
+            UserHash: UserIdHash.Hash(message.Author.Id),
+            Channel: message.Channel.Name,
+            Outcome: "legacy_fallback",
+            MessageId: message.Id,
+            ReasonCode: reasonCode,
+            EpisodeId: trace?.EpisodeId,
+            Stage: "episode_legacy_fallback"));
+        var verdict = chaos.UseWorthGate && _impulseJudge is not null
+            ? await JudgeLegacyAmbientAsync(message, messageView, authorName, mood, trace)
+            : null;
+        return new AmbientGateDecision(messageView, verdict, Trace: trace);
+    }
+
+    private Task<WorthVerdict?> JudgeLegacyAmbientAsync(
+        SocketUserMessage message,
+        SemanticMessageView messageView,
+        string authorName,
+        string? mood,
+        InteractionTraceContext? trace)
+    {
+        if (_impulseJudge is null) return Task.FromResult<WorthVerdict?>(null);
+        return _impulseJudge.JudgeAmbientAsync(new AmbientImpulseRequest(
+            PersonaName: GetDefaultPersona(),
+            AuthorDisplayName: authorName,
+            MessageText: messageView.Text,
+            Context: BuildReactionContext(message),
+            MoodLabel: mood,
+            MediaContext: messageView.MediaContext,
+            MessageId: message.Id,
+            Trace: trace),
+            _shutdownCts.Token);
+    }
+
+    private void EmitEpisodeStage(
+        SocketUserMessage message,
+        InteractionEpisode episode,
+        string outcome,
+        string stage,
+        string? reasonCode,
+        InteractionTraceContext trace)
+    {
+        var oldestAge = episode.Messages.Count == 0
+            ? 0
+            : (long)Math.Max(0, (episode.CapturedAt - episode.Messages.Min(item => item.Timestamp)).TotalMilliseconds);
+        _telemetry.Emit(new TelemetryEvent(
+            Timestamp: DateTimeOffset.UtcNow,
+            EventType: TelemetryEventTypes.InteractionEpisode,
+            UserHash: UserIdHash.Hash(message.Author.Id),
+            Channel: message.Channel.Name,
+            Outcome: outcome,
+            Count: episode.ReferentCandidates.Count,
+            MessageId: message.Id,
+            EpisodeId: episode.EpisodeId,
+            EpisodeSchemaVersion: episode.SchemaVersion,
+            Stage: stage,
+            ReasonCode: reasonCode,
+            ContextMessageCount: episode.Messages.Count,
+            OldestContextAgeMs: oldestAge,
+            EvidenceMask: episode.EvidenceMask.ToString(),
+            EvidenceDigest: trace.EvidenceDigest,
+            ProjectionDigest: trace.ProjectionDigest));
+    }
+
+    private async Task CaptureAmbientEpisodeShadowAsync(
+        SocketUserMessage message,
+        SemanticMessageView? messageView,
+        InteractionTraceContext trace,
+        WorthVerdict? baselineVerdict,
+        AmbientActionKind baselineAction,
+        double textThreshold,
+        bool visualEnabled,
+        double visualThreshold,
+        double visualMinLead,
+        bool prioritySample)
+    {
+        try
+        {
+            messageView ??= await _contextAggregator.BuildMessageViewAsync(
+                message,
+                includeHttpUnfurls: true,
+                _shutdownCts.Token);
+            var authorName = (message.Author as SocketGuildUser)?.DisplayName ?? message.Author.Username;
+            var evidence = new EpisodeTriggerEvidence(
+                message.Channel.Id,
+                message.Id,
+                message.Author.Id,
+                authorName,
+                message.Reference?.MessageId.IsSpecified == true ? message.Reference.MessageId.Value : null,
+                messageView);
+            var result = await _episodeBuilder!.BuildAsync(
+                evidence,
+                trace.EpisodeId,
+                _shutdownCts.Token);
+            if (!result.IsSuccess)
+            {
+                _telemetry.Emit(new TelemetryEvent(
+                    Timestamp: DateTimeOffset.UtcNow,
+                    EventType: TelemetryEventTypes.AmbientEpisodeShadow,
+                    UserHash: UserIdHash.Hash(message.Author.Id),
+                    Channel: message.Channel.Name,
+                    Outcome: "build_failed",
+                    MessageId: message.Id,
+                    ReasonCode: result.Failure?.ReasonCode,
+                    FailureClass: result.Failure?.Detail,
+                    EpisodeId: trace.EpisodeId,
+                    Stage: "capture"));
+                return;
+            }
+
+            _ambientEpisodeShadow!.TryEnqueue(new AmbientEpisodeShadowOpportunity(
+                result.Episode!,
+                message.Channel.Name,
+                GetDefaultPersona(),
+                _empireState is { Enabled: true } ? _empireState.Current.Mood.Label : null,
+                baselineVerdict,
+                baselineAction,
+                textThreshold,
+                visualEnabled,
+                visualThreshold,
+                visualMinLead,
+                prioritySample));
+        }
+        catch (OperationCanceledException) when (_shutdownCts.IsCancellationRequested)
+        {
+            // Host shutdown.
+        }
+        catch (Exception ex)
+        {
+            _telemetry.Emit(new TelemetryEvent(
+                Timestamp: DateTimeOffset.UtcNow,
+                EventType: TelemetryEventTypes.AmbientEpisodeShadow,
+                UserHash: UserIdHash.Hash(message.Author.Id),
+                Channel: message.Channel.Name,
+                Outcome: "build_failed",
+                MessageId: message.Id,
+                ReasonCode: "capture_exception",
+                FailureClass: ex.GetType().Name,
+                EpisodeId: trace.EpisodeId,
+                Stage: "capture"));
+            _logger.LogDebug(ex, "Ambient episode shadow capture failed for message {MessageId}", message.Id);
         }
     }
 
@@ -718,6 +1099,27 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         // Custom emotes (and the whole feature) need a guild; skip DMs and group channels.
         if (message.Channel is not SocketGuildChannel guildChannel)
         {
+            return;
+        }
+
+        if (TryGetActiveReactionBlock(
+                _reactionCapabilityCooldownEnabled,
+                _reactionCapabilities,
+                guildChannel.Guild.Id,
+                message.Author.Id,
+                out var activeBlock))
+        {
+            _telemetry.Emit(new TelemetryEvent(
+                Timestamp: DateTimeOffset.UtcNow,
+                EventType: TelemetryEventTypes.ReactionCapabilityVeto,
+                UserHash: UserIdHash.Hash(message.Author.Id),
+                Channel: message.Channel.Name,
+                Outcome: "blocked",
+                Count: activeBlock.FailureCount,
+                MessageId: message.Id,
+                ReasonCode: "reaction_blocked",
+                ProviderErrorCode: activeBlock.DiscordCode,
+                ExpiresAt: activeBlock.ExpiresAt));
             return;
         }
 
@@ -806,24 +1208,58 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             {
                 await message.AddReactionAsync(emote!);
             }
+            catch (Discord.Net.HttpException ex)
+            {
+                var failure = ReactionDeliveryFailureClassifier.Classify(
+                    (int)ex.HttpCode,
+                    ex.DiscordCode.HasValue ? (int)ex.DiscordCode.Value : null);
+                EmitReactionDeliveryFailure(message, verdict!, failure, ex.Reason, ex);
+                if (failure.IsCapabilityBlock && failure.DiscordCode.HasValue)
+                {
+                    var state = _reactionCapabilities?.RecordExactBlock(
+                        guildChannel.Guild.Id,
+                        message.Author.Id,
+                        failure.DiscordCode.Value);
+                    if (state is not null)
+                    {
+                        EmitReactionCapabilityTransition(message, state, "blocked");
+                    }
+                }
+                return;
+            }
+            catch (HttpRequestException ex)
+            {
+                var failure = ReactionDeliveryFailureClassifier.Classify(
+                    httpStatus: null,
+                    discordCode: null,
+                    isTransportFailure: true);
+                EmitReactionDeliveryFailure(message, verdict!, failure, ex.GetType().Name, ex);
+                return;
+            }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _telemetry.Emit(new TelemetryEvent(
-                    Timestamp: DateTimeOffset.UtcNow,
-                    EventType: TelemetryEventTypes.ReactionJudged,
-                    UserHash: UserIdHash.Hash(message.Author.Id),
-                    Channel: message.Channel.Name,
-                    Kind: verdict!.Token,
-                    Outcome: "failed",
-                    MessageId: message.Id,
-                    Reason: ex.GetType().Name));
-                _logger.LogWarning(ex,
-                    "In-character reaction delivery failed: emote={Emote} channel={Channel} message={MessageId}",
-                    verdict.Token, message.Channel.Name, message.Id);
+                EmitReactionDeliveryFailure(
+                    message,
+                    verdict!,
+                    ReactionDeliveryFailureClassifier.Unexpected(),
+                    ex.GetType().Name,
+                    ex);
                 return;
             }
 
             _lastReaction[channelId] = now;
+            if (_reactionCapabilityCooldownEnabled
+                && _reactionCapabilities?.Clear(guildChannel.Guild.Id, message.Author.Id) == true)
+            {
+                _telemetry.Emit(new TelemetryEvent(
+                    Timestamp: DateTimeOffset.UtcNow,
+                    EventType: TelemetryEventTypes.ReactionCapabilityTransition,
+                    UserHash: UserIdHash.Hash(message.Author.Id),
+                    Channel: message.Channel.Name,
+                    Outcome: "cleared",
+                    MessageId: message.Id,
+                    ReasonCode: "delivery_succeeded"));
+            }
             RecordRecentEmoji(channelId, verdict!.Token);
             _telemetry.Emit(new TelemetryEvent(
                 Timestamp: DateTimeOffset.UtcNow,
@@ -843,6 +1279,68 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         {
             _logger.LogDebug(ex, "In-character reaction failed; ignoring.");
         }
+    }
+
+    private void EmitReactionDeliveryFailure(
+        SocketUserMessage message,
+        ReactionVerdict verdict,
+        ReactionDeliveryFailure failure,
+        string? detail,
+        Exception exception)
+    {
+        _telemetry.Emit(new TelemetryEvent(
+            Timestamp: DateTimeOffset.UtcNow,
+            EventType: TelemetryEventTypes.ReactionJudged,
+            UserHash: UserIdHash.Hash(message.Author.Id),
+            Channel: message.Channel.Name,
+            Kind: verdict.Token,
+            Outcome: "failed",
+            MessageId: message.Id,
+            Reason: string.IsNullOrWhiteSpace(detail) ? exception.GetType().Name : detail,
+            ReasonCode: failure.ReasonCode,
+            HttpStatus: failure.HttpStatus,
+            ProviderErrorCode: failure.DiscordCode,
+            FailureClass: exception.GetType().Name));
+        _logger.LogWarning(
+            exception,
+            "In-character reaction delivery failed: emote={Emote} channel={Channel} message={MessageId} reason={ReasonCode} http={HttpStatus} discord={DiscordCode}",
+            verdict.Token,
+            message.Channel.Name,
+            message.Id,
+            failure.ReasonCode,
+            failure.HttpStatus,
+            failure.DiscordCode);
+    }
+
+    private void EmitReactionCapabilityTransition(
+        SocketUserMessage message,
+        ReactionCapabilityState state,
+        string outcome)
+    {
+        _telemetry.Emit(new TelemetryEvent(
+            Timestamp: DateTimeOffset.UtcNow,
+            EventType: TelemetryEventTypes.ReactionCapabilityTransition,
+            UserHash: UserIdHash.Hash(message.Author.Id),
+            Channel: message.Channel.Name,
+            Outcome: outcome,
+            Count: state.FailureCount,
+            MessageId: message.Id,
+            ReasonCode: "reaction_blocked",
+            ProviderErrorCode: state.DiscordCode,
+            ExpiresAt: state.ExpiresAt));
+    }
+
+    internal static bool TryGetActiveReactionBlock(
+        bool enabled,
+        IReactionCapabilityRegistry? registry,
+        ulong guildId,
+        ulong userId,
+        out ReactionCapabilityState state)
+    {
+        state = null!;
+        return enabled
+            && registry is not null
+            && registry.TryGetActive(guildId, userId, out state);
     }
 
     /// <summary>
@@ -1106,13 +1604,18 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         SemanticMessageView? semanticView = null,
         CreativeActionMode actionMode = CreativeActionMode.Auto,
         double? visualWorth = null,
-        string? visualHook = null)
+        string? visualHook = null,
+        InteractionTraceContext? trace = null,
+        InteractionEpisode? episode = null,
+        EpisodeActionDecision? episodeDecision = null)
     {
         var prefix = _options.CommandPrefix;
         if (string.IsNullOrWhiteSpace(prefix))
         {
             return false;
         }
+
+        trace ??= new InteractionTraceContext(EpisodeId: Guid.NewGuid().ToString("N"));
 
         // Traffic visibility: invocation_kind + author + channel. One log line per orchestrated reply,
         // makes "is the bot getting any traffic at all" answerable from logs alone.
@@ -1125,7 +1628,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             UserHash: UserIdHash.Hash(message.Author.Id),
             Channel: context.Channel.Name,
             Kind: invocationKind.ToString(),
-            MessageId: message.Id));
+            MessageId: message.Id,
+            EpisodeId: trace.EpisodeId));
 
         var payload = content[prefix.Length..].TrimStart();
         var defaultPersona = GetDefaultPersona();
@@ -1216,7 +1720,10 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             TriggerMediaContext: semanticView.MediaContext,
             ActionMode: actionMode,
             VisualWorth: visualWorth,
-            VisualHook: visualHook);
+            VisualHook: visualHook,
+            Trace: trace,
+            Episode: episode,
+            EpisodeDecision: episodeDecision);
 
         var result = await _orchestrator.ExecuteAsync(request, context, _shutdownCts.Token);
         var reply = string.IsNullOrWhiteSpace(result.PrimaryMessage)
@@ -1236,12 +1743,14 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
         await SendChunkedAsync(
             context.Channel, reply, reference, persona, result.AttachmentBytes, result.AttachmentFileName,
-            invocationKind.ToString(), message.Id);
+            invocationKind.ToString(), message.Id, trace.EpisodeId, result.ReplyToMessageId);
         return true;
     }
 
     private async Task HandleDirectReplyAsync(SocketCommandContext context, SocketUserMessage message)
     {
+        var trace = new InteractionTraceContext(EpisodeId: Guid.NewGuid().ToString("N"));
+
         // Natural-language image request in a reply ("draw me as a knight") routes straight to the image
         // pipeline, so it does not depend on the model choosing the tool. See docs/ops_analysis_2026-06-29.md P2.
         if (_imageToolService?.IsEnabled == true && ImageIntentDetector.LooksLikeImageRequest(message.Content))
@@ -1315,7 +1824,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             userMemories,
             unfurledLinks,
             triggerImagesParam,
-            semanticView.MediaContext);
+            semanticView.MediaContext,
+            Trace: trace);
 
         // Traffic visibility — see HandlePersonaAsync. DirectReply was previously silent in telemetry,
         // which underclamped the adoption-rate denominator (recall_feature_review §6.7 footnote).
@@ -1328,7 +1838,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             UserHash: UserIdHash.Hash(message.Author.Id),
             Channel: context.Channel.Name,
             Kind: CreativeInvocationKind.DirectReply.ToString(),
-            MessageId: message.Id));
+            MessageId: message.Id,
+            EpisodeId: trace.EpisodeId));
 
         var result = await _orchestrator.ExecuteAsync(request, context, _shutdownCts.Token);
         var reply = string.IsNullOrWhiteSpace(result.PrimaryMessage)
@@ -1349,13 +1860,14 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
         await SendChunkedAsync(
             context.Channel, reply, reference, persona, result.AttachmentBytes, result.AttachmentFileName,
-            CreativeInvocationKind.DirectReply.ToString(), message.Id);
+            CreativeInvocationKind.DirectReply.ToString(), message.Id, trace.EpisodeId, result.ReplyToMessageId);
     }
 
     private async Task SendChunkedAsync(
         ISocketMessageChannel channel, string text, MessageReference? reference, string persona,
         byte[]? attachmentBytes = null, string? attachmentFileName = null,
-        string source = "reply", ulong? triggerMessageId = null)
+        string source = "reply", ulong? triggerMessageId = null,
+        string? episodeId = null, ulong? replyTargetMessageId = null)
     {
         var hasAttachment = attachmentBytes is { Length: > 0 } && !string.IsNullOrWhiteSpace(attachmentFileName);
 
@@ -1368,11 +1880,11 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         {
             using var stream = new MemoryStream(attachmentBytes!);
             var sentFile = await channel.SendFileAsync(stream, attachmentFileName, text: chunks[0], messageReference: reference);
-            _sentMessages.Register(sentFile.Id, persona, source, triggerMessageId);
+            _sentMessages.Register(sentFile.Id, persona, source, triggerMessageId, episodeId, replyTargetMessageId);
             for (int i = 1; i < chunks.Count; i++)
             {
                 var more = await channel.SendMessageAsync(chunks[i]);
-                _sentMessages.Register(more.Id, persona, source, triggerMessageId);
+                _sentMessages.Register(more.Id, persona, source, triggerMessageId, episodeId);
             }
             return;
         }
@@ -1382,7 +1894,13 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         {
             var sent = await channel.SendMessageAsync(chunks[i], messageReference: i == 0 ? reference : null);
             // Register every chunk so replies and human reactions preserve source/persona continuity.
-            _sentMessages.Register(sent.Id, persona, source, triggerMessageId);
+            _sentMessages.Register(
+                sent.Id,
+                persona,
+                source,
+                triggerMessageId,
+                episodeId,
+                i == 0 ? replyTargetMessageId : null);
         }
     }
 
@@ -1460,6 +1978,216 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             RecentMessageCount: recentCount,
             BotLastSpokeAt: botLastSpokeAt
         );
+    }
+
+    /// <summary>
+    /// True when this message is a reply to one of the bot's own messages. Resolved once per message because
+    /// an uncached reference costs a REST fetch.
+    /// </summary>
+    private async Task<bool> IsReplyToBotAsync(SocketUserMessage message)
+    {
+        if (message.Reference?.MessageId.IsSpecified != true || _client.CurrentUser is null)
+        {
+            return false;
+        }
+
+        var referenced = message.ReferencedMessage;
+        if (referenced is null)
+        {
+            try
+            {
+                referenced = await message.Channel.GetMessageAsync(message.Reference.MessageId.Value) as IUserMessage;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed to fetch referenced message {MessageId}", message.Reference.MessageId.Value);
+            }
+        }
+
+        return referenced?.Author.Id == _client.CurrentUser.Id;
+    }
+
+    /// <summary>
+    /// Commands that address the bot as a program rather than the character, so they keep their local
+    /// handlers even in an autonomy guild: "forget-me" must actually delete memories rather than amuse a
+    /// villain, and a "(persona)" override is an explicit request for somebody who is not Robotnik.
+    /// </summary>
+    private static bool IsLocallyHandledCommand(string payload) =>
+        payload.StartsWith('(')
+        || payload.Equals("forget-me", StringComparison.OrdinalIgnoreCase)
+        || payload.Equals("what-do-you-know", StringComparison.OrdinalIgnoreCase)
+        || payload.Equals("forget", StringComparison.OrdinalIgnoreCase)
+        || payload.StartsWith("forget ", StringComparison.OrdinalIgnoreCase)
+        || payload.StartsWith("scam-report", StringComparison.OrdinalIgnoreCase)
+        || payload.StartsWith("scamreport", StringComparison.OrdinalIgnoreCase)
+        || payload.StartsWith("scam report", StringComparison.OrdinalIgnoreCase)
+        || payload.Equals("empire", StringComparison.OrdinalIgnoreCase)
+        || payload.StartsWith("empire ", StringComparison.OrdinalIgnoreCase)
+        || payload.StartsWith("empire-", StringComparison.OrdinalIgnoreCase);
+
+    internal static bool ShouldWorldAutonomyOwnMessage(
+        bool hasPrefix,
+        string payload,
+        bool isLocallyHandledImage) =>
+        !isLocallyHandledImage && (!hasPrefix || !IsLocallyHandledCommand(payload));
+
+    private void RecordMessageForContext(SocketUserMessage message)
+    {
+        _recentParticipants?.Record(
+            message.Author.Id,
+            (message.Author as SocketGuildUser)?.DisplayName ?? message.Author.Username);
+
+        if (_options.EnableUserMemory && !string.IsNullOrWhiteSpace(message.Content))
+        {
+            BufferMessageForExtraction(message);
+        }
+    }
+
+    /// <summary>
+    /// Offers this message to the world-autonomy agent. Returns true when the agent took ownership of the
+    /// message, in which case the caller must not also reply: the whole point is that a guild which handed
+    /// Robotnik real control hears one Robotnik, and it is the one who can act on what he threatens.
+    /// </summary>
+    private async Task<bool> TryHandleWorldAutonomyAsync(
+        SocketGuildChannel guildChannel,
+        SocketUserMessage message,
+        string content,
+        bool isDirectAddress)
+    {
+        var opportunity = BuildAutonomyOpportunity(guildChannel, message, content, isDirectAddress);
+        if (!isDirectAddress)
+        {
+            _ = _worldAutonomyRouter!.TryRunAsync(opportunity, _shutdownCts.Token);
+            return true;
+        }
+
+        WorldAutonomyRunResult? result;
+        using (message.Channel.EnterTypingState())
+        {
+            result = await _worldAutonomyRouter!.TryRunDirectAsync(opportunity, _shutdownCts.Token);
+        }
+
+        if (result is null)
+        {
+            // Busy direct audiences stay queued in the guild mailbox. Null now means the queued run was
+            // cancelled or failed before it could produce a result, so the ordinary path is a true fallback
+            // rather than a second Robotnik answering the same message.
+            _logger.LogWarning(
+                "Autonomy could not complete direct message {MessageId} in guild {GuildId}; falling back to the persona path.",
+                message.Id,
+                guildChannel.Guild.Id);
+            return false;
+        }
+
+        // The agent runtime never delivers his final text to Discord, so if he schemed without speaking,
+        // say it for him. Routed through SendChunkedAsync so the reply keeps normal transcript, reaction,
+        // and reply-chain continuity.
+        if (!result.SpokeInChannel)
+        {
+            if (string.IsNullOrWhiteSpace(result.FinalText))
+            {
+                // Timed out or failed with nothing to show for it. Hand the message back rather than
+                // answering a member with silence.
+                _logger.LogWarning(
+                    "Autonomy run {RunId} ended {Status} with nothing to say for message {MessageId}; falling back to the persona path.",
+                    result.RunId,
+                    result.Status,
+                    message.Id);
+                return false;
+            }
+
+            await SendChunkedAsync(
+                message.Channel,
+                result.FinalText.Trim(),
+                new MessageReference(message.Id),
+                _options.DefaultPersona,
+                source: "world_autonomy",
+                triggerMessageId: message.Id,
+                replyTargetMessageId: message.Id);
+        }
+
+        _logger.LogInformation(
+            "Autonomy answered message {MessageId} in guild {GuildId} with status {Status} (spoke={Spoke}).",
+            message.Id,
+            guildChannel.Guild.Id,
+            result.Status,
+            result.SpokeInChannel);
+        return true;
+    }
+
+    /// <summary>
+    /// Builds the situation briefing for an autonomy run. The agent used to receive a single bare line with
+    /// raw numeric IDs, which is why it discovered the server from scratch every run and could not make a
+    /// callback. It now arrives knowing where it is, who it is, and what the room has been saying.
+    /// </summary>
+    private WorldAutonomyOpportunity BuildAutonomyOpportunity(
+        SocketGuildChannel guildChannel,
+        SocketUserMessage message,
+        string content,
+        bool isDirectAddress)
+    {
+        var prompt = new StringBuilder();
+        prompt.Append("You are in the Discord server '").Append(guildChannel.Guild.Name)
+            .Append("' (guild ID ").Append(guildChannel.Guild.Id)
+            .Append("), watching #").Append(guildChannel.Name)
+            .Append(" (channel ID ").Append(message.Channel.Id).Append(").\n");
+        if (_client.CurrentUser is not null)
+        {
+            prompt.Append("Your own account there is '").Append(_client.CurrentUser.Username)
+                .Append("' (user ID ").Append(_client.CurrentUser.Id)
+                .Append("). Messages from that ID are your own words.\n");
+        }
+
+        var history = RenderAutonomyHistory(message);
+        if (history.Length > 0)
+        {
+            prompt.Append("\nRecent conversation there, oldest first:\n").Append(history);
+        }
+
+        prompt.Append('\n').Append(GetDisplayName(message.Author))
+            .Append(" (user ID ").Append(message.Author.Id)
+            .Append(", message ID ").Append(message.Id).Append(") just said:\n")
+            .Append(content.Length == 0 ? "(no text)" : content);
+
+        prompt.Append("\n\n").Append(WorldAutonomyPrompt.BuildOpportunityDirective(isDirectAddress));
+
+        return new WorldAutonomyOpportunity(
+            guildChannel.Guild.Id,
+            "discord_message",
+            prompt.ToString(),
+            message.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            SourceEpisodeId: null,
+            TraceId: Guid.NewGuid().ToString("N"),
+            ModelOverride: null,
+            IsDirectAddress: isDirectAddress,
+            PersonaDirective: _empireState is { Enabled: true }
+                ? _empireState.BuildDirective(GetDisplayName(message.Author))
+                : null,
+            SourceChannelId: message.Channel.Id,
+            SourceChannelName: guildChannel.Name,
+            SourceAuthorId: message.Author.Id,
+            SourceAuthorDisplayName: GetDisplayName(message.Author));
+    }
+
+    private string RenderAutonomyHistory(SocketUserMessage message)
+    {
+        var builder = new StringBuilder();
+        var recent = message.Channel.GetCachedMessages(AutonomyHistoryLimit)
+            .Where(cached => cached.Id != message.Id && !string.IsNullOrWhiteSpace(cached.Content))
+            .OrderBy(cached => cached.Timestamp);
+        foreach (var cached in recent)
+        {
+            var speaker = cached.Author.Id == _client.CurrentUser?.Id ? "You" : GetDisplayName(cached.Author);
+            var text = cached.Content.Replace('\n', ' ').Trim();
+            if (text.Length > AutonomyHistoryLineLength)
+            {
+                text = string.Concat(text.AsSpan(0, AutonomyHistoryLineLength), "...");
+            }
+
+            builder.Append(speaker).Append(": ").Append(text).Append('\n');
+        }
+
+        return builder.ToString();
     }
 
     private static string GetDisplayName(SocketUser user)
@@ -1570,10 +2298,12 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
             buffer.LastMessageAt = now;
             buffer.Messages.Add(new BufferedMessage(
+                message.Id,
                 message.Author.Id,
                 GetDisplayName(message.Author),
                 message.Content,
-                now));
+                now,
+                message.Attachments.Count > 0 || message.Embeds.Count > 0));
 
             // Check hard caps
             if (buffer.Messages.Count >= _options.MaxWindowMessages ||
@@ -1617,7 +2347,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         {
             try
             {
-                await ProcessConversationWindowAsync(channelId);
+                await ProcessConversationWindowAsync(channelId, isShutdownFlush: true);
             }
             catch (Exception ex)
             {
@@ -1629,7 +2359,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     /// <summary>
     /// Drains the buffer for a channel and runs a single multi-user extraction pass.
     /// </summary>
-    internal async Task ProcessConversationWindowAsync(ulong channelId)
+    internal async Task ProcessConversationWindowAsync(ulong channelId, bool isShutdownFlush = false)
     {
         List<BufferedMessage> messages;
 
@@ -1647,21 +2377,29 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             buffer.DebounceTimer = null;
         }
 
+        var window = ExtractionWindow.Capture(channelId, messages, isShutdownFlush);
+        var startedAt = Stopwatch.GetTimestamp();
+        var terminalOutcome = "failed";
+        string? terminalReason = null;
+        var failureStage = "rate_gate";
+        var summary = MemoryApplySummary.Empty;
+        MemoryOpportunityDecision? opportunityDecision = null;
+        bool? opportunityWouldSkip = null;
+        var explorationRun = false;
+
         try
         {
             // Probabilistic rate limiting
             if (_randomProvider.NextDouble() > _options.MemoryExtractionRate)
             {
                 _logger.LogDebug("Skipping conversation extraction for channel {ChannelId} (rate limiter)", channelId);
+                terminalOutcome = "sampled_out";
+                terminalReason = "rate_limiter";
                 return;
             }
 
             // Gather participant info and existing memories
-            var participantIds = messages
-                .Select(m => m.AuthorId)
-                .Distinct()
-                .OrderBy(id => id) // Consistent lock ordering to prevent deadlocks
-                .ToList();
+            var participantIds = window.ParticipantIds;
 
             // Acquire per-user memory locks for all participants before reading memories.
             // This prevents cross-window races where two windows for the same user read
@@ -1672,6 +2410,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
             foreach (var sem in locks)
             {
+                failureStage = "lock";
                 await sem.WaitAsync(_shutdownCts.Token);
             }
 
@@ -1680,27 +2419,134 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 var participantMemories = new Dictionary<ulong, (string DisplayName, IReadOnlyList<UserMemory> Memories)>();
                 foreach (var userId in participantIds)
                 {
+                    failureStage = "load";
                     var displayName = messages.First(m => m.AuthorId == userId).AuthorDisplayName;
                     var memories = await _memoryStore.GetMemoriesAsync(userId, _shutdownCts.Token);
                     participantMemories[userId] = (displayName, memories);
+                }
+
+                if (_memoryExtractionOptions.OpportunityGateMode != MemoryOpportunityGateMode.Off)
+                {
+                    var priorAge = _lastSuccessfulExtraction.TryGetValue(channelId, out var lastExtraction)
+                        ? window.CapturedAt - lastExtraction
+                        : (TimeSpan?)null;
+                    window = window with
+                    {
+                        Features = MemoryOpportunityFeatureExtractor.Extract(
+                            window.Messages,
+                            participantMemories.Values.SelectMany(value => value.Memories).ToArray(),
+                            isShutdownFlush,
+                            priorAge)
+                    };
+                    opportunityDecision = _memoryOpportunityClassifier.Classify(window.Features);
+                    var forceShutdownRun = isShutdownFlush
+                        && _memoryExtractionOptions.ShutdownFlushPolicy == ShutdownFlushExtractionPolicy.RunAlways;
+                    var wouldSkip = !opportunityDecision.WouldRun && !forceShutdownRun;
+                    opportunityWouldSkip = wouldSkip;
+
+                    if (_memoryExtractionOptions.OpportunityGateMode == MemoryOpportunityGateMode.Live && wouldSkip)
+                    {
+                        explorationRun = _randomProvider.NextDouble()
+                            < Math.Clamp(_memoryExtractionOptions.ExplorationRate, 0.0, 1.0);
+                    }
+                    var gateOutcome = _memoryExtractionOptions.OpportunityGateMode switch
+                    {
+                        MemoryOpportunityGateMode.Shadow when wouldSkip => "shadow_would_skip",
+                        MemoryOpportunityGateMode.Shadow => "shadow_would_run",
+                        MemoryOpportunityGateMode.Live when explorationRun => "exploration_run",
+                        MemoryOpportunityGateMode.Live when wouldSkip => "gate_skipped",
+                        _ => "gate_run",
+                    };
+                    EmitMemoryOpportunityTelemetry(
+                        window,
+                        opportunityDecision,
+                        wouldSkip,
+                        explorationRun,
+                        gateOutcome);
+                    if (_memoryExtractionOptions.OpportunityGateMode == MemoryOpportunityGateMode.Live
+                        && wouldSkip
+                        && !explorationRun)
+                    {
+                        terminalOutcome = "gate_skipped";
+                        terminalReason = opportunityDecision.ReasonCodes.FirstOrDefault() ?? "classifier_skip";
+                        return;
+                    }
                 }
 
                 _logger.LogInformation(
                     "Processing conversation window for channel {ChannelId}: {MessageCount} messages, {ParticipantCount} participants",
                     channelId, messages.Count, participantIds.Count);
 
-                var operations = await _orchestrator.ExtractMemoriesFromConversationAsync(
+                failureStage = "provider";
+                var proposedOperations = await _orchestrator.ExtractMemoriesFromConversationAsync(
                     messages,
                     participantMemories,
                     _options.MaxMemoriesPerExtraction,
-                    _shutdownCts.Token);
+                    _shutdownCts.Token,
+                    new InteractionTraceContext(OperationId: window.OperationId));
 
                 // Filter out operations targeting user IDs not in the participant list
                 // (guards against LLM hallucinating user IDs)
                 var knownUserIds = participantMemories.Keys.ToHashSet();
-                operations = operations.Where(o => knownUserIds.Contains(o.UserId)).ToList();
+                var unknownUserOperations = proposedOperations
+                    .Where(operation => !knownUserIds.Contains(operation.UserId))
+                    .ToList();
+                var operations = proposedOperations
+                    .Where(operation => knownUserIds.Contains(operation.UserId))
+                    .ToList();
 
-                await ApplyMultiUserMemoryOperationsAsync(operations);
+                var policy = new MemoryTransitionPolicy(
+                    _memoryExtractionOptions.EvidenceRequired,
+                    _options.MaxMemoriesPerUser,
+                    _chaosSettingsMonitor.CurrentValue.BanWords,
+                    _memoryRelevanceMonitor.CurrentValue.SuppressionOverlapThreshold);
+                var plans = participantIds.ToDictionary(
+                    userId => userId,
+                    userId => _memoryTransitionVerifier.BuildPlan(
+                        userId,
+                        participantMemories[userId].Memories,
+                        operations.Where(operation => operation.UserId == userId).ToArray(),
+                        window,
+                        policy));
+
+                failureStage = "apply";
+                summary = _memoryExtractionOptions.EvidenceRequired
+                    ? await ApplyVerifiedMemoryPlansAsync(plans, participantMemories)
+                    : await ApplyMultiUserMemoryOperationsAsync(operations);
+                summary = summary.WithRejectedOperations(unknownUserOperations, "unknown_target_user");
+                foreach (var (userId, plan) in plans)
+                {
+                    if (plan.Accepted.Count == 0 && plan.Rejected.Count == 0) continue;
+                    var actual = await _memoryStore.GetMemoriesAsync(userId, _shutdownCts.Token);
+                    var expected = _memoryExtractionOptions.EvidenceRequired && !plan.IsValid
+                        ? participantMemories[userId].Memories
+                        : plan.PredictedAfter;
+                    EmitMemoryTransitionTelemetry(window, plan, expected, actual);
+                    if (_memoryExtractionOptions.EvidenceRequired
+                        && plan.IsValid
+                        && MemoryTransitionVerifier.ComputeBehavioralStateDigest(expected)
+                            != MemoryTransitionVerifier.ComputeBehavioralStateDigest(actual))
+                    {
+                        throw new InvalidOperationException("verified_state_divergence");
+                    }
+                }
+                if (_memoryExtractionOptions.EvidenceRequired && _options.EnableMemoryConsolidation)
+                {
+                    foreach (var (userId, plan) in plans.OrderBy(pair => pair.Key))
+                    {
+                        if (plan.IsValid && plan.Accepted.Count > 0)
+                        {
+                            await TryConsolidateUserMemoriesAsync(userId);
+                        }
+                    }
+                }
+                terminalOutcome = isShutdownFlush
+                    ? "shutdown_flush"
+                    : summary.Applied > 0
+                        ? "ok_applied"
+                        : "ok_no_operations";
+                    if (explorationRun) terminalReason = "exploration_run";
+                    _lastSuccessfulExtraction[channelId] = DateTimeOffset.UtcNow;
             }
             finally
             {
@@ -1710,26 +2556,123 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 }
             }
         }
+        catch (OperationCanceledException ex) when (_shutdownCts.IsCancellationRequested)
+        {
+            terminalOutcome = "cancelled";
+            terminalReason = $"{failureStage}_cancelled";
+            _logger.LogInformation(ex, "Conversation-window extraction cancelled for channel {ChannelId}", channelId);
+        }
         catch (Exception ex)
         {
+            terminalOutcome = "failed";
+            terminalReason = $"{failureStage}_{ex.GetType().Name}";
             _logger.LogWarning(ex, "Conversation-window extraction failed for channel {ChannelId}", channelId);
+        }
+        finally
+        {
+            if (_memoryExtractionOptions.YieldTelemetryEnabled)
+            {
+                _telemetry.Emit(new TelemetryEvent(
+                    Timestamp: DateTimeOffset.UtcNow,
+                    EventType: TelemetryEventTypes.MemoryExtraction,
+                    Outcome: terminalOutcome,
+                    Count: window.Features.MessageCount,
+                    LatencyMs: (long)Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds,
+                    OperationId: window.OperationId,
+                    Stage: "terminal",
+                    ReasonCode: terminalReason,
+                    ContextMessageCount: window.Features.MessageCount,
+                    ProposedCount: summary.Proposed,
+                    AppliedCount: summary.Applied,
+                    RejectedCount: summary.Rejected,
+                    ParticipantCount: window.Features.ParticipantCount,
+                    CharacterCount: window.Features.CharacterCount,
+                    WindowDurationMs: (long)window.Features.WindowDuration.TotalMilliseconds,
+                    IsShutdownFlush: window.Features.IsShutdownFlush,
+                    Before: summary.UserDeltas.Sum(delta => delta.Before),
+                    After: summary.UserDeltas.Sum(delta => delta.After),
+                    ProposedByAction: ToTelemetryCounts(summary.ProposedByAction),
+                    AppliedByAction: ToTelemetryCounts(summary.AppliedByAction),
+                    RejectedByReason: summary.RejectedByReason,
+                    GateMode: _memoryExtractionOptions.OpportunityGateMode.ToString(),
+                    GateWouldSkip: opportunityWouldSkip,
+                    IsExplorationRun: explorationRun));
+            }
         }
     }
 
-    private async Task ApplyMultiUserMemoryOperationsAsync(List<MultiUserMemoryOperation> operations)
+    private void EmitMemoryOpportunityTelemetry(
+        ExtractionWindow window,
+        MemoryOpportunityDecision decision,
+        bool wouldSkip,
+        bool explorationRun,
+        string outcome)
     {
+        var features = window.Features;
+        _telemetry.Emit(new TelemetryEvent(
+            Timestamp: DateTimeOffset.UtcNow,
+            EventType: TelemetryEventTypes.MemoryOpportunity,
+            Outcome: outcome,
+            Count: features.MessageCount,
+            TopScore: decision.Score,
+            ReasonCode: string.Join(',', decision.ReasonCodes),
+            OperationId: window.OperationId,
+            Stage: _memoryExtractionOptions.OpportunityGateMode == MemoryOpportunityGateMode.Shadow
+                ? "shadow"
+                : "live",
+            ContextMessageCount: features.MessageCount,
+            ParticipantCount: features.ParticipantCount,
+            CharacterCount: features.CharacterCount,
+            WindowDurationMs: (long)features.WindowDuration.TotalMilliseconds,
+            IsShutdownFlush: features.IsShutdownFlush,
+            GateMode: _memoryExtractionOptions.OpportunityGateMode.ToString(),
+            GateWouldSkip: wouldSkip,
+            IsExplorationRun: explorationRun,
+            FirstPersonAssertionCount: features.FirstPersonAssertionCount,
+            PreferenceIdentityChangeCount: features.PreferenceIdentityChangeCount,
+            QuestionOnly: features.QuestionOnly,
+            MediaOnly: features.MediaOnly,
+            LexicalNovelty: features.LexicalNovelty,
+            PriorExtractionAgeMs: features.PriorExtractionAge.HasValue
+                ? (long)features.PriorExtractionAge.Value.TotalMilliseconds
+                : null,
+            IsOneMessageWindow: features.IsOneMessageWindow));
+    }
+
+    private async Task<MemoryApplySummary> ApplyMultiUserMemoryOperationsAsync(
+        List<MultiUserMemoryOperation> operations)
+    {
+        var proposedByAction = operations
+            .GroupBy(operation => operation.Action)
+            .ToDictionary(group => group.Key, group => group.Count());
+        var appliedByAction = new Dictionary<MemoryAction, int>();
+        var rejectedByReason = new Dictionary<string, int>(StringComparer.Ordinal);
+        var deltas = new List<UserMemoryCountDelta>();
+        var applied = 0;
+        var rejected = 0;
+
+        void RecordApplied(MemoryAction action)
+        {
+            applied++;
+            appliedByAction[action] = appliedByAction.GetValueOrDefault(action) + 1;
+        }
+
+        void RecordRejected(string reason)
+        {
+            rejected++;
+            rejectedByReason[reason] = rejectedByReason.GetValueOrDefault(reason) + 1;
+        }
+
         // Group by user for efficient dedup
         var byUser = operations.GroupBy(o => o.UserId);
 
         foreach (var group in byUser)
         {
             var userId = group.Key;
-            IReadOnlyList<UserMemory>? existingMemories = null;
+            var beforeMemories = await _memoryStore.GetMemoriesAsync(userId, _shutdownCts.Token);
+            IReadOnlyList<UserMemory>? existingMemories = beforeMemories;
 
-            if (group.Any(o => o.Action == MemoryAction.Save))
-            {
-                existingMemories = await _memoryStore.GetMemoriesAsync(userId, _shutdownCts.Token);
-            }
+            var workingCount = beforeMemories.Count;
 
             var userOps = group.ToList();
 
@@ -1752,10 +2695,18 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 if (op.Content is not null && _chaosSettingsMonitor.CurrentValue.ContainsBanWord(op.Content))
                 {
                     _logger.LogDebug("Memory content contains ban word; skipping");
+                    RecordRejected("ban_word");
+                    continue;
+                }
+                if (op.MemoryIndex!.Value < 0 || op.MemoryIndex.Value >= workingCount)
+                {
+                    RecordRejected("invalid_index");
                     continue;
                 }
                 await _memoryStore.ForgetMemoryAsync(
                     userId, op.MemoryIndex!.Value, _shutdownCts.Token);
+                workingCount--;
+                RecordApplied(MemoryAction.Forget);
             }
 
             // Phase 2: Process updates with adjusted indices (account for removed items)
@@ -1764,6 +2715,12 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 if (op.Content is not null && _chaosSettingsMonitor.CurrentValue.ContainsBanWord(op.Content))
                 {
                     _logger.LogDebug("Memory content contains ban word; skipping");
+                    RecordRejected("ban_word");
+                    continue;
+                }
+                if (!op.MemoryIndex.HasValue || string.IsNullOrWhiteSpace(op.Content))
+                {
+                    RecordRejected("invalid_update");
                     continue;
                 }
                 if (op.MemoryIndex.HasValue)
@@ -1773,13 +2730,20 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                         _logger.LogDebug(
                             "Skipping update at index {Index} for user {UserId}: index was forgotten in the same batch",
                             op.MemoryIndex.Value, userId);
+                        RecordRejected("index_forgotten_in_batch");
                         continue;
                     }
                     // Adjust index: subtract count of forgotten indices below this one
                     var adjustment = sortedForgetIndices.Count(fi => fi < op.MemoryIndex.Value);
                     var adjustedIndex = op.MemoryIndex.Value - adjustment;
+                    if (adjustedIndex < 0 || adjustedIndex >= workingCount)
+                    {
+                        RecordRejected("invalid_index");
+                        continue;
+                    }
                     await _memoryStore.UpdateMemoryAsync(
                         userId, adjustedIndex, op.Content!, op.Context ?? string.Empty, _shutdownCts.Token);
+                    RecordApplied(MemoryAction.Update);
                 }
             }
 
@@ -1789,6 +2753,12 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 if (op.Content is not null && _chaosSettingsMonitor.CurrentValue.ContainsBanWord(op.Content))
                 {
                     _logger.LogDebug("Memory content contains ban word; skipping");
+                    RecordRejected("ban_word");
+                    continue;
+                }
+                if (string.IsNullOrWhiteSpace(op.Content))
+                {
+                    RecordRejected("invalid_save");
                     continue;
                 }
                 if (Memory.InstructionShapePolicy.IsInstructionShaped(op.Content))
@@ -1796,11 +2766,13 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                     _logger.LogWarning(
                         "memory_extract_reject instruction_shape user={UserHash}",
                         Memory.Logging.UserIdHash.Hash(userId));
+                    RecordRejected("instruction_shape");
                     continue;
                 }
                 if (existingMemories is not null && IsDuplicateMemory(op.Content!, existingMemories))
                 {
                     _logger.LogInformation("Skipping duplicate memory for user {UserId}: {Content}", userId, op.Content);
+                    RecordRejected("duplicate");
                     continue;
                 }
                 await _memoryStore.SaveMemoryAsync(
@@ -1811,15 +2783,22 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                     op.Topics,
                     op.Importance,
                     _shutdownCts.Token);
+                workingCount++;
+                RecordApplied(MemoryAction.Save);
                 existingMemories = await _memoryStore.GetMemoriesAsync(userId, _shutdownCts.Token);
             }
 
             // Phase 4: Suppressions — the model asked us to stop mentioning specific topics.
             foreach (var op in suppressOps)
             {
-                if (string.IsNullOrWhiteSpace(op.Content)) continue;
+                if (string.IsNullOrWhiteSpace(op.Content))
+                {
+                    RecordRejected("invalid_suppression");
+                    continue;
+                }
                 await _memoryStore.SuppressTopicAsync(
                     userId, op.Content!, _memoryRelevanceMonitor, _shutdownCts.Token);
+                RecordApplied(MemoryAction.Suppress);
                 _logger.LogInformation(
                     "memory_extract action=suppress user={UserHash}",
                     Memory.Logging.UserIdHash.Hash(userId));
@@ -1836,8 +2815,132 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             {
                 await TryConsolidateUserMemoriesAsync(userId);
             }
+
+            var afterMemories = await _memoryStore.GetMemoriesAsync(userId, _shutdownCts.Token);
+            deltas.Add(new UserMemoryCountDelta(userId, beforeMemories.Count, afterMemories.Count));
         }
+
+        return new MemoryApplySummary(
+            operations.Count,
+            applied,
+            rejected,
+            proposedByAction,
+            appliedByAction,
+            rejectedByReason,
+            deltas);
     }
+
+    private async Task<MemoryApplySummary> ApplyVerifiedMemoryPlansAsync(
+        IReadOnlyDictionary<ulong, MemoryPlan> plans,
+        IReadOnlyDictionary<ulong, (string DisplayName, IReadOnlyList<UserMemory> Memories)> participantMemories)
+    {
+        var proposedByAction = new Dictionary<MemoryAction, int>();
+        var appliedByAction = new Dictionary<MemoryAction, int>();
+        var rejectedByReason = new Dictionary<string, int>(StringComparer.Ordinal);
+        var deltas = new List<UserMemoryCountDelta>();
+        var proposed = 0;
+        var applied = 0;
+        var rejected = 0;
+
+        foreach (var (userId, plan) in plans.OrderBy(pair => pair.Key))
+        {
+            var userProposed = plan.Accepted.Count + plan.Rejected.Count;
+            if (userProposed == 0) continue;
+            proposed += userProposed;
+            foreach (var operation in plan.Accepted.Select(item => item)
+                         .Concat(plan.Rejected.Select(item => item.Operation)))
+            {
+                proposedByAction[operation.Action] = proposedByAction.GetValueOrDefault(operation.Action) + 1;
+            }
+
+            var before = participantMemories[userId].Memories;
+            if (!plan.IsValid)
+            {
+                rejected += userProposed;
+                foreach (var rejection in plan.Rejected)
+                {
+                    rejectedByReason[rejection.ReasonCode] =
+                        rejectedByReason.GetValueOrDefault(rejection.ReasonCode) + 1;
+                }
+                var rolledBack = plan.Accepted.Count;
+                if (rolledBack > 0)
+                {
+                    rejectedByReason["atomic_user_plan_rejected"] =
+                        rejectedByReason.GetValueOrDefault("atomic_user_plan_rejected") + rolledBack;
+                }
+                deltas.Add(new UserMemoryCountDelta(userId, before.Count, before.Count));
+                continue;
+            }
+
+            await _memoryStore.ReplaceAllMemoriesAsync(userId, plan.PredictedAfter, _shutdownCts.Token);
+            applied += plan.Accepted.Count;
+            foreach (var operation in plan.Accepted)
+            {
+                appliedByAction[operation.Action] = appliedByAction.GetValueOrDefault(operation.Action) + 1;
+            }
+            var after = await _memoryStore.GetMemoriesAsync(userId, _shutdownCts.Token);
+            deltas.Add(new UserMemoryCountDelta(userId, before.Count, after.Count));
+        }
+
+        return new MemoryApplySummary(
+            proposed,
+            applied,
+            rejected,
+            proposedByAction,
+            appliedByAction,
+            rejectedByReason,
+            deltas);
+    }
+
+    private void EmitMemoryTransitionTelemetry(
+        ExtractionWindow window,
+        MemoryPlan plan,
+        IReadOnlyList<UserMemory> expected,
+        IReadOnlyList<UserMemory> actual)
+    {
+        var predictedDigest = MemoryTransitionVerifier.ComputeBehavioralStateDigest(expected);
+        var actualDigest = MemoryTransitionVerifier.ComputeBehavioralStateDigest(actual);
+        var operations = plan.Accepted.Select(operation => operation)
+            .Concat(plan.Rejected.Select(rejection => rejection.Operation))
+            .ToArray();
+        var validEvidence = operations.Count(operation =>
+        {
+            var ids = operation.EvidenceMessageIds;
+            return ids is { Count: > 0 }
+                && ids.All(id => window.Messages.Any(message => message.MessageId == id));
+        });
+        var appliedCount = _memoryExtractionOptions.EvidenceRequired
+            ? plan.IsValid ? plan.Accepted.Count : 0
+            : plan.Accepted.Count;
+        var rejectedCount = _memoryExtractionOptions.EvidenceRequired && !plan.IsValid
+            ? operations.Length
+            : plan.Rejected.Count;
+        _telemetry.Emit(new TelemetryEvent(
+            Timestamp: DateTimeOffset.UtcNow,
+            EventType: TelemetryEventTypes.MemoryTransition,
+            UserHash: UserIdHash.Hash(plan.UserId),
+            Outcome: _memoryExtractionOptions.EvidenceRequired
+                ? plan.IsValid ? "verified_applied" : "verified_rejected"
+                : predictedDigest == actualDigest ? "shadow_match" : "shadow_diverged",
+            OperationId: window.OperationId,
+            Stage: _memoryExtractionOptions.EvidenceRequired ? "verified" : "shadow",
+            ProposedCount: operations.Length,
+            AppliedCount: appliedCount,
+            RejectedCount: rejectedCount,
+            ValidEvidenceCount: validEvidence,
+            MissingEvidenceCount: plan.Observations.GetValueOrDefault("missing_evidence"),
+            InvalidEvidenceCount: plan.Observations.GetValueOrDefault("invalid_evidence"),
+            PredictedStateDigest: predictedDigest,
+            ActualStateDigest: actualDigest,
+            Diverged: predictedDigest != actualDigest,
+            RejectedByReason: plan.Observations));
+    }
+
+    private static IReadOnlyDictionary<string, int> ToTelemetryCounts(
+        IReadOnlyDictionary<MemoryAction, int> counts) => counts.ToDictionary(
+            pair => pair.Key.ToString().ToLowerInvariant(),
+            pair => pair.Value,
+            StringComparer.Ordinal);
 
     /// <summary>
     /// Checks whether a user's memory count has reached the cap and, if so,
@@ -1849,30 +2952,42 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         try
         {
             var memories = await _memoryStore.GetMemoriesAsync(userId, _shutdownCts.Token);
-            if (memories.Count < _options.MaxMemoriesPerUser)
+            var countedMemories = memories.Count(memory => memory.Kind != MemoryKind.Suppressed);
+            if (countedMemories < _options.MaxMemoriesPerUser)
                 return; // not at cap yet, nothing to do
 
             var targetCount = Math.Max(1, (int)(_options.MaxMemoriesPerUser * _options.ConsolidationTargetPercent));
 
             _logger.LogInformation(
                 "User {UserId} at memory cap ({Count}/{Max}), attempting LLM consolidation to {Target} memories",
-                userId, memories.Count, _options.MaxMemoriesPerUser, targetCount);
+                userId, countedMemories, _options.MaxMemoriesPerUser, targetCount);
 
             var consolidated = await _orchestrator.ConsolidateMemoriesAsync(
                 userId, memories, targetCount, _shutdownCts.Token);
 
-            if (consolidated is not null && consolidated.Count > 0)
+            if (consolidated is not null && consolidated.Memories.Count > 0)
             {
-                await _memoryStore.ReplaceAllMemoriesAsync(userId, consolidated, _shutdownCts.Token);
+                var predictedDigest = MemoryTransitionVerifier.ComputeBehavioralStateDigest(consolidated.Memories);
+                await _memoryStore.ReplaceAllMemoriesAsync(userId, consolidated.Memories, _shutdownCts.Token);
+                var actual = await _memoryStore.GetMemoriesAsync(userId, _shutdownCts.Token);
+                var actualDigest = MemoryTransitionVerifier.ComputeBehavioralStateDigest(actual);
+                var diverged = predictedDigest != actualDigest;
                 _logger.LogInformation(
-                    "Successfully consolidated memories for user {UserId}: {OldCount} → {NewCount}",
-                    userId, memories.Count, consolidated.Count);
+                    "Successfully consolidated memories for user {UserId}: {OldCount} → {NewCount} mode={Mode} diverged={Diverged}",
+                    userId, memories.Count, consolidated.Memories.Count, consolidated.Outcome, diverged);
                 _telemetry.Emit(new TelemetryEvent(
                     Timestamp: DateTimeOffset.UtcNow,
                     EventType: TelemetryEventTypes.ConsolidationOk,
                     UserHash: UserIdHash.Hash(userId),
                     Before: memories.Count,
-                    After: consolidated.Count));
+                    After: consolidated.Memories.Count,
+                    Kind: consolidated.Outcome,
+                    OperationId: consolidated.OperationId,
+                    Stage: "verified_transition",
+                    ReasonCode: consolidated.ReasonCode,
+                    PredictedStateDigest: predictedDigest,
+                    ActualStateDigest: actualDigest,
+                    Diverged: diverged));
             }
             else
             {

@@ -62,7 +62,7 @@ public sealed class ImageRewriter
             {
                 ModelId = profile.Model,
                 Instructions = BuildSystemPrompt(persona, requesterDisplayName, userRequest, memories),
-                MaxOutputTokens = 2500,
+                MaxOutputTokens = profile.WithReasoningHeadroom(2500),
             };
             profile.ApplyReasoning(options);
             LlmCallTelemetry.Tag(options, "image_rewrite", profile, triggerMessageId);

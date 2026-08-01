@@ -84,7 +84,10 @@ public class RobotnikPersonaTests
     [Fact]
     public void ExtractionPrompt_FramesImportanceAsComedicAmmunition()
     {
-        var conversation = new List<BufferedMessage> { new(100, "Alice", "test", DateTimeOffset.UtcNow) };
+        var conversation = new List<BufferedMessage>
+        {
+            new(MessageId: 1, AuthorId: 100, AuthorDisplayName: "Alice", Content: "test", Timestamp: DateTimeOffset.UtcNow)
+        };
         var participants = new Dictionary<ulong, (string DisplayName, IReadOnlyList<UserMemory> Memories)>
         {
             [100] = ("Alice", new List<UserMemory>())

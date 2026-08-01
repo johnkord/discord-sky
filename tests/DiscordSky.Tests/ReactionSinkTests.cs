@@ -11,7 +11,19 @@ namespace DiscordSky.Tests;
 public class ReactionSinkTests
 {
     private static ReactionEvent Sample(string action = "add", string emote = "joy") =>
-        new(DateTimeOffset.UtcNow, action, emote, 111UL, 222UL, 333UL, 444UL, "Robotnik from AOSTH", "Applaud at once!");
+        new(
+            DateTimeOffset.UtcNow,
+            action,
+            emote,
+            111UL,
+            222UL,
+            333UL,
+            444UL,
+            "Robotnik from AOSTH",
+            "Applaud at once!",
+            EpisodeId: "episode-1",
+            TriggerMessageId: 555UL,
+            ReplyTargetMessageId: 666UL);
 
     private static IOptions<ReactionOptions> Opt(ReactionOptions o) => Options.Create(o);
     private static string NewTempDir() => Path.Combine(Path.GetTempPath(), "rxtest-" + Guid.NewGuid().ToString("N"));
@@ -48,9 +60,13 @@ public class ReactionSinkTests
         Assert.Equal("thumbsup", parsed!.Emote);
         Assert.Equal(444UL, parsed.MessageId);
         Assert.Equal("Robotnik from AOSTH", parsed.Persona);
+        Assert.Equal("episode-1", parsed.EpisodeId);
+        Assert.Equal(555UL, parsed.TriggerMessageId);
+        Assert.Equal(666UL, parsed.ReplyTargetMessageId);
         // JSON property names use the snake_case JsonPropertyName attributes (joinable by message_id).
         Assert.Contains("\"emote\":\"thumbsup\"", line);
         Assert.Contains("\"message_id\":444", line);
+        Assert.Contains("\"episode_id\":\"episode-1\"", line);
 
         Directory.Delete(dir, recursive: true);
     }

@@ -313,6 +313,146 @@ public class FileBackedUserMemoryStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Persistence_ProvenanceRoundTripsAndVersionZeroRemainsReadable()
+    {
+        var capturedAt = new DateTimeOffset(2026, 7, 19, 12, 0, 0, TimeSpan.Zero);
+        using (var store1 = CreateStore())
+        {
+            await store1.ReplaceAllMemoriesAsync(42, new[]
+            {
+                new UserMemory(
+                    "Likes meteor showers",
+                    "shared preference",
+                    capturedAt,
+                    capturedAt,
+                    0,
+                    Provenance: new MemoryProvenance("op-1", capturedAt, new[] { 11UL, 12UL }))
+            });
+            store1.FlushAll();
+        }
+
+        using (var store2 = CreateStore())
+        {
+            var persisted = Assert.Single(await store2.GetMemoriesAsync(42));
+            Assert.Equal("op-1", persisted.Provenance?.OperationId);
+            Assert.Equal(new ulong[] { 11, 12 }, persisted.Provenance?.EvidenceMessageIds);
+        }
+
+        await File.WriteAllTextAsync(
+            Path.Combine(_tempDir, "43.json"),
+            "[{\"content\":\"legacy\",\"context\":\"v0\",\"createdAt\":\"2026-01-01T00:00:00Z\",\"lastReferencedAt\":\"2026-01-01T00:00:00Z\",\"referenceCount\":0}]");
+        using var store3 = CreateStore();
+        var legacy = Assert.Single(await store3.GetMemoriesAsync(43));
+        Assert.Equal("legacy", legacy.Content);
+        Assert.Null(legacy.Provenance);
+    }
+
+    [Fact]
+    public async Task Persistence_LegacyMissingMemoryIdsAreAssignedAndStableAcrossRestart()
+    {
+        Directory.CreateDirectory(_tempDir);
+        await File.WriteAllTextAsync(
+            Path.Combine(_tempDir, "42.json"),
+            "[{\"content\":\"legacy-a\",\"context\":\"v0\",\"createdAt\":\"2026-01-01T00:00:00Z\",\"lastReferencedAt\":\"2026-01-01T00:00:00Z\",\"referenceCount\":0},{\"content\":\"legacy-b\",\"context\":\"v0\",\"createdAt\":\"2026-01-01T00:00:00Z\",\"lastReferencedAt\":\"2026-01-01T00:00:00Z\",\"referenceCount\":0}]");
+
+        string[] assigned;
+        using (var first = CreateStore())
+        {
+            assigned = (await first.GetMemoriesAsync(42)).Select(memory => memory.MemoryId!).ToArray();
+            Assert.All(assigned, id => Assert.Matches("^[0-9a-f]{32}$", id));
+            Assert.Equal(2, assigned.Distinct().Count());
+            Assert.True(first.IsDirty(42));
+            first.FlushAll();
+        }
+
+        using var second = CreateStore();
+        var restored = (await second.GetMemoriesAsync(42)).Select(memory => memory.MemoryId).ToArray();
+        Assert.Equal(assigned, restored);
+        Assert.False(second.IsDirty(42));
+    }
+
+    [Fact]
+    public async Task Persistence_DuplicateMemoryIdsAreRepaired()
+    {
+        Directory.CreateDirectory(_tempDir);
+        await File.WriteAllTextAsync(
+            Path.Combine(_tempDir, "42.json"),
+            "[{\"content\":\"a\",\"context\":\"ctx\",\"createdAt\":\"2026-01-01T00:00:00Z\",\"lastReferencedAt\":\"2026-01-01T00:00:00Z\",\"referenceCount\":0,\"memoryId\":\"same\"},{\"content\":\"b\",\"context\":\"ctx\",\"createdAt\":\"2026-01-01T00:00:00Z\",\"lastReferencedAt\":\"2026-01-01T00:00:00Z\",\"referenceCount\":0,\"memoryId\":\"same\"}]");
+
+        using var store = CreateStore();
+        var memories = await store.GetMemoriesAsync(42);
+
+        Assert.Equal("same", memories[0].MemoryId);
+        Assert.NotEqual("same", memories[1].MemoryId);
+        Assert.Equal(2, memories.Select(memory => memory.MemoryId).Distinct().Count());
+        Assert.True(store.IsDirty(42));
+    }
+
+    [Fact]
+    public async Task SaveAndReplace_AlwaysProduceUniqueMemoryIds()
+    {
+        using var store = CreateStore();
+        await store.SaveMemoryAsync(42, "created", "ctx");
+        var created = Assert.Single(await store.GetMemoriesAsync(42));
+        Assert.Matches("^[0-9a-f]{32}$", created.MemoryId);
+
+        await store.ReplaceAllMemoriesAsync(42, new[]
+        {
+            created,
+            new UserMemory("missing", "ctx", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 0),
+            created with { Content = "duplicate-id" },
+        });
+
+        var replaced = await store.GetMemoriesAsync(42);
+        Assert.Equal(3, replaced.Select(memory => memory.MemoryId).Distinct().Count());
+        Assert.All(replaced, memory => Assert.False(string.IsNullOrWhiteSpace(memory.MemoryId)));
+    }
+
+    [Fact]
+    public async Task FlushFailure_PreservesLastValidSnapshotAndRetriesDirtyUser()
+    {
+        using (var seed = CreateStore())
+        {
+            await seed.SaveMemoryAsync(42, "old value", "ctx");
+            seed.FlushAll();
+        }
+        var filePath = Path.Combine(_tempDir, "42.json");
+        var validBefore = await File.ReadAllTextAsync(filePath);
+        var calls = 0;
+        var options = Options.Create(new BotOptions
+        {
+            MaxMemoriesPerUser = 20,
+            MemoryDataPath = _tempDir,
+        });
+        using var store = new FileBackedUserMemoryStore(
+            options,
+            NullLogger<FileBackedUserMemoryStore>.Instance,
+            (tempPath, targetPath, json) =>
+            {
+                calls++;
+                File.WriteAllText(tempPath, json);
+                if (calls == 1) throw new IOException("simulated rename failure");
+                File.Move(tempPath, targetPath, overwrite: true);
+            });
+        await store.UpdateMemoryAsync(42, 0, "new value", "ctx");
+
+        store.FlushAll();
+
+        Assert.Equal(validBefore, await File.ReadAllTextAsync(filePath));
+        Assert.True(store.IsDirty(42));
+        using (var document = System.Text.Json.JsonDocument.Parse(await File.ReadAllTextAsync(filePath)))
+        {
+            Assert.Equal("old value", document.RootElement[0].GetProperty("content").GetString());
+        }
+
+        store.FlushAll();
+
+        Assert.False(store.IsDirty(42));
+        using var updated = System.Text.Json.JsonDocument.Parse(await File.ReadAllTextAsync(filePath));
+        Assert.Equal("new value", updated.RootElement[0].GetProperty("content").GetString());
+    }
+
+    [Fact]
     public void Dispose_FlushesBeforeShutdown()
     {
         var store = CreateStore();

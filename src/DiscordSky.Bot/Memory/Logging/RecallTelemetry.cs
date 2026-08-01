@@ -38,6 +38,7 @@ public sealed record TelemetryEvent(
     [property: JsonPropertyName("event")] string EventType,
     [property: JsonPropertyName("user")] string? UserHash = null,
     [property: JsonPropertyName("channel")] string? Channel = null,
+    [property: JsonPropertyName("channel_hash")] string? ChannelHash = null,
     [property: JsonPropertyName("kind")] string? Kind = null,
     [property: JsonPropertyName("outcome")] string? Outcome = null,
     [property: JsonPropertyName("count")] int? Count = null,
@@ -58,6 +59,8 @@ public sealed record TelemetryEvent(
     [property: JsonPropertyName("latency_ms")] long? LatencyMs = null,
     [property: JsonPropertyName("baseline_outcome")] string? BaselineOutcome = null,
     [property: JsonPropertyName("baseline_score")] double? BaselineScore = null,
+    [property: JsonPropertyName("baseline_visual_worth")] double? BaselineVisualWorth = null,
+    [property: JsonPropertyName("baseline_visual_hook")] string? BaselineVisualHook = null,
     [property: JsonPropertyName("evaluation_id")] string? EvaluationId = null,
     [property: JsonPropertyName("opportunity_at")] DateTimeOffset? OpportunityAt = null,
     [property: JsonPropertyName("workload")] string? Workload = null,
@@ -70,7 +73,59 @@ public sealed record TelemetryEvent(
     [property: JsonPropertyName("finish_reason")] string? FinishReason = null,
     [property: JsonPropertyName("failure_class")] string? FailureClass = null,
     [property: JsonPropertyName("visual_worth")] double? VisualWorth = null,
-    [property: JsonPropertyName("visual_hook")] string? VisualHook = null
+    [property: JsonPropertyName("visual_hook")] string? VisualHook = null,
+    [property: JsonPropertyName("telemetry_schema_version")] int? TelemetrySchemaVersion = null,
+    [property: JsonPropertyName("operation_id")] string? OperationId = null,
+    [property: JsonPropertyName("episode_id")] string? EpisodeId = null,
+    [property: JsonPropertyName("episode_schema_version")] int? EpisodeSchemaVersion = null,
+    [property: JsonPropertyName("stage")] string? Stage = null,
+    [property: JsonPropertyName("reason_code")] string? ReasonCode = null,
+    [property: JsonPropertyName("referent_message_id")] ulong? ReferentMessageId = null,
+    [property: JsonPropertyName("context_message_count")] int? ContextMessageCount = null,
+    [property: JsonPropertyName("oldest_context_age_ms")] long? OldestContextAgeMs = null,
+    [property: JsonPropertyName("evidence_mask")] string? EvidenceMask = null,
+    [property: JsonPropertyName("evidence_digest")] string? EvidenceDigest = null,
+    [property: JsonPropertyName("projection_digest")] string? ProjectionDigest = null,
+    [property: JsonPropertyName("proposed_count")] int? ProposedCount = null,
+    [property: JsonPropertyName("applied_count")] int? AppliedCount = null,
+    [property: JsonPropertyName("rejected_count")] int? RejectedCount = null,
+    [property: JsonPropertyName("http_status")] int? HttpStatus = null,
+    [property: JsonPropertyName("provider_error_code")] int? ProviderErrorCode = null,
+    [property: JsonPropertyName("participant_count")] int? ParticipantCount = null,
+    [property: JsonPropertyName("character_count")] int? CharacterCount = null,
+    [property: JsonPropertyName("window_duration_ms")] long? WindowDurationMs = null,
+    [property: JsonPropertyName("is_shutdown_flush")] bool? IsShutdownFlush = null,
+    [property: JsonPropertyName("proposed_by_action")] IReadOnlyDictionary<string, int>? ProposedByAction = null,
+    [property: JsonPropertyName("applied_by_action")] IReadOnlyDictionary<string, int>? AppliedByAction = null,
+    [property: JsonPropertyName("rejected_by_reason")] IReadOnlyDictionary<string, int>? RejectedByReason = null,
+    [property: JsonPropertyName("valid_evidence_count")] int? ValidEvidenceCount = null,
+    [property: JsonPropertyName("missing_evidence_count")] int? MissingEvidenceCount = null,
+    [property: JsonPropertyName("invalid_evidence_count")] int? InvalidEvidenceCount = null,
+    [property: JsonPropertyName("predicted_state_digest")] string? PredictedStateDigest = null,
+    [property: JsonPropertyName("actual_state_digest")] string? ActualStateDigest = null,
+    [property: JsonPropertyName("diverged")] bool? Diverged = null,
+    [property: JsonPropertyName("expires_at")] DateTimeOffset? ExpiresAt = null,
+    [property: JsonPropertyName("novelty_mode")] string? NoveltyMode = null,
+    [property: JsonPropertyName("novelty_stage")] string? NoveltyStage = null,
+    [property: JsonPropertyName("would_suppress")] bool? WouldSuppress = null,
+    [property: JsonPropertyName("matching_episode_id")] string? MatchingEpisodeId = null,
+    [property: JsonPropertyName("source_citation_status")] string? SourceCitationStatus = null,
+    [property: JsonPropertyName("source_message_count")] int? SourceMessageCount = null,
+    [property: JsonPropertyName("valid_source_count")] int? ValidSourceCount = null,
+    [property: JsonPropertyName("invalid_source_count")] int? InvalidSourceCount = null,
+    [property: JsonPropertyName("gate_mode")] string? GateMode = null,
+    [property: JsonPropertyName("gate_would_skip")] bool? GateWouldSkip = null,
+    [property: JsonPropertyName("is_exploration_run")] bool? IsExplorationRun = null,
+    [property: JsonPropertyName("first_person_assertion_count")] int? FirstPersonAssertionCount = null,
+    [property: JsonPropertyName("preference_identity_change_count")] int? PreferenceIdentityChangeCount = null,
+    [property: JsonPropertyName("question_only")] bool? QuestionOnly = null,
+    [property: JsonPropertyName("media_only")] bool? MediaOnly = null,
+    [property: JsonPropertyName("lexical_novelty")] double? LexicalNovelty = null,
+    [property: JsonPropertyName("prior_extraction_age_ms")] long? PriorExtractionAgeMs = null,
+    [property: JsonPropertyName("is_one_message_window")] bool? IsOneMessageWindow = null,
+    [property: JsonPropertyName("budget_class")] string? BudgetClass = null,
+    [property: JsonPropertyName("limit")] int? Limit = null,
+    [property: JsonPropertyName("priority_sample")] bool? PrioritySample = null
 );
 
 /// <summary>Canonical event-type string constants. Use these instead of string literals at call sites.</summary>
@@ -90,12 +145,44 @@ public static class TelemetryEventTypes
     public const string NewAccountFlag = "new_account_flag";
     public const string BanObserved = "ban_observed";
     public const string ReactionJudged = "reaction_judged";
+    public const string ReactionCapabilityVeto = "reaction_capability_veto";
+    public const string ReactionCapabilityTransition = "reaction_capability_transition";
     public const string EmpireTick = "empire_tick";
     public const string ImpulseJudged = "impulse_judged";
+    public const string AmbientEpisodeShadow = "ambient_episode_shadow";
+    public const string InteractionEpisode = "interaction_episode";
     public const string ColdOpen = "cold_open";
+    public const string ColdOpenNovelty = "cold_open_novelty";
+    public const string ColdOpenSource = "cold_open_source";
     public const string ColdOpenCritique = "cold_open_critique";
     public const string ColdOpenProviderShadow = "cold_open_provider_shadow";
     public const string LlmCall = "llm_call";
+    public const string MemoryExtraction = "memory_extraction";
+    public const string MemoryTransition = "memory_transition";
+    public const string MemoryOpportunity = "memory_opportunity";
+    public const string RuntimeStarted = "runtime_started";
+    public const string CreativeRateLimited = "creative_rate_limited";
+    public const string WorldAutonomySpeech = "world_autonomy_speech";
+}
+
+/// <summary>Writes one content-free deployment boundary after the durable telemetry sink has started.</summary>
+public sealed class RuntimeStartedTelemetryService : IHostedService
+{
+    private readonly IRecallTelemetrySink _telemetry;
+
+    public RuntimeStartedTelemetryService(IRecallTelemetrySink telemetry) => _telemetry = telemetry;
+
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        _telemetry.Emit(new TelemetryEvent(
+            Timestamp: DateTimeOffset.UtcNow,
+            EventType: TelemetryEventTypes.RuntimeStarted,
+            Outcome: "ok",
+            Stage: "startup"));
+        return Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }
 
 /// <summary>Test/CI default. Discards events.</summary>
@@ -123,6 +210,8 @@ public sealed class InMemoryTelemetrySink : IRecallTelemetrySink
 /// </summary>
 public sealed class FileBackedTelemetrySink : IRecallTelemetrySink, IHostedService
 {
+    internal const int CurrentSchemaVersion = 1;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
@@ -142,6 +231,7 @@ public sealed class FileBackedTelemetrySink : IRecallTelemetrySink, IHostedServi
     {
         try
         {
+            evt = evt with { TelemetrySchemaVersion = evt.TelemetrySchemaVersion ?? CurrentSchemaVersion };
             var path = PathForDate(evt.Timestamp);
             var line = JsonSerializer.Serialize(evt, JsonOptions) + "\n";
             var bytes = System.Text.Encoding.UTF8.GetBytes(line);

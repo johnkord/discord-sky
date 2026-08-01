@@ -4,13 +4,16 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <NoWarn>$(NoWarn);OPENAI001</NoWarn>
+    <NoWarn>$(NoWarn);OPENAI001;MEAI001</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="AngleSharp" Version="1.4.0" />
     <PackageReference Include="Discord.Net" Version="3.20.1" />
-    <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.0.0-rc1" />
+     <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.15.0" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.7" />
+     <PackageReference Include="Microsoft.Extensions.AI" Version="10.8.3" />
+     <PackageReference Include="ModelContextProtocol" Version="1.4.1" />
   </ItemGroup>
 
 </Project>

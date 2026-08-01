@@ -104,7 +104,16 @@ public sealed class InMemoryUserMemoryStore : IUserMemoryStore
             }
 
             var now = DateTimeOffset.UtcNow;
-            memories.Add(new UserMemory(content, context, now, now, 0, kind, topics, Importance: importance));
+            memories.Add(new UserMemory(
+                content,
+                context,
+                now,
+                now,
+                0,
+                kind,
+                topics,
+                Importance: importance,
+                MemoryId: MemoryIdentity.NewId()));
             _logger.LogInformation("Saved {Kind} memory for user {UserId}: \"{Content}\"", kind, userId, content);
         }
 
@@ -197,11 +206,12 @@ public sealed class InMemoryUserMemoryStore : IUserMemoryStore
 
     public Task ReplaceAllMemoriesAsync(ulong userId, IReadOnlyList<UserMemory> memories, CancellationToken ct = default)
     {
+        var normalized = MemoryIdentity.NormalizeCopy(memories);
         lock (GetUserLock(userId))
         {
             var store = _store.GetOrAdd(userId, _ => new List<UserMemory>());
             store.Clear();
-            store.AddRange(memories);
+            store.AddRange(normalized);
             _logger.LogInformation("Replaced all memories for user {UserId} with {Count} consolidated memories", userId, memories.Count);
         }
 
