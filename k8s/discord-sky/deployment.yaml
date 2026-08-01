@@ -30,8 +30,8 @@ spec:
             # Generated from ignored --steward-profile files at deploy time. Optional keeps public
             # dark deployments valid without publishing exact guild bindings.
             - configMapRef:
-              name: discord-sky-autonomy-bindings
-              optional: true
+                name: discord-sky-autonomy-bindings
+                optional: true
           resources:
             requests:
               cpu: 100m
