@@ -51,7 +51,6 @@ PROJECT="src/DiscordSky.Bot/DiscordSky.Bot.csproj"
 INCLUDE_STEWARD=0
 STEWARD_PROJECT=""
 STEWARD_PROFILES=()
-PACKAGED_STEWARD_GUILDS=()
 BUILD_CONFIGURATION="Release"
 DOCKERFILE="${REPO_ROOT}/Dockerfile"
 K8S_DIR="k8s/discord-sky"
@@ -220,7 +219,6 @@ if [[ $INCLUDE_STEWARD -ne 0 ]]; then
         exit 1
       fi
       PROFILE_GUILDS[$guild_id]="$steward_profile_path"
-      PACKAGED_STEWARD_GUILDS+=("$guild_id")
 
       for storage_key in DataPath AssetInboxPath AssetVaultPath WebhookSecretVaultPath; do
         storage_path=$(jq -er --arg key "$storage_key" '.Steward[$key] | strings | select(length > 0)' "$steward_profile_path") || {
@@ -264,18 +262,29 @@ trap 'rm -rf "$TEMP_DIR"' EXIT
 MANIFEST_WORKDIR="$TEMP_DIR/$(basename "$K8S_PATH")"
 cp -R "$K8S_PATH" "$TEMP_DIR/"
 
-if [[ ${#PACKAGED_STEWARD_GUILDS[@]} -gt 0 ]]; then
+INJECTED_STEWARD_GUILDS=()
+if [[ ${#STEWARD_PROFILES[@]} -gt 0 ]]; then
   CONFIGMAP_FILE="$MANIFEST_WORKDIR/configmap.yaml"
   if [[ ! -f "$CONFIGMAP_FILE" ]]; then
     echo "ConfigMap file not found at $CONFIGMAP_FILE" >&2
     exit 1
   fi
 
-  for guild_id in "${PACKAGED_STEWARD_GUILDS[@]}"; do
+  for bundled_profile in "$REPO_ROOT"/artifacts/discord-steward/profiles/*.json; do
+    if [[ ! -f "$bundled_profile" ]]; then
+      continue
+    fi
+    guild_id="$(basename "$bundled_profile" .json)"
+    INJECTED_STEWARD_GUILDS+=("$guild_id")
     cat >> "$CONFIGMAP_FILE" <<EOF
   WorldAutonomy__EnabledGuilds__${guild_id}__ProfilePath: "/app/steward/profiles/${guild_id}.json"
 EOF
   done
+
+  if [[ ${#INJECTED_STEWARD_GUILDS[@]} -ne ${#STEWARD_PROFILES[@]} ]]; then
+    echo "Expected ${#STEWARD_PROFILES[@]} bundled Steward profiles but found ${#INJECTED_STEWARD_GUILDS[@]}." >&2
+    exit 1
+  fi
 fi
 
 DEPLOYMENT_FILE="$MANIFEST_WORKDIR/deployment.yaml"
@@ -287,8 +296,18 @@ fi
 sed -i "s|<ACR_LOGIN_SERVER>|$ACR_LOGIN_SERVER|g" "$DEPLOYMENT_FILE"
 sed -i "s|:latest|:$IMAGE_TAG|g" "$DEPLOYMENT_FILE"
 
+RENDERED_MANIFEST="$TEMP_DIR/rendered.yaml"
+kubectl kustomize "$MANIFEST_WORKDIR" > "$RENDERED_MANIFEST"
+for guild_id in "${INJECTED_STEWARD_GUILDS[@]}"; do
+  if ! grep -q "WorldAutonomy__EnabledGuilds__${guild_id}__ProfilePath" "$RENDERED_MANIFEST"; then
+    echo "Rendered manifest omitted autonomy binding for guild $guild_id." >&2
+    exit 1
+  fi
+done
+echo "Verified ${#INJECTED_STEWARD_GUILDS[@]} private autonomy binding(s) in rendered manifest"
+
 echo "Applying manifests"
-kubectl apply -k "$MANIFEST_WORKDIR"
+kubectl apply -f "$RENDERED_MANIFEST"
 
 echo "Waiting for rollout to complete"
 kubectl rollout status deployment/discord-sky-bot -n discord-sky
