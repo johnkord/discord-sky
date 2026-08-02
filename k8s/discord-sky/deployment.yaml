@@ -45,6 +45,9 @@ spec:
           volumeMounts:
             - name: memory-data
               mountPath: /app/data/user_memories
+            - name: steward-profiles
+              mountPath: /app/steward/profiles
+              readOnly: true
           livenessProbe:
             httpGet:
               path: /healthz
@@ -61,4 +64,10 @@ spec:
         - name: memory-data
           persistentVolumeClaim:
             claimName: discord-sky-memory
+        # Private exact-guild profiles are created out-of-band by deploy.sh. Optional keeps the public
+        # dark deployment valid; enabled bindings still fail closed during startup if a key is absent.
+        - name: steward-profiles
+          secret:
+            secretName: discord-sky-steward-profiles
+            optional: true
       restartPolicy: Always

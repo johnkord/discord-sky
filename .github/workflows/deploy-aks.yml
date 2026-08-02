@@ -13,61 +13,60 @@ env:
   AKS_CLUSTER_NAME: jk-aks-2
   IMAGE_NAME: discordskybot
   K8S_NAMESPACE: discord-sky
+  STEWARD_REF: 4ca56f92fc92f85a0029fbc839091a0b264d5709
+
+permissions:
+  contents: read
+
+concurrency:
+  group: discord-sky-production
+  cancel-in-progress: false
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set image tag
+      - name: Checkout pinned Discord Steward
+        uses: actions/checkout@v4
+        with:
+          repository: johnkord/discord-steward
+          ref: ${{ env.STEWARD_REF }}
+          path: discord-steward-source
+
+      - name: Set up .NET SDKs
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Set combined image tag
         id: vars
-        run: echo "IMAGE_TAG=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+        shell: bash
+        run: echo "IMAGE_TAG=${GITHUB_SHA::7}-s${STEWARD_REF:0:7}" >> "$GITHUB_OUTPUT"
 
       - name: Azure Login
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Login to ACR
-        run: az acr login --name ${{ env.ACR_NAME }}
-
-      - name: Build and push Docker image
+      - name: Build and safely deploy combined runtime
+        shell: bash
         run: |
-          docker build -t ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.IMAGE_TAG }} .
-          docker build -t ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest .
-          docker push ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.IMAGE_TAG }}
-          docker push ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest
-
-      - name: Get AKS credentials
-        run: |
-          az aks get-credentials \
-            --resource-group ${{ env.AKS_RESOURCE_GROUP }} \
-            --name ${{ env.AKS_CLUSTER_NAME }} \
-            --overwrite-existing
-
-      - name: Prepare Kubernetes manifests
-        run: |
-          # Replace ACR placeholder with actual login server
-          sed -i "s|<ACR_LOGIN_SERVER>|${{ env.ACR_LOGIN_SERVER }}|g" k8s/discord-sky/deployment.yaml
-          # Update image tag
-          sed -i "s|:latest|:${{ steps.vars.outputs.IMAGE_TAG }}|g" k8s/discord-sky/deployment.yaml
-
-      - name: Deploy to AKS
-        run: |
-          kubectl apply -f k8s/discord-sky/namespace.yaml
-          kubectl apply -f k8s/discord-sky/configmap.yaml
-          kubectl apply -f k8s/discord-sky/pvc.yaml
-          # Note: secrets should be pre-created in the cluster or managed separately
-          kubectl apply -f k8s/discord-sky/deployment.yaml
-
-      - name: Wait for deployment rollout
-        run: |
-          kubectl rollout status deployment/discord-sky-bot \
-            -n ${{ env.K8S_NAMESPACE }} \
-            --timeout=300s
+          bash scripts/deploy.sh \
+            --aks-resource-group "${AKS_RESOURCE_GROUP}" \
+            --aks-cluster "${AKS_CLUSTER_NAME}" \
+            --acr-name "${ACR_NAME}" \
+            --image-name "${IMAGE_NAME}" \
+            --image-tag "${{ steps.vars.outputs.IMAGE_TAG }}" \
+            --include-steward \
+            --steward-project discord-steward-source/src/DiscordSteward/DiscordSteward.csproj \
+            --preserve-steward-profiles
 
       - name: Verify deployment
         run: |

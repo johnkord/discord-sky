@@ -9,6 +9,5 @@ resources:
   - pvc.yaml
   - deployment.yaml
 
-# Secrets are managed out-of-band (Azure Key Vault + CSI driver, or one-shot
-# `kubectl create secret`). They are intentionally not part of this kustomization
-# so that running deploy.sh never clobbers them. See k8s/discord-sky/README.md.
+# Credential secrets are managed out-of-band. The private Steward profile Secret is generated only in
+# deploy.sh's temporary overlay and is never committed to this public base. See k8s/discord-sky/README.md.

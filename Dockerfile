@@ -23,8 +23,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/publish .
-# scripts/deploy.sh --include-steward publishes a self-contained Linux bundle here. The tracked
-# placeholder keeps ordinary Sky-only image builds working when autonomy is not packaged.
+# scripts/deploy.sh --include-steward publishes the public self-contained Linux executable here.
+# Exact-guild profiles are never copied into image layers; Kubernetes mounts them at runtime.
+# The tracked placeholder keeps ordinary Sky-only image builds working when autonomy is not packaged.
 COPY artifacts/discord-steward/ /app/steward/
 
 ENV DOTNET_EnableDiagnostics=0

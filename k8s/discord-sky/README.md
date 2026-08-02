@@ -9,7 +9,7 @@ This directory contains the Kubernetes resources required to run the Discord Sky
 - `namespace.yaml` – creates the `discord-sky` namespace.
 - `configmap.yaml` – non-secret configuration overrides for the bot.
 - `pvc.yaml` – Azure Files state storage for Sky snapshots, memories, assets, and file-backed Steward journals.
-- `secret.template.yaml` – reference of the secret keys the bot expects. The live `discord-sky-secrets` Secret is managed imperatively in the cluster (see below) and is intentionally not part of `kustomization.yaml`, so `scripts/deploy.sh` can never overwrite it.
+- `secret.template.yaml` – reference of the credential keys the bot expects. The live `discord-sky-secrets` Secret is managed imperatively and is never overwritten by `scripts/deploy.sh`.
 - `deployment.yaml` – deploys the bot container image from `<ACR_LOGIN_SERVER>`.
 - `kustomization.yaml` – allows quick deployment via `kubectl apply -k`.
 
@@ -57,16 +57,19 @@ scripts/deploy.sh ... \
    --steward-profile config/world-autonomy/guild-222222222222222222.json
 ```
 
-This bundles the executable at `/app/steward/DiscordSteward` and copies each profile to
-`/app/steward/profiles/<guild-id>.json`. Deployment rejects duplicate guild IDs and any shared journal,
+This bundles only the executable at `/app/steward/DiscordSteward`. The deploy script validates each private
+profile locally, writes it to a temporary `discord-sky-steward-profiles` Secret overlay, and mounts that Secret
+read-only at `/app/steward/profiles`. Profile bytes never enter a container layer or the public manifest tree.
+Deployment rejects duplicate guild IDs and any shared journal,
 asset, inbox, or webhook-vault path. Before enabling a guild on the Azure Files PVC, create a real schema-4
 profile with `Steward:JournalBackend` set to `File` and keep all durable paths under a unique
 `/app/data/user_memories/world-autonomy/<guild-id>/steward` subtree. The file backend atomically replaces a
 complete journal snapshot, which is compatible with the Azure Files mount; keep `Sqlite` for deployments
 backed by a local disk filesystem. The single-replica deployment uses `Recreate` so old and new pods cannot
 update a journal snapshot concurrently. The deploy script writes exact bindings to a separate temporary
-`discord-sky-autonomy-bindings` ConfigMap. The public Deployment references it optionally, so dark
-deployments remain valid without publishing private guild IDs. The model falls back to the active Main
+`discord-sky-autonomy-bindings` ConfigMap. The public Deployment references both private resources optionally,
+so dark deployments remain valid without publishing private guild IDs. An enabled binding still fails closed if
+its matching `<guild-id>.json` Secret key is missing. The model falls back to the active Main
 workload profile unless a private environment override is supplied:
 
 ```text
@@ -76,6 +79,11 @@ WorldAutonomy__EnabledGuilds__<exact-guild-id>__ProfilePath=/app/steward/profile
 The deployment Secret needs `Discord__BotToken` in addition to `Bot__Token`, because Steward runs as a
 separate inherited-configuration child process. Do not enable a binding before the live hosted-tool-search
 smoke and disposable-guild R0 through R5 validation have passed.
+
+Automated production deployment checks out a pinned public Discord Steward revision and calls the same deploy
+script with `--preserve-steward-profiles`. That mode requires every existing private binding to have a matching
+Secret key before applying a new Deployment, verifies the image contains the executable and no profiles, and
+restores the prior revision and private resources if rollout fails.
 
 The default dark deployment sets `WorldAutonomy__ValidateStewardOnStartup=true`, which runs
 `/app/steward/DiscordSteward --probe` during Sky startup. It validates the bundled executable and its

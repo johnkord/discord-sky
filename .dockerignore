@@ -19,6 +19,7 @@ scripts/
 k8s/
 .git/
 .github/
+discord-steward-source/
 .vs/
 .vscode/
 *.md
