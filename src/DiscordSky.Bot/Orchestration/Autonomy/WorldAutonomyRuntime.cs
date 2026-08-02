@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Integrations.Images;
 using DiscordSky.Bot.Memory.Logging;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -21,7 +22,8 @@ public sealed record WorldAutonomyOpportunity(
     ulong? SourceChannelId = null,
     string? SourceChannelName = null,
     ulong? SourceAuthorId = null,
-    string? SourceAuthorDisplayName = null);
+    string? SourceAuthorDisplayName = null,
+    VisualRequestIntent VisualIntent = VisualRequestIntent.None);
 
 public sealed record WorldAutonomyRunResult(
     string? RunId,
@@ -47,6 +49,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
     private readonly IWorldAutonomyLedger _ledger;
     private readonly ILogger<WorldAutonomyOrchestrator> _logger;
     private readonly WorldAutonomySpeechTool? _speechTool;
+    private readonly WorldAutonomyVisualTool? _visualTool;
     private readonly IRecallTelemetrySink _telemetry;
     private readonly WorldAutonomyProviderCircuit _providerCircuit;
     private readonly TimeProvider _timeProvider;
@@ -59,6 +62,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         IWorldAutonomyLedger ledger,
         ILogger<WorldAutonomyOrchestrator> logger,
         WorldAutonomySpeechTool? speechTool = null,
+        WorldAutonomyVisualTool? visualTool = null,
         IRecallTelemetrySink? telemetry = null,
         WorldAutonomyProviderCircuit? providerCircuit = null,
         TimeProvider? timeProvider = null)
@@ -70,6 +74,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         _ledger = ledger;
         _logger = logger;
         _speechTool = speechTool;
+        _visualTool = visualTool;
         _telemetry = telemetry ?? new NoOpTelemetrySink();
         _timeProvider = timeProvider ?? TimeProvider.System;
         _providerCircuit = providerCircuit ?? new WorldAutonomyProviderCircuit(
@@ -164,6 +169,12 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
             {
                 supplementaryTools.Add(_speechTool.Bind(opportunity, context, runState));
             }
+            if (_visualTool is not null
+                && opportunity.SourceChannelId.HasValue
+                && opportunity.VisualIntent != VisualRequestIntent.None)
+            {
+                supplementaryTools.Add(_visualTool.Bind(opportunity, context, runState));
+            }
 
             var agent = _agentFactory.Create(
                 instrumentedClient,
@@ -176,6 +187,12 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
                 opportunity.Prompt,
                 agentSession,
                 cancellationToken: timeout.Token).ConfigureAwait(false);
+            if (_visualTool is not null
+                && opportunity.VisualIntent != VisualRequestIntent.None
+                && !runState.VisualMediumSelected)
+            {
+                _visualTool.RecordNotSelected(opportunity, context);
+            }
             if (_providerCircuit.RecordSuccess())
             {
                 EmitCircuitEvent(opportunity, "recovered", null);
@@ -276,16 +293,19 @@ public sealed class WorldAutonomyRouter
     private readonly WorldAutonomyConfiguration _configuration;
     private readonly IWorldAutonomyRunner _runner;
     private readonly ILogger<WorldAutonomyRouter> _logger;
+    private readonly WorldAutonomyPostSpeechGuard? _postSpeechGuard;
     private readonly ConcurrentDictionary<ulong, GuildMailbox> _guildMailboxes = new();
 
     public WorldAutonomyRouter(
         WorldAutonomyConfiguration configuration,
         IWorldAutonomyRunner runner,
-        ILogger<WorldAutonomyRouter> logger)
+        ILogger<WorldAutonomyRouter> logger,
+        WorldAutonomyPostSpeechGuard? postSpeechGuard = null)
     {
         _configuration = configuration;
         _runner = runner;
         _logger = logger;
+        _postSpeechGuard = postSpeechGuard;
     }
 
     /// <summary>
@@ -293,6 +313,9 @@ public sealed class WorldAutonomyRouter
     /// doing autonomy-only work for the guilds that have not.
     /// </summary>
     public bool IsEnabled(ulong guildId) => _configuration.TryGetBinding(guildId, out _);
+
+    public void RecordDeliveredSpeech(ulong guildId, ulong channelId) =>
+        _postSpeechGuard?.RecordSpeech(guildId, channelId);
 
     /// <summary>
     /// Fire-and-forget entry point for ambient opportunities. A burst coalesces to the newest room state,
@@ -308,15 +331,20 @@ public sealed class WorldAutonomyRouter
 
         var mailbox = _guildMailboxes.GetOrAdd(opportunity.GuildId, _ => new GuildMailbox());
         Task? worker = null;
+        CancellationTokenSource? debounceToReset;
         lock (mailbox.Gate)
         {
             mailbox.Ambient = new PendingOpportunity(opportunity, cancellationToken, Completion: null);
+            mailbox.AmbientReady = !_configuration.AmbientEpisodeCoalescingEnabled;
+            mailbox.AmbientVersion++;
+            debounceToReset = mailbox.AmbientDelay;
             if (!mailbox.WorkerRunning)
             {
                 mailbox.WorkerRunning = true;
                 worker = ProcessMailboxAsync(mailbox, opportunity.GuildId);
             }
         }
+        TryCancel(debounceToReset);
 
         if (worker is null)
         {
@@ -349,16 +377,22 @@ public sealed class WorldAutonomyRouter
             TaskCreationOptions.RunContinuationsAsynchronously);
         var mailbox = _guildMailboxes.GetOrAdd(opportunity.GuildId, _ => new GuildMailbox());
         var queued = false;
+        CancellationTokenSource? debounceToCancel;
         lock (mailbox.Gate)
         {
             queued = mailbox.WorkerRunning;
             mailbox.Direct.Enqueue(new PendingOpportunity(opportunity, cancellationToken, completion));
+            mailbox.Ambient = null;
+            mailbox.AmbientReady = false;
+            mailbox.AmbientVersion++;
+            debounceToCancel = mailbox.AmbientDelay;
             if (!mailbox.WorkerRunning)
             {
                 mailbox.WorkerRunning = true;
                 _ = ProcessMailboxAsync(mailbox, opportunity.GuildId);
             }
         }
+        TryCancel(debounceToCancel);
 
         if (queued)
         {
@@ -375,7 +409,9 @@ public sealed class WorldAutonomyRouter
     {
         while (true)
         {
-            PendingOpportunity? pending;
+            PendingOpportunity? pending = null;
+            CancellationTokenSource? ambientDelay = null;
+            long ambientVersion = 0;
             lock (mailbox.Gate)
             {
                 if (mailbox.Direct.Count > 0)
@@ -384,8 +420,18 @@ public sealed class WorldAutonomyRouter
                 }
                 else if (mailbox.Ambient is not null)
                 {
-                    pending = mailbox.Ambient;
-                    mailbox.Ambient = null;
+                    if (_configuration.AmbientEpisodeCoalescingEnabled && !mailbox.AmbientReady)
+                    {
+                        ambientDelay = new CancellationTokenSource();
+                        mailbox.AmbientDelay = ambientDelay;
+                        ambientVersion = mailbox.AmbientVersion;
+                    }
+                    else
+                    {
+                        pending = mailbox.Ambient;
+                        mailbox.Ambient = null;
+                        mailbox.AmbientReady = false;
+                    }
                 }
                 else
                 {
@@ -394,8 +440,47 @@ public sealed class WorldAutonomyRouter
                 }
             }
 
-            var result = await RunOpportunityAsync(pending, guildId).ConfigureAwait(false);
-            pending.Completion?.TrySetResult(result);
+            if (ambientDelay is not null)
+            {
+                var elapsed = false;
+                try
+                {
+                    await Task.Delay(_configuration.AmbientEpisodeWindow, ambientDelay.Token).ConfigureAwait(false);
+                    elapsed = true;
+                }
+                catch (OperationCanceledException) when (ambientDelay.IsCancellationRequested)
+                {
+                }
+
+                lock (mailbox.Gate)
+                {
+                    if (ReferenceEquals(mailbox.AmbientDelay, ambientDelay))
+                    {
+                        mailbox.AmbientDelay = null;
+                    }
+                    if (elapsed && mailbox.AmbientVersion == ambientVersion && mailbox.Ambient is not null)
+                    {
+                        mailbox.AmbientReady = true;
+                    }
+                }
+                ambientDelay.Dispose();
+                continue;
+            }
+
+            var selected = pending!;
+            var result = await RunOpportunityAsync(selected, guildId).ConfigureAwait(false);
+            selected.Completion?.TrySetResult(result);
+        }
+    }
+
+    private static void TryCancel(CancellationTokenSource? cancellation)
+    {
+        try
+        {
+            cancellation?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
         }
     }
 
@@ -406,6 +491,10 @@ public sealed class WorldAutonomyRouter
         try
         {
             var result = await _runner.RunAsync(pending.Opportunity, pending.CancellationToken).ConfigureAwait(false);
+            if (result.SpokeInChannel && pending.Opportunity.SourceChannelId is { } channelId)
+            {
+                RecordDeliveredSpeech(guildId, channelId);
+            }
             _logger.LogInformation(
                 "Autonomy run {RunId} completed for guild {GuildId} with status {Status}.",
                 result.RunId,
@@ -432,6 +521,12 @@ public sealed class WorldAutonomyRouter
         public Queue<PendingOpportunity> Direct { get; } = new();
 
         public PendingOpportunity? Ambient { get; set; }
+
+        public bool AmbientReady { get; set; }
+
+        public long AmbientVersion { get; set; }
+
+        public CancellationTokenSource? AmbientDelay { get; set; }
 
         public bool WorkerRunning { get; set; }
     }

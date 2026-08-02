@@ -79,6 +79,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly ConcurrentDictionary<ulong, DateTimeOffset> _lastSuccessfulExtraction = new();
     private readonly CancellationTokenSource _shutdownCts = new();
     private readonly WorldAutonomyRouter? _worldAutonomyRouter;
+    private readonly WorldAutonomyAudienceGate? _worldAutonomyAudienceGate;
     internal const int DiscordMaxMessageLength = 2000;
 
     /// <summary>How much of the room's recent conversation an autonomy run is briefed with.</summary>
@@ -133,7 +134,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         MemoryTransitionVerifier? memoryTransitionVerifier = null,
         IReactionCapabilityRegistry? reactionCapabilities = null,
         MemoryOpportunityClassifier? memoryOpportunityClassifier = null,
-        WorldAutonomyRouter? worldAutonomyRouter = null)
+        WorldAutonomyRouter? worldAutonomyRouter = null,
+        WorldAutonomyAudienceGate? worldAutonomyAudienceGate = null)
     {
         _client = client;
         _options = options.Value;
@@ -179,6 +181,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _ambientCoordinator = ambientCoordinator ?? new AmbientChannelCoordinator();
         _ambientReplyQuiet = TimeSpan.FromSeconds(Math.Max(0, chaosSettings.CurrentValue.AmbientReplyQuietSeconds));
         _worldAutonomyRouter = worldAutonomyRouter;
+        _worldAutonomyAudienceGate = worldAutonomyAudienceGate;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -452,9 +455,15 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         var payload = hasPrefix ? content[_options.CommandPrefix.Length..].TrimStart() : string.Empty;
         var mentionsBotDirectly = _client.CurrentUser is not null
             && message.MentionedUsers.Any(u => u.Id == _client.CurrentUser.Id);
+        var autonomyGuildChannel = message.Channel as SocketGuildChannel;
+        var autonomyEnabled = _worldAutonomyRouter is not null
+            && autonomyGuildChannel is not null
+            && _worldAutonomyRouter.IsEnabled(autonomyGuildChannel.Guild.Id);
+        var visualIntent = ImageIntentDetector.Classify(content);
         var isLocallyHandledImage = _imageToolService?.IsEnabled == true
-            && ImageIntentDetector.LooksLikeImageRequest(content)
-            && (mentionsBotDirectly || MentionsBotName(content));
+            && visualIntent != VisualRequestIntent.None
+            && (mentionsBotDirectly || MentionsBotName(content))
+            && !autonomyEnabled;
         var autonomyOwnsMessage = ShouldWorldAutonomyOwnMessage(
             hasPrefix,
             payload,
@@ -468,9 +477,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         // overrides, and image generation keep their specialized local handlers.
         // Deliberately ahead of the ban-word and allow-list gates below: those scope where the bot chats,
         // not where he governs.
-        if (_worldAutonomyRouter is not null
-            && message.Channel is SocketGuildChannel autonomyChannel
-            && _worldAutonomyRouter.IsEnabled(autonomyChannel.Guild.Id)
+        if (autonomyEnabled
+            && autonomyGuildChannel is { } autonomyChannel
             && autonomyOwnsMessage)
         {
             RecordMessageForContext(message);
@@ -479,6 +487,62 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             var isDirectAddress = repliedToBot.Value
                 || mentionsBotDirectly
                 || hasPrefix;
+            if (visualIntent != VisualRequestIntent.None)
+            {
+                _telemetry.Emit(new TelemetryEvent(
+                    Timestamp: DateTimeOffset.UtcNow,
+                    EventType: TelemetryEventTypes.WorldAutonomyVisual,
+                    UserHash: UserIdHash.Hash(message.Author.Id),
+                    Channel: autonomyChannel.Name,
+                    Kind: VisualIntentName(visualIntent),
+                    Outcome: "offered",
+                    MessageId: message.Id,
+                    Reason: isDirectAddress ? "direct" : "ambient"));
+            }
+            if (!isDirectAddress && _worldAutonomyAudienceGate is not null)
+            {
+                var pulse = _channelPulse?.Snapshot(message.Channel.Id, TimeSpan.FromMinutes(10));
+                var botSpokeRecently = pulse?.LastBotAt is { } lastBotAt
+                    ? DateTimeOffset.UtcNow - lastBotAt < TimeSpan.FromMinutes(2)
+                    : DidBotSpeakRecently(message.Channel, TimeSpan.FromMinutes(2));
+                SemanticMessageView? audienceView = null;
+                try
+                {
+                    audienceView = await _contextAggregator.BuildMessageViewAsync(
+                        message,
+                        includeHttpUnfurls: true,
+                        _shutdownCts.Token);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Could not build autonomy audience media context for message {MessageId}.", message.Id);
+                }
+                var gateDecision = await _worldAutonomyAudienceGate.EvaluateAsync(
+                    new WorldAutonomyAudienceRequest(
+                        GetDefaultPersona(),
+                        GetDisplayName(message.Author),
+                        audienceView?.Text ?? content,
+                        BuildAutonomyAudienceContext(message, pulse, botSpokeRecently),
+                        _empireState is { Enabled: true } ? _empireState.Current.Mood.Label : null,
+                        message.Id,
+                        autonomyChannel.Name,
+                        message.Author.Id,
+                        botSpokeRecently,
+                        autonomyChannel.Guild.Id,
+                        message.Channel.Id,
+                        audienceView?.HasMedia == true || message.Attachments.Count > 0 || message.Embeds.Count > 0,
+                        audienceView?.MediaContext),
+                    _shutdownCts.Token);
+                if (gateDecision.Action == WorldAutonomyAudienceAction.Reaction)
+                {
+                    await MaybeReactInCharacterAsync(message);
+                    return;
+                }
+                if (gateDecision.Action == WorldAutonomyAudienceAction.Silence)
+                {
+                    return;
+                }
+            }
             if (await TryHandleWorldAutonomyAsync(autonomyChannel, message, content, isDirectAddress))
             {
                 return;
@@ -2104,6 +2168,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 source: "world_autonomy",
                 triggerMessageId: message.Id,
                 replyTargetMessageId: message.Id);
+            _worldAutonomyRouter.RecordDeliveredSpeech(guildChannel.Guild.Id, message.Channel.Id);
         }
 
         _logger.LogInformation(
@@ -2150,6 +2215,19 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             .Append(content.Length == 0 ? "(no text)" : content);
 
         prompt.Append("\n\n").Append(WorldAutonomyPrompt.BuildOpportunityDirective(isDirectAddress));
+        var visualIntent = ImageIntentDetector.Classify(content);
+        if (visualIntent == VisualRequestIntent.BitmapRequired)
+        {
+            prompt.Append("\n\nThe petition explicitly asks for an image, picture, photo, or bitmap. " +
+                "Select generated_bitmap through create_visual. Text art is not a substitute. If rendering is " +
+                "unavailable or refused, say so in character rather than pretending an attachment exists.");
+        }
+        else if (visualIntent == VisualRequestIntent.MediumChoice)
+        {
+            prompt.Append("\n\nThis is a visual request whose medium is deliberately yours to choose. " +
+                "Select exactly one medium through create_visual: generated_bitmap for the image foundry, or " +
+                "text_art for an ASCII proclamation. Choose whichever better serves your idea.");
+        }
 
         return new WorldAutonomyOpportunity(
             guildChannel.Guild.Id,
@@ -2166,8 +2244,48 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             SourceChannelId: message.Channel.Id,
             SourceChannelName: guildChannel.Name,
             SourceAuthorId: message.Author.Id,
-            SourceAuthorDisplayName: GetDisplayName(message.Author));
+            SourceAuthorDisplayName: GetDisplayName(message.Author),
+            VisualIntent: visualIntent);
     }
+
+    private string? BuildAutonomyAudienceContext(
+        SocketUserMessage message,
+        ChannelPulseSnapshot? pulse,
+        bool botSpokeRecently)
+    {
+        var context = new StringBuilder();
+        if (pulse is not null)
+        {
+            context.Append("Channel pulse: ").Append(pulse.DistinctHumansInWindow)
+                .Append(" distinct human(s) active in the last ten minutes. ");
+        }
+
+        context.Append("Robotnik spoke in the last two minutes: ")
+            .Append(botSpokeRecently ? "yes" : "no").Append('.');
+        var botId = _client.CurrentUser?.Id;
+        var recentRobotnik = botId.HasValue
+            ? message.Channel.GetCachedMessages(AutonomyHistoryLimit)
+                .Where(cached => cached.Author.Id == botId.Value && !string.IsNullOrWhiteSpace(cached.Content))
+                .OrderByDescending(cached => cached.Timestamp)
+                .Take(2)
+                .Reverse()
+                .Select(cached => cached.Content.Replace('\n', ' ').Trim())
+            : [];
+        foreach (var line in recentRobotnik)
+        {
+            context.Append(" Recent Robotnik turn: ")
+                .Append(line.Length <= 160 ? line : string.Concat(line.AsSpan(0, 160), "..."));
+        }
+
+        return context.ToString();
+    }
+
+    private static string VisualIntentName(VisualRequestIntent intent) => intent switch
+    {
+        VisualRequestIntent.BitmapRequired => "bitmap_required",
+        VisualRequestIntent.MediumChoice => "medium_choice",
+        _ => "none",
+    };
 
     private string RenderAutonomyHistory(SocketUserMessage message)
     {

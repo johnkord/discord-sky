@@ -117,6 +117,7 @@ public sealed class WorldAutonomyRunState
     private readonly SemaphoreSlim _dispatchGate = new(1, 1);
     private int _nextSequence;
     private int _channelSpeechCount;
+    private int _visualMediumSelectionCount;
 
     public WorldAutonomyRunState(
         WorldAutonomyRunContext context,
@@ -142,6 +143,11 @@ public sealed class WorldAutonomyRunState
     /// hear from him before the run is considered answered.
     /// </summary>
     public bool SpokeInChannel => Volatile.Read(ref _channelSpeechCount) > 0;
+
+    public bool VisualMediumSelected => Volatile.Read(ref _visualMediumSelectionCount) > 0;
+
+    internal bool TrySelectVisualMedium() =>
+        Interlocked.CompareExchange(ref _visualMediumSelectionCount, 1, 0) == 0;
 
     internal Task RecordDiscordDeliveryAsync(
         ulong channelId,

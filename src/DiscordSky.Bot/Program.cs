@@ -47,11 +47,15 @@ builder.Services.AddSingleton<IWorldAutonomyLedger>(sp => sp.GetRequiredService<
 builder.Services.AddSingleton<StewardMcpSupervisor>();
 builder.Services.AddSingleton<WorldAutonomyAgentFactory>();
 builder.Services.AddSingleton<WorldAutonomyProviderCircuit>();
+builder.Services.AddSingleton<WorldAutonomyPostSpeechGuard>();
 builder.Services.AddSingleton<IWorldAutonomyMessageTransport, DiscordWorldAutonomyMessageTransport>();
+builder.Services.AddSingleton<IWorldAutonomyVisualTransport, DiscordWorldAutonomyVisualTransport>();
 builder.Services.AddSingleton<WorldAutonomySpeechTool>();
+builder.Services.AddSingleton<WorldAutonomyVisualTool>();
 builder.Services.AddSingleton<WorldAutonomyOrchestrator>();
 builder.Services.AddSingleton<IWorldAutonomyRunner>(sp => sp.GetRequiredService<WorldAutonomyOrchestrator>());
 builder.Services.AddSingleton<WorldAutonomyRouter>();
+builder.Services.AddSingleton<WorldAutonomyAudienceGate>();
 builder.Services.AddHostedService<WorldAutonomyStewardProbeService>();
 builder.Services.AddHostedService<WorldAutonomyStewardHealthService>();
 builder.Services.AddHostedService<WorldAutonomyRecoveryService>();

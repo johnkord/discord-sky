@@ -21,7 +21,32 @@ public sealed class WorldAutonomyOptions
 
     public string LedgerPath { get; init; } = "data/world-autonomy/world-autonomy.json";
 
+    public WorldAutonomyAmbientGateMode AmbientGateMode { get; init; } = WorldAutonomyAmbientGateMode.Off;
+
+    public double AmbientFullThreshold { get; init; } = 0.65;
+
+    public double AmbientReactionThreshold { get; init; } = 0.35;
+
+    public double AmbientRecentSpeechPenalty { get; init; } = 0.15;
+
+    public bool AmbientEpisodeCoalescingEnabled { get; init; }
+
+    public int AmbientEpisodeWindowMilliseconds { get; init; } = 1500;
+
+    public bool AmbientPostSpeechGuardEnabled { get; init; }
+
+    public int AmbientPostSpeechHumanTurns { get; init; } = 2;
+
+    public int AmbientPostSpeechWindowMinutes { get; init; } = 10;
+
     public Dictionary<string, WorldAutonomyGuildOptions> EnabledGuilds { get; init; } = new(StringComparer.Ordinal);
+}
+
+public enum WorldAutonomyAmbientGateMode
+{
+    Off,
+    Shadow,
+    Live,
 }
 
 public sealed class WorldAutonomyGuildOptions
@@ -45,6 +70,15 @@ public sealed class WorldAutonomyConfiguration
         TimeSpan sessionTimeout,
         int requestIdPoolSize,
         bool validateStewardOnStartup,
+        WorldAutonomyAmbientGateMode ambientGateMode,
+        double ambientFullThreshold,
+        double ambientReactionThreshold,
+        double ambientRecentSpeechPenalty,
+        bool ambientEpisodeCoalescingEnabled,
+        TimeSpan ambientEpisodeWindow,
+        bool ambientPostSpeechGuardEnabled,
+        int ambientPostSpeechHumanTurns,
+        TimeSpan ambientPostSpeechWindow,
         ImmutableDictionary<ulong, WorldAutonomyGuildBinding> enabledGuilds)
     {
         StewardCommand = stewardCommand;
@@ -53,6 +87,15 @@ public sealed class WorldAutonomyConfiguration
         SessionTimeout = sessionTimeout;
         RequestIdPoolSize = requestIdPoolSize;
         ValidateStewardOnStartup = validateStewardOnStartup;
+        AmbientGateMode = ambientGateMode;
+        AmbientFullThreshold = ambientFullThreshold;
+        AmbientReactionThreshold = ambientReactionThreshold;
+        AmbientRecentSpeechPenalty = ambientRecentSpeechPenalty;
+        AmbientEpisodeCoalescingEnabled = ambientEpisodeCoalescingEnabled;
+        AmbientEpisodeWindow = ambientEpisodeWindow;
+        AmbientPostSpeechGuardEnabled = ambientPostSpeechGuardEnabled;
+        AmbientPostSpeechHumanTurns = ambientPostSpeechHumanTurns;
+        AmbientPostSpeechWindow = ambientPostSpeechWindow;
         EnabledGuilds = enabledGuilds;
     }
 
@@ -67,6 +110,24 @@ public sealed class WorldAutonomyConfiguration
     public int RequestIdPoolSize { get; }
 
     public bool ValidateStewardOnStartup { get; }
+
+    public WorldAutonomyAmbientGateMode AmbientGateMode { get; }
+
+    public double AmbientFullThreshold { get; }
+
+    public double AmbientReactionThreshold { get; }
+
+    public double AmbientRecentSpeechPenalty { get; }
+
+    public bool AmbientEpisodeCoalescingEnabled { get; }
+
+    public TimeSpan AmbientEpisodeWindow { get; }
+
+    public bool AmbientPostSpeechGuardEnabled { get; }
+
+    public int AmbientPostSpeechHumanTurns { get; }
+
+    public TimeSpan AmbientPostSpeechWindow { get; }
 
     public ImmutableDictionary<ulong, WorldAutonomyGuildBinding> EnabledGuilds { get; }
 
@@ -92,6 +153,41 @@ public sealed class WorldAutonomyConfiguration
         if (string.IsNullOrWhiteSpace(options.LedgerPath))
         {
             throw new InvalidOperationException("WorldAutonomy:LedgerPath must be non-empty.");
+        }
+
+        if (options.AmbientFullThreshold is < 0.0 or > 1.0)
+        {
+            throw new InvalidOperationException("WorldAutonomy:AmbientFullThreshold must be between 0 and 1.");
+        }
+
+        if (options.AmbientReactionThreshold is < 0.0 or > 1.0
+            || options.AmbientReactionThreshold > options.AmbientFullThreshold)
+        {
+            throw new InvalidOperationException(
+                "WorldAutonomy:AmbientReactionThreshold must be between 0 and AmbientFullThreshold.");
+        }
+
+        if (options.AmbientRecentSpeechPenalty is < 0.0 or > 1.0)
+        {
+            throw new InvalidOperationException("WorldAutonomy:AmbientRecentSpeechPenalty must be between 0 and 1.");
+        }
+
+        if (options.AmbientEpisodeWindowMilliseconds is < 0 or > 10000)
+        {
+            throw new InvalidOperationException(
+                "WorldAutonomy:AmbientEpisodeWindowMilliseconds must be between 0 and 10000.");
+        }
+
+        if (options.AmbientPostSpeechHumanTurns is < 1 or > 10)
+        {
+            throw new InvalidOperationException(
+                "WorldAutonomy:AmbientPostSpeechHumanTurns must be between 1 and 10.");
+        }
+
+        if (options.AmbientPostSpeechWindowMinutes is < 1 or > 60)
+        {
+            throw new InvalidOperationException(
+                "WorldAutonomy:AmbientPostSpeechWindowMinutes must be between 1 and 60.");
         }
 
         var bindings = ImmutableDictionary.CreateBuilder<ulong, WorldAutonomyGuildBinding>();
@@ -142,6 +238,15 @@ public sealed class WorldAutonomyConfiguration
             TimeSpan.FromMinutes(options.SessionTimeoutMinutes),
             options.RequestIdPoolSize,
             options.ValidateStewardOnStartup,
+            options.AmbientGateMode,
+            options.AmbientFullThreshold,
+            options.AmbientReactionThreshold,
+            options.AmbientRecentSpeechPenalty,
+            options.AmbientEpisodeCoalescingEnabled,
+            TimeSpan.FromMilliseconds(options.AmbientEpisodeWindowMilliseconds),
+            options.AmbientPostSpeechGuardEnabled,
+            options.AmbientPostSpeechHumanTurns,
+            TimeSpan.FromMinutes(options.AmbientPostSpeechWindowMinutes),
             bindings.ToImmutable());
     }
 }

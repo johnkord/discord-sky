@@ -14,14 +14,37 @@ public static class ImageIntentDetector
     // Each branch requires the verb to be followed by a plausible target, which keeps idioms like
     // "the match was a draw" or "draw money from the bank" from matching.
     private static readonly Regex Pattern = new(
-        @"\b(?:draw|sketch|paint|render|illustrate)\s+(?:me|us|him|her|it|them|this|that|the|a|an|my|your|our|their|some)\b" +
-        @"|\bmake (?:me |us )?(?:a |an )?(?:picture|image|drawing|portrait|poster|painting)\b" +
-        @"|\b(?:picture|portrait|poster|painting|drawing|image)\s+of\b" +
+        @"\b(?:draw|sketch|paint|render|illustrate)\s+(?:me|us|him|her|it|them|this|that|the|a|an|my|your|our|their|some|something)\b" +
+        @"|\b(?:make|generate|create|send|give|show) (?:me |us )?(?:a |an )?(?:picture|image|photo|photograph|drawing|portrait|poster|painting)\b" +
+        @"|\b(?:picture|photo|photograph|portrait|poster|painting|drawing|image)\s+of\b" +
         @"|\bshow (?:me|us)\s+(?:a|an|your|the)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    private static readonly Regex ExplicitBitmapPattern = new(
+        @"\b(?:bitmap|image|photo|photograph|picture)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     public static bool LooksLikeImageRequest(string? text) =>
-        !string.IsNullOrWhiteSpace(text) && Pattern.IsMatch(text);
+        Classify(text) != VisualRequestIntent.None;
+
+    public static VisualRequestIntent Classify(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || !Pattern.IsMatch(text))
+        {
+            return VisualRequestIntent.None;
+        }
+
+        return ExplicitBitmapPattern.IsMatch(text)
+            ? VisualRequestIntent.BitmapRequired
+            : VisualRequestIntent.MediumChoice;
+    }
+}
+
+public enum VisualRequestIntent
+{
+    None,
+    MediumChoice,
+    BitmapRequired,
 }
 
 /// <summary>

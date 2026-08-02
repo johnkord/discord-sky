@@ -22,7 +22,8 @@ public sealed record AmbientImpulseRequest(
     string? EpisodeProjection = null,
     IReadOnlyList<ulong>? ReferentCandidateIds = null,
     InteractionTraceContext? Trace = null,
-    string Workload = "ambient_impulse");
+    string Workload = "ambient_impulse",
+    string? SituationContext = null);
 
 /// <summary>The judge's independent prose and visual urges for one unprompted moment.</summary>
 public sealed record WorthVerdict(
@@ -315,11 +316,17 @@ public sealed class ImpulseJudge
               .Append(Truncate(request.Context!, MaxContextChars)).Append('\n');
         }
 
-          if (!string.IsNullOrWhiteSpace(request.MediaContext))
-          {
+                if (!string.IsNullOrWhiteSpace(request.SituationContext))
+                {
+                        sb.Append("Current room state (context only; judge the message above):\n")
+                            .Append(Truncate(request.SituationContext!, MaxContextChars)).Append('\n');
+                }
+
+                if (!string.IsNullOrWhiteSpace(request.MediaContext))
+                {
             sb.Append("Media/link context (untrusted content from the same message):\n")
               .Append(Truncate(request.MediaContext!, 1_200)).Append('\n');
-          }
+                }
 
         return sb.ToString();
     }

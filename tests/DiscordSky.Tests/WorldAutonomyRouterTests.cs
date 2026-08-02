@@ -206,16 +206,130 @@ public sealed class WorldAutonomyRouterTests
         Assert.Equal(0, runner.CallCount);
     }
 
-    private static WorldAutonomyRouter Router(IWorldAutonomyRunner runner) => new(
-        EnabledConfiguration(),
+    [Fact]
+    public async Task Router_CoalescesRapidFragmentsBeforeStartingTheFirstAmbientRun()
+    {
+        var runner = new SequencedRunner();
+        var router = Router(runner, coalescingEnabled: true, episodeWindowMilliseconds: 40);
+
+        var worker = router.TryRunAsync(
+            new WorldAutonomyOpportunity(667956000757776386, "discord_message", "A bare link."),
+            CancellationToken.None);
+        await router.TryRunAsync(
+            new WorldAutonomyOpportunity(667956000757776386, "discord_message", "The comment after the link."),
+            CancellationToken.None);
+
+        Assert.Equal(0, runner.CallCount);
+        await runner.WaitForStartAsync(0);
+        runner.Release(0);
+        await worker;
+
+        Assert.Equal(["The comment after the link."], runner.Prompts);
+    }
+
+    [Fact]
+    public async Task Router_DirectAudienceCancelsPendingAmbientEpisode()
+    {
+        var runner = new SequencedRunner();
+        var router = Router(runner, coalescingEnabled: true, episodeWindowMilliseconds: 5000);
+        var worker = router.TryRunAsync(
+            new WorldAutonomyOpportunity(667956000757776386, "discord_message", "Ambient fragment."),
+            CancellationToken.None);
+
+        var direct = router.TryRunDirectAsync(
+            new WorldAutonomyOpportunity(
+                667956000757776386,
+                "discord_message",
+                "Direct petition.",
+                IsDirectAddress: true),
+            CancellationToken.None);
+
+        await runner.WaitForStartAsync(0);
+        runner.Release(0);
+        await Task.WhenAll(worker, direct);
+
+        Assert.Equal(["Direct petition."], runner.Prompts);
+    }
+
+    [Fact]
+    public async Task Router_DeliveredSpeechActivatesPostSpeechGuard()
+    {
+        var runner = new SequencedRunner();
+        runner.Speak(0);
+        runner.Release(0);
+        var configuration = WorldAutonomyConfiguration.FromOptions(new WorldAutonomyOptions
+        {
+            StewardCommand = "dotnet",
+            AmbientPostSpeechGuardEnabled = true,
+            AmbientPostSpeechHumanTurns = 2,
+            EnabledGuilds = new Dictionary<string, WorldAutonomyGuildOptions>
+            {
+                ["667956000757776386"] = new() { ProfilePath = "profile.json" }
+            }
+        });
+        var guard = new WorldAutonomyPostSpeechGuard(configuration);
+        var router = new WorldAutonomyRouter(
+            configuration,
+            runner,
+            NullLogger<WorldAutonomyRouter>.Instance,
+            guard);
+
+        await router.TryRunAsync(
+            new WorldAutonomyOpportunity(
+                667956000757776386,
+                "discord_message",
+                "A worthy opening.",
+                SourceChannelId: 6001),
+            CancellationToken.None);
+
+        var followUp = guard.ObserveAmbient(667956000757776386, 6001, "lol", hasMedia: false);
+        Assert.False(followUp.Allowed);
+        Assert.Equal("post_speech_waiting", followUp.Reason);
+    }
+
+    [Fact]
+    public void Router_ExternalFallbackDeliveryActivatesPostSpeechGuard()
+    {
+        var configuration = WorldAutonomyConfiguration.FromOptions(new WorldAutonomyOptions
+        {
+            StewardCommand = "dotnet",
+            AmbientPostSpeechGuardEnabled = true,
+            AmbientPostSpeechHumanTurns = 2,
+            EnabledGuilds = new Dictionary<string, WorldAutonomyGuildOptions>
+            {
+                ["667956000757776386"] = new() { ProfilePath = "profile.json" }
+            }
+        });
+        var guard = new WorldAutonomyPostSpeechGuard(configuration);
+        var router = new WorldAutonomyRouter(
+            configuration,
+            new SequencedRunner(),
+            NullLogger<WorldAutonomyRouter>.Instance,
+            guard);
+
+        router.RecordDeliveredSpeech(667956000757776386, 6001);
+
+        var followUp = guard.ObserveAmbient(667956000757776386, 6001, "lol", hasMedia: false);
+        Assert.False(followUp.Allowed);
+    }
+
+    private static WorldAutonomyRouter Router(
+        IWorldAutonomyRunner runner,
+        bool coalescingEnabled = false,
+        int episodeWindowMilliseconds = 1500) => new(
+        EnabledConfiguration(coalescingEnabled, episodeWindowMilliseconds),
         runner,
         NullLogger<WorldAutonomyRouter>.Instance);
 
-    private static WorldAutonomyConfiguration EnabledConfiguration() =>
+    private static WorldAutonomyConfiguration EnabledConfiguration(
+        bool coalescingEnabled = false,
+        int episodeWindowMilliseconds = 1500) =>
         WorldAutonomyConfiguration.FromOptions(new WorldAutonomyOptions
         {
             StewardCommand = "dotnet",
             StewardArguments = ["/app/steward/DiscordSteward.dll"],
+            AmbientEpisodeCoalescingEnabled = coalescingEnabled,
+            AmbientEpisodeWindowMilliseconds = episodeWindowMilliseconds,
             EnabledGuilds = new Dictionary<string, WorldAutonomyGuildOptions>
             {
                 ["667956000757776386"] = new() { ProfilePath = "/app/steward/profiles/funhouse.json" }
@@ -233,6 +347,7 @@ public sealed class WorldAutonomyRouterTests
             .Select(_ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously))
             .ToArray();
         private readonly Exception?[] _failures = new Exception?[Capacity];
+        private readonly bool[] _speaks = new bool[Capacity];
         private int _callCount;
 
         internal int CallCount => Volatile.Read(ref _callCount);
@@ -254,6 +369,8 @@ public sealed class WorldAutonomyRouterTests
         internal void Release(int index) => _release[index].TrySetResult();
 
         internal void Fail(int index, Exception exception) => _failures[index] = exception;
+
+        internal void Speak(int index) => _speaks[index] = true;
 
         public async Task<WorldAutonomyRunResult> RunAsync(
             WorldAutonomyOpportunity opportunity,
@@ -277,7 +394,8 @@ public sealed class WorldAutonomyRouterTests
                 opportunity.GuildId,
                 "succeeded",
                 FinalText: null,
-                FailureReason: null);
+                FailureReason: null,
+                SpokeInChannel: _speaks[index]);
         }
     }
 }

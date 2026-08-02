@@ -105,7 +105,7 @@ public sealed class WorldAutonomySpeechTool
             description: "Speak as Robotnik in the Discord channel that summoned you. This is your normal voice and preserves reply, reaction, transcript, and run attribution. Long text is split safely.");
     }
 
-    private async Task<WorldAutonomySpeechResult> SendAsync(
+    internal async Task<WorldAutonomySpeechResult> SendAsync(
         WorldAutonomyOpportunity opportunity,
         WorldAutonomyRunContext context,
         WorldAutonomyRunState run,

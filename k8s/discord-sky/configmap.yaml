@@ -14,6 +14,19 @@ data:
   WorldAutonomy__RequestIdPoolSize: "40"
   WorldAutonomy__ValidateStewardOnStartup: "true"
   WorldAutonomy__LedgerPath: "/app/data/user_memories/world-autonomy/world-autonomy.json"
+  # Host-side attention allocation. Shadow records utility-model silence/reaction/full predictions while the
+  # current xhigh behavior remains intact. Flip only AmbientGateMode to Live after the joined calibration review.
+  WorldAutonomy__AmbientGateMode: "Shadow"
+  WorldAutonomy__AmbientFullThreshold: "0.65"
+  WorldAutonomy__AmbientReactionThreshold: "0.35"
+  WorldAutonomy__AmbientRecentSpeechPenalty: "0.15"
+  # A short live debounce merges link-plus-comment fragments before xhigh starts. The post-speech material gate
+  # follows AmbientGateMode, so it is telemetry-only during this shadow stage.
+  WorldAutonomy__AmbientEpisodeCoalescingEnabled: "true"
+  WorldAutonomy__AmbientEpisodeWindowMilliseconds: "1500"
+  WorldAutonomy__AmbientPostSpeechGuardEnabled: "true"
+  WorldAutonomy__AmbientPostSpeechHumanTurns: "2"
+  WorldAutonomy__AmbientPostSpeechWindowMinutes: "10"
   Bot__Status: "SnooPING AS usual"
   Bot__CommandPrefix: "!sky"
   Bot__RespondToDirectMention: "true"

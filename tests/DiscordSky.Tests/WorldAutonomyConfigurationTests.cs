@@ -90,4 +90,31 @@ public sealed class WorldAutonomyConfigurationTests
 
         Assert.True(configuration.ValidateStewardOnStartup);
     }
+
+    [Fact]
+    public void Configuration_PreservesAmbientAttentionControls()
+    {
+        var configuration = WorldAutonomyConfiguration.FromOptions(new WorldAutonomyOptions
+        {
+            AmbientGateMode = WorldAutonomyAmbientGateMode.Shadow,
+            AmbientFullThreshold = 0.7,
+            AmbientReactionThreshold = 0.4,
+            AmbientRecentSpeechPenalty = 0.1,
+            AmbientEpisodeCoalescingEnabled = true,
+            AmbientEpisodeWindowMilliseconds = 1250,
+            AmbientPostSpeechGuardEnabled = true,
+            AmbientPostSpeechHumanTurns = 3,
+            AmbientPostSpeechWindowMinutes = 8,
+        });
+
+        Assert.Equal(WorldAutonomyAmbientGateMode.Shadow, configuration.AmbientGateMode);
+        Assert.Equal(0.7, configuration.AmbientFullThreshold);
+        Assert.Equal(0.4, configuration.AmbientReactionThreshold);
+        Assert.Equal(0.1, configuration.AmbientRecentSpeechPenalty);
+        Assert.True(configuration.AmbientEpisodeCoalescingEnabled);
+        Assert.Equal(TimeSpan.FromMilliseconds(1250), configuration.AmbientEpisodeWindow);
+        Assert.True(configuration.AmbientPostSpeechGuardEnabled);
+        Assert.Equal(3, configuration.AmbientPostSpeechHumanTurns);
+        Assert.Equal(TimeSpan.FromMinutes(8), configuration.AmbientPostSpeechWindow);
+    }
 }

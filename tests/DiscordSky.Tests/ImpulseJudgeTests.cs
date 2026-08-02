@@ -222,6 +222,22 @@ public class ImpulseJudgeTests
     }
 
     [Fact]
+    public void BuildUserMessage_LabelsRoomStateSeparatelyFromReplyContext()
+    {
+        var message = ImpulseJudge.BuildUserMessage(new AmbientImpulseRequest(
+            "Robotnik",
+            "bob",
+            "lol",
+            Context: null,
+            MoodLabel: null,
+            SituationContext: "Robotnik spoke in the last two minutes: yes."));
+
+        Assert.Contains("Current room state", message);
+        Assert.Contains("Robotnik spoke", message);
+        Assert.DoesNotContain("message it replies to", message);
+    }
+
+    [Fact]
     public void BuildUserMessage_MediaOnly_IncludesUntrustedMediaContext()
     {
         var m = ImpulseJudge.BuildUserMessage(new AmbientImpulseRequest(
