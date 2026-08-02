@@ -163,6 +163,7 @@ public static class TelemetryEventTypes
     public const string RuntimeStarted = "runtime_started";
     public const string CreativeRateLimited = "creative_rate_limited";
     public const string WorldAutonomySpeech = "world_autonomy_speech";
+    public const string WorldAutonomyCircuit = "world_autonomy_circuit";
 }
 
 /// <summary>Writes one content-free deployment boundary after the durable telemetry sink has started.</summary>

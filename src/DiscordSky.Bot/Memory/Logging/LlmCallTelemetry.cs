@@ -18,13 +18,18 @@ public static class LlmCallTelemetry
         string? evaluationId = null,
         InteractionTraceContext? trace = null)
     {
-        Metadata.Remove(options);
-        Metadata.Add(options, new LlmCallMetadata(
+        Tag(options, new LlmCallMetadata(
             workload,
             profile.ReasoningEffort,
             messageId,
             evaluationId,
             trace));
+    }
+
+    internal static void Tag(ChatOptions options, LlmCallMetadata metadata)
+    {
+        Metadata.Remove(options);
+        Metadata.Add(options, metadata);
     }
 
     internal static (ChatOptions? Forwarded, LlmCallMetadata? Metadata) Prepare(ChatOptions? options)
@@ -35,6 +40,56 @@ public static class LlmCallTelemetry
         }
         return (options, metadata);
     }
+}
+
+/// <summary>Attaches one shared metadata/call-index session to options after outer agents clone them.</summary>
+internal sealed class LlmCallTaggingChatClient : IChatClient
+{
+    private readonly IChatClient _inner;
+    private readonly LlmCallMetadata _metadata;
+
+    public LlmCallTaggingChatClient(
+        IChatClient inner,
+        string workload,
+        LlmWorkloadProfile profile,
+        ulong? messageId = null,
+        string? evaluationId = null,
+        InteractionTraceContext? trace = null)
+    {
+        _inner = inner;
+        _metadata = new LlmCallMetadata(workload, profile.ReasoningEffort, messageId, evaluationId, trace);
+    }
+
+    public Task<ChatResponse> GetResponseAsync(
+        IEnumerable<ChatMessage> messages,
+        ChatOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (options is not null)
+        {
+            LlmCallTelemetry.Tag(options, _metadata);
+        }
+        return _inner.GetResponseAsync(messages, options, cancellationToken);
+    }
+
+    public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+        IEnumerable<ChatMessage> messages,
+        ChatOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (options is not null)
+        {
+            LlmCallTelemetry.Tag(options, _metadata);
+        }
+        return _inner.GetStreamingResponseAsync(messages, options, cancellationToken);
+    }
+
+    public object? GetService(Type serviceType, object? serviceKey = null) =>
+        serviceType == typeof(LlmCallTaggingChatClient)
+            ? this
+            : _inner.GetService(serviceType, serviceKey);
+
+    public void Dispose() => _inner.Dispose();
 }
 
 internal sealed class LlmCallMetadata

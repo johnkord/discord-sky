@@ -46,6 +46,7 @@ builder.Services.AddSingleton<FileBackedWorldAutonomyLedger>();
 builder.Services.AddSingleton<IWorldAutonomyLedger>(sp => sp.GetRequiredService<FileBackedWorldAutonomyLedger>());
 builder.Services.AddSingleton<StewardMcpSupervisor>();
 builder.Services.AddSingleton<WorldAutonomyAgentFactory>();
+builder.Services.AddSingleton<WorldAutonomyProviderCircuit>();
 builder.Services.AddSingleton<IWorldAutonomyMessageTransport, DiscordWorldAutonomyMessageTransport>();
 builder.Services.AddSingleton<WorldAutonomySpeechTool>();
 builder.Services.AddSingleton<WorldAutonomyOrchestrator>();

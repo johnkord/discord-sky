@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Memory.Logging;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -46,6 +47,8 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
     private readonly IWorldAutonomyLedger _ledger;
     private readonly ILogger<WorldAutonomyOrchestrator> _logger;
     private readonly WorldAutonomySpeechTool? _speechTool;
+    private readonly IRecallTelemetrySink _telemetry;
+    private readonly WorldAutonomyProviderCircuit _providerCircuit;
     private readonly TimeProvider _timeProvider;
 
     public WorldAutonomyOrchestrator(
@@ -56,6 +59,8 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         IWorldAutonomyLedger ledger,
         ILogger<WorldAutonomyOrchestrator> logger,
         WorldAutonomySpeechTool? speechTool = null,
+        IRecallTelemetrySink? telemetry = null,
+        WorldAutonomyProviderCircuit? providerCircuit = null,
         TimeProvider? timeProvider = null)
     {
         _configuration = configuration;
@@ -65,7 +70,11 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         _ledger = ledger;
         _logger = logger;
         _speechTool = speechTool;
+        _telemetry = telemetry ?? new NoOpTelemetrySink();
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _providerCircuit = providerCircuit ?? new WorldAutonomyProviderCircuit(
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<WorldAutonomyProviderCircuit>.Instance,
+            _timeProvider);
     }
 
     public async Task<WorldAutonomyRunResult> RunAsync(
@@ -89,6 +98,17 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         if (string.IsNullOrWhiteSpace(provider.ApiKey))
         {
             throw new InvalidOperationException("World autonomy requires an API key for the active LLM provider.");
+        }
+
+        if (!_providerCircuit.TryEnter(out var circuit))
+        {
+            EmitCircuitEvent(opportunity, "suppressed", circuit.Reason);
+            return new WorldAutonomyRunResult(
+                RunId: null,
+                opportunity.GuildId,
+                "provider_circuit_open",
+                opportunity.IsDirectAddress ? BuildProviderUnavailableDecree() : null,
+                circuit.Reason);
         }
 
         var session = await _stewardSupervisor.GetSessionAsync(opportunity.GuildId, cancellationToken).ConfigureAwait(false);
@@ -129,7 +149,15 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
                 startedAt,
                 cancellationToken).ConfigureAwait(false);
 
-            using var rawClient = LlmChatClientFactory.Create(provider, model);
+            using var instrumentedClient = new LlmCallTaggingChatClient(
+                new TelemetryChatClient(
+                    LlmChatClientFactory.Create(provider, model),
+                    _llmOptions.CurrentValue.ActiveProvider,
+                    _telemetry),
+                "world_autonomy",
+                mainProfile with { Model = model },
+                messageId: ulong.TryParse(opportunity.SourceMessageId, out var sourceMessageId) ? sourceMessageId : null,
+                evaluationId: context.RunId);
             var runState = new WorldAutonomyRunState(context, _ledger, catalog.Tools, _timeProvider);
             var supplementaryTools = catalog.SupplementaryTools.Cast<AITool>().ToList();
             if (_speechTool is not null && opportunity.SourceChannelId.HasValue)
@@ -138,7 +166,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
             }
 
             var agent = _agentFactory.Create(
-                rawClient,
+                instrumentedClient,
                 runState,
                 catalog.Tools,
                 supplementaryTools,
@@ -148,6 +176,10 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
                 opportunity.Prompt,
                 agentSession,
                 cancellationToken: timeout.Token).ConfigureAwait(false);
+            if (_providerCircuit.RecordSuccess())
+            {
+                EmitCircuitEvent(opportunity, "recovered", null);
+            }
             await _ledger.CompleteRunAsync(
                 context.RunId,
                 WorldAutonomyRunStatuses.Succeeded,
@@ -165,6 +197,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && timeout.IsCancellationRequested)
         {
+            _providerCircuit.RecordFailure(new TimeoutException("World autonomy provider probe timed out."));
             await _ledger.CompleteRunAsync(
                 context.RunId,
                 WorldAutonomyRunStatuses.TimedOut,
@@ -181,6 +214,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         }
         catch (OperationCanceledException)
         {
+            _providerCircuit.RecordFailure(new OperationCanceledException("World autonomy provider probe was cancelled."));
             await _ledger.CompleteRunAsync(
                 context.RunId,
                 WorldAutonomyRunStatuses.Failed,
@@ -198,6 +232,11 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         }
         catch (Exception exception)
         {
+            var circuitOpened = _providerCircuit.RecordFailure(exception);
+            if (circuitOpened)
+            {
+                EmitCircuitEvent(opportunity, "opened", _providerCircuit.Snapshot().Reason);
+            }
             _logger.LogError(exception, "Autonomy run {RunId} failed for guild {GuildId}.", context.RunId, opportunity.GuildId);
             await _ledger.CompleteRunAsync(
                 context.RunId,
@@ -210,10 +249,23 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
                 context.RunId,
                 opportunity.GuildId,
                 WorldAutonomyRunStatuses.Failed,
-                FinalText: null,
+                FinalText: circuitOpened && opportunity.IsDirectAddress ? BuildProviderUnavailableDecree() : null,
                 FailureReason: exception.GetType().Name);
         }
     }
+
+    private void EmitCircuitEvent(WorldAutonomyOpportunity opportunity, string outcome, string? reason) =>
+        _telemetry.Emit(new TelemetryEvent(
+            Timestamp: _timeProvider.GetUtcNow(),
+            EventType: TelemetryEventTypes.WorldAutonomyCircuit,
+            Kind: opportunity.IsDirectAddress ? "direct" : "ambient",
+            Outcome: outcome,
+            MessageId: ulong.TryParse(opportunity.SourceMessageId, out var messageId) ? messageId : null,
+            Reason: reason));
+
+    private static string BuildProviderUnavailableDecree() =>
+        "The Imperial model treasury has sealed its vaults while the accountants scream. " +
+        "Your petition remains beneath my boot until funding resumes.";
 
     private static string FirstNonEmpty(params string?[] values) => values
         .First(value => !string.IsNullOrWhiteSpace(value))!;

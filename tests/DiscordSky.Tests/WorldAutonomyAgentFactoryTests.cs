@@ -284,8 +284,14 @@ public sealed class WorldAutonomyAgentFactoryTests
         var ledger = new RecordingLedger();
         await ledger.StartRunAsync(context.ToRunStart(DateTimeOffset.UtcNow), CancellationToken.None);
         var client = new ReasoningCapturingChatClient();
+        var telemetry = new InMemoryTelemetrySink();
+        using var telemetryClient = new LlmCallTaggingChatClient(
+            new TelemetryChatClient(client, "OpenAI", telemetry),
+            "world_autonomy",
+            new LlmWorkloadProfile("gpt-5.6-sol", "ExtraHigh"),
+            evaluationId: "run-1");
         var agent = new WorldAutonomyAgentFactory().Create(
-            client,
+            telemetryClient,
             new WorldAutonomyRunState(context, ledger, []),
             [],
             workloadProfile: new LlmWorkloadProfile("gpt-5.6-sol", "ExtraHigh"));
@@ -295,6 +301,13 @@ public sealed class WorldAutonomyAgentFactoryTests
 
         Assert.Equal("gpt-5.6-sol", client.ModelId);
         Assert.Equal(ReasoningEffort.ExtraHigh, client.ReasoningEffort);
+        var llmCall = Assert.Single(telemetry.Events);
+        Assert.Equal(TelemetryEventTypes.LlmCall, llmCall.EventType);
+        Assert.Equal("world_autonomy", llmCall.Workload);
+        Assert.Equal("world_autonomy", llmCall.Kind);
+        Assert.Equal("gpt-5.6-sol", llmCall.Model);
+        Assert.Equal("ExtraHigh", llmCall.ReasoningEffort);
+        Assert.Equal("run-1", llmCall.EvaluationId);
     }
 
     private sealed class ScriptedChatClient(
