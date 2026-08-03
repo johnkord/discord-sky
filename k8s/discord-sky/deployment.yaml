@@ -32,6 +32,11 @@ spec:
             - configMapRef:
                 name: discord-sky-autonomy-bindings
                 optional: true
+            # Stable proactive resource IDs are managed out of band. This source may contain only
+            # ColdOpen__Channels__<index> target fields; deploy.sh validates it before rollout.
+            - configMapRef:
+                name: discord-sky-runtime-bindings
+                optional: true
           resources:
             requests:
               cpu: 100m

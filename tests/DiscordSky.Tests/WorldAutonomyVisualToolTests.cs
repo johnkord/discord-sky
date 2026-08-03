@@ -34,6 +34,7 @@ public sealed class WorldAutonomyVisualToolTests
         Assert.Equal("world_autonomy_visual", sent.Source);
         Assert.True(fixture.Run.SpokeInChannel);
         Assert.True(fixture.Run.VisualMediumSelected);
+        Assert.True(fixture.Run.VisualDelivered);
         Assert.Contains(fixture.ImageLog.Records, record =>
             record.Outcome == ImageGenerationRecord.OutcomeOk && record.ToolSelected == true);
         Assert.Contains(fixture.Telemetry.Events, metric =>
@@ -61,6 +62,7 @@ public sealed class WorldAutonomyVisualToolTests
         Assert.Equal("[ EGGMAN ASCII MURAL ]", Assert.Single(fixture.SpeechTransport.Calls).Content);
         Assert.True(fixture.Registry.TryGet(7002, out var sent));
         Assert.Equal("world_autonomy", sent.Source);
+        Assert.True(fixture.Run.VisualDelivered);
         Assert.Contains(fixture.ImageLog.Records, record =>
             record.Outcome == ImageGenerationRecord.OutcomeNotSelected);
         Assert.Contains(fixture.Telemetry.Events, metric =>

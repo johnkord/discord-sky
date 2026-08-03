@@ -207,33 +207,32 @@ public sealed class WorldAutonomyRouterTests
     }
 
     [Fact]
-    public async Task Router_CoalescesRapidFragmentsBeforeStartingTheFirstAmbientRun()
-    {
-        var runner = new SequencedRunner();
-        var router = Router(runner, coalescingEnabled: true, episodeWindowMilliseconds: 40);
-
-        var worker = router.TryRunAsync(
-            new WorldAutonomyOpportunity(667956000757776386, "discord_message", "A bare link."),
-            CancellationToken.None);
-        await router.TryRunAsync(
-            new WorldAutonomyOpportunity(667956000757776386, "discord_message", "The comment after the link."),
-            CancellationToken.None);
-
-        Assert.Equal(0, runner.CallCount);
-        await runner.WaitForStartAsync(0);
-        runner.Release(0);
-        await worker;
-
-        Assert.Equal(["The comment after the link."], runner.Prompts);
-    }
-
-    [Fact]
-    public async Task Router_DirectAudienceCancelsPendingAmbientEpisode()
+    public async Task Router_StartsAdmittedAmbientWithoutASecondDebounce()
     {
         var runner = new SequencedRunner();
         var router = Router(runner, coalescingEnabled: true, episodeWindowMilliseconds: 5000);
+
         var worker = router.TryRunAsync(
-            new WorldAutonomyOpportunity(667956000757776386, "discord_message", "Ambient fragment."),
+            new WorldAutonomyOpportunity(667956000757776386, "discord_message", "Admitted episode."),
+            CancellationToken.None);
+        await runner.WaitForStartAsync(0, TimeSpan.FromMilliseconds(500));
+        runner.Release(0);
+        await worker;
+
+        Assert.Equal(["Admitted episode."], runner.Prompts);
+    }
+
+    [Fact]
+    public async Task Router_DirectAudienceRemovesAmbientWaitingBehindActiveRun()
+    {
+        var runner = new SequencedRunner();
+        var router = Router(runner);
+        var active = router.TryRunAsync(
+            new WorldAutonomyOpportunity(667956000757776386, "discord_message", "Active ambient."),
+            CancellationToken.None);
+        await runner.WaitForStartAsync(0);
+        await router.TryRunAsync(
+            new WorldAutonomyOpportunity(667956000757776386, "discord_message", "Waiting ambient."),
             CancellationToken.None);
 
         var direct = router.TryRunDirectAsync(
@@ -244,11 +243,12 @@ public sealed class WorldAutonomyRouterTests
                 IsDirectAddress: true),
             CancellationToken.None);
 
-        await runner.WaitForStartAsync(0);
         runner.Release(0);
-        await Task.WhenAll(worker, direct);
+    await runner.WaitForStartAsync(1);
+    runner.Release(1);
+    await Task.WhenAll(active, direct);
 
-        Assert.Equal(["Direct petition."], runner.Prompts);
+    Assert.Equal(["Active ambient.", "Direct petition."], runner.Prompts);
     }
 
     [Fact]
@@ -363,8 +363,8 @@ public sealed class WorldAutonomyRouterTests
             }
         }
 
-        internal Task WaitForStartAsync(int index) =>
-            _started[index].Task.WaitAsync(TimeSpan.FromSeconds(10));
+        internal Task WaitForStartAsync(int index, TimeSpan? timeout = null) =>
+            _started[index].Task.WaitAsync(timeout ?? TimeSpan.FromSeconds(10));
 
         internal void Release(int index) => _release[index].TrySetResult();
 

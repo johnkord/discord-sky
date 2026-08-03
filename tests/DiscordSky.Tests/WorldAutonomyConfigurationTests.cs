@@ -96,24 +96,42 @@ public sealed class WorldAutonomyConfigurationTests
     {
         var configuration = WorldAutonomyConfiguration.FromOptions(new WorldAutonomyOptions
         {
-            AmbientGateMode = WorldAutonomyAmbientGateMode.Shadow,
+            AmbientGateMode = WorldAutonomyAmbientGateMode.Canary,
             AmbientFullThreshold = 0.7,
             AmbientReactionThreshold = 0.4,
+            AmbientActionThreshold = 0.62,
+            AmbientJudgeConfidenceFloor = 0.42,
+            AmbientPostSpeechHoldEnabled = true,
+            AmbientLowValueHoldEnabled = true,
+            AmbientLowValueFloor = 0.12,
+            AmbientCanaryExplorationPercent = 11,
+            AmbientLiveExplorationPercent = 6,
             AmbientRecentSpeechPenalty = 0.1,
             AmbientEpisodeCoalescingEnabled = true,
             AmbientEpisodeWindowMilliseconds = 1250,
             AmbientPostSpeechGuardEnabled = true,
+            TerminalDeliveryEnabled = true,
+            PromptCacheMode = WorldAutonomyPromptCacheMode.Explicit,
             AmbientPostSpeechHumanTurns = 3,
             AmbientPostSpeechWindowMinutes = 8,
         });
 
-        Assert.Equal(WorldAutonomyAmbientGateMode.Shadow, configuration.AmbientGateMode);
+        Assert.Equal(WorldAutonomyAmbientGateMode.Canary, configuration.AmbientGateMode);
         Assert.Equal(0.7, configuration.AmbientFullThreshold);
         Assert.Equal(0.4, configuration.AmbientReactionThreshold);
+        Assert.Equal(0.62, configuration.AmbientActionThreshold);
+        Assert.Equal(0.42, configuration.AmbientJudgeConfidenceFloor);
+        Assert.True(configuration.AmbientPostSpeechHoldEnabled);
+        Assert.True(configuration.AmbientLowValueHoldEnabled);
+        Assert.Equal(0.12, configuration.AmbientLowValueFloor);
+        Assert.Equal(11, configuration.AmbientCanaryExplorationPercent);
+        Assert.Equal(6, configuration.AmbientLiveExplorationPercent);
         Assert.Equal(0.1, configuration.AmbientRecentSpeechPenalty);
         Assert.True(configuration.AmbientEpisodeCoalescingEnabled);
         Assert.Equal(TimeSpan.FromMilliseconds(1250), configuration.AmbientEpisodeWindow);
         Assert.True(configuration.AmbientPostSpeechGuardEnabled);
+        Assert.True(configuration.TerminalDeliveryEnabled);
+        Assert.Equal(WorldAutonomyPromptCacheMode.Explicit, configuration.PromptCacheMode);
         Assert.Equal(3, configuration.AmbientPostSpeechHumanTurns);
         Assert.Equal(TimeSpan.FromMinutes(8), configuration.AmbientPostSpeechWindow);
     }

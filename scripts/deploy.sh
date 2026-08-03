@@ -330,6 +330,46 @@ if [[ $PRESERVE_STEWARD_PROFILES -ne 0 ]]; then
   echo "Verified $BINDING_COUNT preserved autonomy binding/profile pair(s)"
 fi
 
+RUNTIME_BINDINGS_JSON=$(kubectl get configmap discord-sky-runtime-bindings -n discord-sky -o json 2>/dev/null \
+  || printf '{"data":{}}')
+if ! jq -e '
+    (.data // {}) | to_entries |
+    all(.[];
+      (.key | test("^ColdOpen__Channels__[0-9]+__(GuildId|ChannelId|Guild|Channel)$")) and
+      (.value | type == "string" and length > 0))
+  ' <<< "$RUNTIME_BINDINGS_JSON" >/dev/null; then
+  echo "The private runtime bindings ConfigMap contains an invalid key or blank value." >&2
+  exit 1
+fi
+mapfile -t RUNTIME_COLD_OPEN_INDICES < <(jq -r '
+  (.data // {}) | keys[] |
+  capture("^ColdOpen__Channels__(?<index>[0-9]+)__").index
+  ' <<< "$RUNTIME_BINDINGS_JSON" | sort -nu)
+for target_index in "${RUNTIME_COLD_OPEN_INDICES[@]}"; do
+  guild_id_key="ColdOpen__Channels__${target_index}__GuildId"
+  channel_id_key="ColdOpen__Channels__${target_index}__ChannelId"
+  has_guild_id=$(jq -r --arg key "$guild_id_key" '(.data // {}) | has($key)' <<< "$RUNTIME_BINDINGS_JSON")
+  has_channel_id=$(jq -r --arg key "$channel_id_key" '(.data // {}) | has($key)' <<< "$RUNTIME_BINDINGS_JSON")
+  if [[ "$has_guild_id" != "$has_channel_id" ]]; then
+    echo "Cold-open runtime target $target_index must provide GuildId and ChannelId together." >&2
+    exit 1
+  fi
+  if [[ "$has_guild_id" == "false" ]] && ! jq -e \
+      --arg key "ColdOpen__Channels__${target_index}__Channel" \
+      '(.data // {}) | has($key)' <<< "$RUNTIME_BINDINGS_JSON" >/dev/null; then
+    echo "Cold-open runtime target $target_index requires an exact ID pair or a channel-name fallback." >&2
+    exit 1
+  fi
+  if [[ "$has_guild_id" == "true" ]] && ! jq -e \
+      --arg guild_key "$guild_id_key" --arg channel_key "$channel_id_key" \
+      '(.data[$guild_key] | test("^[1-9][0-9]*$")) and (.data[$channel_key] | test("^[1-9][0-9]*$"))' \
+      <<< "$RUNTIME_BINDINGS_JSON" >/dev/null; then
+    echo "Cold-open runtime target $target_index contains an invalid exact ID." >&2
+    exit 1
+  fi
+done
+echo "Verified ${#RUNTIME_COLD_OPEN_INDICES[@]} private cold-open runtime target(s)"
+
 TEMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TEMP_DIR"' EXIT
 

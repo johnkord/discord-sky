@@ -60,6 +60,7 @@ public sealed class DiscordWorldAutonomyVisualTransport(DiscordSocketClient clie
 
 public sealed class WorldAutonomyVisualTool
 {
+    public const string ToolName = "create_visual";
     private const string GeneratedBitmap = "generated_bitmap";
     private const string TextArt = "text_art";
     private const int DiscordMaxCaptionLength = 2000;
@@ -99,7 +100,8 @@ public sealed class WorldAutonomyVisualTool
     public AIFunction Bind(
         WorldAutonomyOpportunity opportunity,
         WorldAutonomyRunContext context,
-        WorldAutonomyRunState run)
+        WorldAutonomyRunState run,
+        bool terminalDeliveryEnabled = false)
     {
         if (!opportunity.SourceChannelId.HasValue || !opportunity.SourceAuthorId.HasValue)
         {
@@ -109,8 +111,8 @@ public sealed class WorldAutonomyVisualTool
         var bound = new BoundVisual(this, opportunity, context, run);
         return AIFunctionFactory.Create(
             bound.CreateAsync,
-            name: "create_visual",
-            description: "Choose and deliver exactly one visual medium for this petition. generated_bitmap runs the image foundry and posts an attachment; text_art posts exact ASCII/text art through Robotnik's registered voice. The tool itself delivers successful output, so do not repeat it with speak_as_robotnik.");
+            name: ToolName,
+            description: $"Choose and deliver exactly one visual medium for this petition. generated_bitmap runs the image foundry and posts an attachment; text_art posts exact ASCII/text art through Robotnik's registered voice. The tool itself delivers successful output, so do not repeat it with {(terminalDeliveryEnabled ? WorldAutonomySpeechTool.TerminalToolName : WorldAutonomySpeechTool.ToolName)}.");
     }
 
     public void RecordNotSelected(
@@ -184,6 +186,7 @@ public sealed class WorldAutonomyVisualTool
                 textArt!,
                 replyToMessageId,
                 cancellationToken).ConfigureAwait(false);
+            run.RecordVisualDelivery();
             EmitVisual(opportunity, context, TextArt, "delivered", ParseMessageId(speech.MessageIds.FirstOrDefault()));
             return new WorldAutonomyVisualResult(
                 speech.Outcome,
@@ -248,6 +251,7 @@ public sealed class WorldAutonomyVisualTool
                 delivered.MessageId,
                 context.RunId);
         }
+            run.RecordVisualDelivery();
 
         var now = _timeProvider.GetUtcNow();
         _transcripts.Record(new TranscriptEntry(

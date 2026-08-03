@@ -13,12 +13,21 @@ data:
   WorldAutonomy__SessionTimeoutMinutes: "20"
   WorldAutonomy__RequestIdPoolSize: "40"
   WorldAutonomy__ValidateStewardOnStartup: "true"
+  WorldAutonomy__TerminalDeliveryEnabled: "false"
+  WorldAutonomy__PromptCacheMode: "Off"
   WorldAutonomy__LedgerPath: "/app/data/user_memories/world-autonomy/world-autonomy.json"
   # Host-side attention allocation. Shadow records utility-model silence/reaction/full predictions while the
-  # current xhigh behavior remains intact. Flip only AmbientGateMode to Live after the joined calibration review.
+  # current xhigh behavior remains intact. Promote to Canary one hold lever at a time, then Live after review.
   WorldAutonomy__AmbientGateMode: "Shadow"
   WorldAutonomy__AmbientFullThreshold: "0.65"
   WorldAutonomy__AmbientReactionThreshold: "0.35"
+  WorldAutonomy__AmbientActionThreshold: "0.60"
+  WorldAutonomy__AmbientJudgeConfidenceFloor: "0.35"
+  WorldAutonomy__AmbientPostSpeechHoldEnabled: "true"
+  WorldAutonomy__AmbientLowValueHoldEnabled: "false"
+  WorldAutonomy__AmbientLowValueFloor: "0.15"
+  WorldAutonomy__AmbientCanaryExplorationPercent: "10"
+  WorldAutonomy__AmbientLiveExplorationPercent: "5"
   WorldAutonomy__AmbientRecentSpeechPenalty: "0.15"
   # A short live debounce merges link-plus-comment fragments before xhigh starts. The post-speech material gate
   # follows AmbientGateMode, so it is telemetry-only during this shadow stage.
@@ -111,10 +120,10 @@ data:
   Chaos__AmbientWorthThreshold: "0.5"
   Chaos__AmbientReplyQuietSeconds: "90"
   # Proactive cold opens: LIVE TRIAL as of 2026-07-06 (2-day shadow harvest reviewed; owner cleared going live).
-  # It now POSTS unprompted lines into secret-chat on Trump's Ballroom. KILL SWITCH: flip ColdOpen__ShadowMode
-  # back to "true" (draft + log, never send), or ColdOpen__Enabled "false" to stop entirely.
+  # Keep cold opens in Shadow while migrating the target from mutable names to private exact IDs. Restore Live
+  # only after the ID-bound target resolves and new shadow opportunities have been reviewed.
   ColdOpen__Enabled: "true"
-  ColdOpen__ShadowMode: "false"
+  ColdOpen__ShadowMode: "true"
   ColdOpen__Channels__0__Guild: "Trump's Ballroom"
   ColdOpen__Channels__0__Channel: "secret-chat"
   ColdOpen__WorthThreshold: "0.85"

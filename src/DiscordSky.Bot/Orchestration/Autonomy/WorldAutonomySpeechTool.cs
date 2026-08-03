@@ -62,6 +62,8 @@ public sealed class DiscordWorldAutonomyMessageTransport(DiscordSocketClient cli
 
 public sealed class WorldAutonomySpeechTool
 {
+    public const string ToolName = "speak_as_robotnik";
+    public const string TerminalToolName = "finish_with_robotnik_speech";
     private readonly IWorldAutonomyMessageTransport _transport;
     private readonly SentMessageRegistry _sentMessages;
     private readonly ITranscriptSink _transcripts;
@@ -91,7 +93,8 @@ public sealed class WorldAutonomySpeechTool
     public AIFunction Bind(
         WorldAutonomyOpportunity opportunity,
         WorldAutonomyRunContext context,
-        WorldAutonomyRunState run)
+        WorldAutonomyRunState run,
+        bool terminalDeliveryEnabled = false)
     {
         if (!opportunity.SourceChannelId.HasValue || !opportunity.SourceAuthorId.HasValue)
         {
@@ -101,8 +104,10 @@ public sealed class WorldAutonomySpeechTool
         var bound = new BoundSpeech(this, opportunity, context, run);
         return AIFunctionFactory.Create(
             bound.SpeakAsync,
-            name: "speak_as_robotnik",
-            description: "Speak as Robotnik in the Discord channel that summoned you. This is your normal voice and preserves reply, reaction, transcript, and run attribution. Long text is split safely.");
+            name: terminalDeliveryEnabled ? TerminalToolName : ToolName,
+            description: terminalDeliveryEnabled
+                ? "Deliver Robotnik's final speech in the summoning channel and finish this run. Call it alone, after every intended Discord mutation has completed. It preserves reply, reaction, transcript, and run attribution."
+                : "Speak as Robotnik in the Discord channel that summoned you. This is your normal voice and preserves reply, reaction, transcript, and run attribution. Long text is split safely.");
     }
 
     internal async Task<WorldAutonomySpeechResult> SendAsync(

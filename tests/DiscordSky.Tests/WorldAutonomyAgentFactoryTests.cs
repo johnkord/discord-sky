@@ -2,12 +2,121 @@ using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Orchestration.Autonomy;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using System.Collections.Immutable;
 using System.Text.Json;
 
 namespace DiscordSky.Tests;
 
 public sealed class WorldAutonomyAgentFactoryTests
 {
+    [Fact]
+    public async Task Agent_TerminalDeliveryUsesOneProviderCallWhenEnabled()
+    {
+        var context = new WorldAutonomyRunContext(
+            "run-1", 667956000757776386, "message", null, null, null,
+            "gpt-5.6-sol", "profile-digest", "manifest-digest", []);
+        var ledger = new RecordingLedger();
+        await ledger.StartRunAsync(context.ToRunStart(DateTimeOffset.UtcNow), CancellationToken.None);
+        var provider = new ScriptedChatClient(
+            requestId: null,
+            toolName: WorldAutonomySpeechTool.TerminalToolName,
+            includeValue: false);
+        var delivered = 0;
+        var finish = AIFunctionFactory.Create(
+            () =>
+            {
+                delivered++;
+                return "delivered";
+            },
+            name: WorldAutonomySpeechTool.TerminalToolName,
+            description: "Deliver final speech.");
+        var agent = new WorldAutonomyAgentFactory().Create(
+            provider,
+            new WorldAutonomyRunState(context, ledger, []),
+            [],
+            supplementaryTools: [finish],
+            terminalDeliveryEnabled: true);
+
+        var session = await agent.CreateSessionAsync();
+        _ = await agent.RunAsync("finish", session);
+
+        Assert.Equal(1, provider.CallCount);
+        Assert.Equal(1, delivered);
+    }
+
+    [Fact]
+    public async Task Agent_FinalSpeechWithSiblingDoesNotDeliver()
+    {
+        var context = new WorldAutonomyRunContext(
+            "run-1", 667956000757776386, "message", null, null, null,
+            "gpt-5.6-sol", "profile-digest", "manifest-digest", []);
+        var ledger = new RecordingLedger();
+        await ledger.StartRunAsync(context.ToRunStart(DateTimeOffset.UtcNow), CancellationToken.None);
+        var delivered = 0;
+        var siblingInvoked = 0;
+        var finish = AIFunctionFactory.Create(
+            () =>
+            {
+                delivered++;
+                return "delivered";
+            },
+            name: WorldAutonomySpeechTool.TerminalToolName,
+            description: "Deliver final speech.");
+        var sibling = AIFunctionFactory.Create(
+            () =>
+            {
+                siblingInvoked++;
+                return "read";
+            },
+            name: "inspect_state",
+            description: "Inspect state.");
+        var agent = new WorldAutonomyAgentFactory().Create(
+            new SiblingThenDoneChatClient(),
+            new WorldAutonomyRunState(context, ledger, []),
+            [],
+            supplementaryTools: [finish, sibling],
+            terminalDeliveryEnabled: true);
+
+        var session = await agent.CreateSessionAsync();
+        _ = await agent.RunAsync("finish and inspect", session);
+
+        Assert.Equal(0, delivered);
+        Assert.Equal(1, siblingInvoked);
+    }
+
+    [Fact]
+    public async Task Agent_RefusedVisualContinuesToFallbackTurn()
+    {
+        var context = new WorldAutonomyRunContext(
+            "run-1", 667956000757776386, "message", null, null, null,
+            "gpt-5.6-sol", "profile-digest", "manifest-digest", []);
+        var ledger = new RecordingLedger();
+        await ledger.StartRunAsync(context.ToRunStart(DateTimeOffset.UtcNow), CancellationToken.None);
+        var provider = new ScriptedChatClient(
+            requestId: null,
+            toolName: WorldAutonomyVisualTool.ToolName,
+            includeValue: false);
+        var run = new WorldAutonomyRunState(context, ledger, []);
+        var visual = AIFunctionFactory.Create(
+            () => new WorldAutonomyVisualResult("refused", "generated_bitmap", null, [], null, "refused"),
+            name: WorldAutonomyVisualTool.ToolName,
+            description: "Create a visual.");
+        var agent = new WorldAutonomyAgentFactory().Create(
+            provider,
+            run,
+            [],
+            supplementaryTools: [visual],
+            terminalDeliveryEnabled: true);
+
+        var session = await agent.CreateSessionAsync();
+        var response = await agent.RunAsync("draw", session);
+
+        Assert.Equal(2, provider.CallCount);
+        Assert.Equal("done", response.Text);
+        Assert.True(await run.TryBeginTerminalizationAsync(CancellationToken.None));
+        await run.CancelTerminalizationAsync();
+    }
+
     [Fact]
     public async Task Agent_DurablyRecordsBeforeInvokingAnApprovalRequiredWrite()
     {
@@ -59,6 +168,11 @@ public sealed class WorldAutonomyAgentFactoryTests
         Assert.Equal("write_value", dispatch.ToolName);
         Assert.Equal(requestId, dispatch.RequestId);
         Assert.Equal(WorldAutonomyDispatchStatuses.Accepted, dispatch.DispatchStatus);
+        Assert.Equal(1, run.ActivitySnapshot.NativeWriteCount);
+        Assert.Equal(1, run.ActivitySnapshot.AcceptedWriteCount);
+        Assert.False(run.HasUnsettledWrites);
+        Assert.True(await run.TryBeginTerminalizationAsync(CancellationToken.None));
+        await run.CancelTerminalizationAsync();
     }
 
     [Fact]
@@ -139,6 +253,106 @@ public sealed class WorldAutonomyAgentFactoryTests
         Assert.Equal("mcp_tool_error", dispatch.ErrorMessage);
     }
 
+    [Fact]
+    public async Task Agent_BlocksIdenticalDeterministicRetryUnderFreshRequestId()
+    {
+        var requestIds = new[]
+        {
+            "01900000-0000-7000-8000-000000000001",
+            "01900000-0000-7000-8000-000000000002",
+        };
+        var context = new WorldAutonomyRunContext(
+            "run-1",
+            667956000757776386,
+            "message",
+            null,
+            null,
+            null,
+            "gpt-5.5",
+            "profile-digest",
+            "manifest-digest",
+            requestIds.ToImmutableHashSet(StringComparer.Ordinal));
+        var ledger = new RecordingLedger();
+        await ledger.StartRunAsync(context.ToRunStart(DateTimeOffset.UtcNow), CancellationToken.None);
+        var invocationCount = 0;
+        var descriptor = new WorldAutonomyToolDescriptor(
+            AIFunctionFactory.Create(
+                (string request_id, string value) =>
+                {
+                    invocationCount++;
+                    return JsonDocument.Parse(
+                        "{\"outcome\":\"failed\",\"error\":{\"code\":\"invalid_argument\"}}")
+                        .RootElement.Clone();
+                },
+                name: "write_value",
+                description: "Write a value."),
+            IsWrite: true,
+            RequiresRequestId: true,
+            SchemaDigest: "write-schema");
+        var agent = new WorldAutonomyAgentFactory().Create(
+            new DeterministicRetryChatClient(requestIds),
+            new WorldAutonomyRunState(context, ledger, [descriptor]),
+            [descriptor]);
+
+        var session = await agent.CreateSessionAsync();
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => agent.RunAsync("go", session));
+
+        Assert.Contains("change the arguments or stop", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(1, invocationCount);
+        Assert.Single(ledger.PendingDispatches);
+    }
+
+    [Fact]
+    public async Task Agent_AllowsChangedRepairAfterDeterministicFailure()
+    {
+        var requestIds = new[]
+        {
+            "01900000-0000-7000-8000-000000000001",
+            "01900000-0000-7000-8000-000000000002",
+        };
+        var context = new WorldAutonomyRunContext(
+            "run-1",
+            667956000757776386,
+            "message",
+            null,
+            null,
+            null,
+            "gpt-5.5",
+            "profile-digest",
+            "manifest-digest",
+            requestIds.ToImmutableHashSet(StringComparer.Ordinal));
+        var ledger = new RecordingLedger();
+        await ledger.StartRunAsync(context.ToRunStart(DateTimeOffset.UtcNow), CancellationToken.None);
+        var invocationCount = 0;
+        var descriptor = new WorldAutonomyToolDescriptor(
+            AIFunctionFactory.Create(
+                (string request_id, string value) =>
+                {
+                    invocationCount++;
+                    var json = value == "corrected"
+                        ? "{\"outcome\":\"succeeded\"}"
+                        : "{\"outcome\":\"failed\",\"error\":{\"code\":\"invalid_argument\"}}";
+                    return JsonDocument.Parse(json).RootElement.Clone();
+                },
+                name: "write_value",
+                description: "Write a value."),
+            IsWrite: true,
+            RequiresRequestId: true,
+            SchemaDigest: "write-schema");
+        var agent = new WorldAutonomyAgentFactory().Create(
+            new CorrectedRetryChatClient(requestIds),
+            new WorldAutonomyRunState(context, ledger, [descriptor]),
+            [descriptor]);
+
+        var response = await agent.RunAsync("go", await agent.CreateSessionAsync());
+
+        Assert.Equal("done", response.Text);
+        Assert.Equal(2, invocationCount);
+        Assert.Equal(2, ledger.PendingDispatches.Count);
+        Assert.Equal(WorldAutonomyDispatchStatuses.Failed, ledger.PendingDispatches[0].DispatchStatus);
+        Assert.Equal(WorldAutonomyDispatchStatuses.Succeeded, ledger.PendingDispatches[1].DispatchStatus);
+    }
+
     [Theory]
     [InlineData("succeeded", WorldAutonomyDispatchStatuses.Succeeded, null)]
     [InlineData("failed", WorldAutonomyDispatchStatuses.Failed, "state_conflict")]
@@ -174,9 +388,10 @@ public sealed class WorldAutonomyAgentFactoryTests
             IsWrite: true,
             RequiresRequestId: true,
             SchemaDigest: "write-schema");
+        var run = new WorldAutonomyRunState(context, ledger, [descriptor]);
         var agent = new WorldAutonomyAgentFactory().Create(
             new ScriptedChatClient(requestId, includeValue: false),
-            new WorldAutonomyRunState(context, ledger, [descriptor]),
+            run,
             [descriptor]);
 
         var session = await agent.CreateSessionAsync();
@@ -185,6 +400,12 @@ public sealed class WorldAutonomyAgentFactoryTests
         var dispatch = Assert.Single(ledger.PendingDispatches);
         Assert.Equal(expectedStatus, dispatch.DispatchStatus);
         Assert.Equal(errorCode, dispatch.ErrorMessage);
+        var activity = run.ActivitySnapshot;
+        Assert.Equal(1, activity.NativeWriteCount);
+        Assert.Equal(expectedStatus == WorldAutonomyDispatchStatuses.Succeeded ? 1 : 0, activity.SucceededWriteCount);
+        Assert.Equal(expectedStatus == WorldAutonomyDispatchStatuses.Failed ? 1 : 0, activity.FailedWriteCount);
+        Assert.Equal(expectedStatus == WorldAutonomyDispatchStatuses.PartialFailure ? 1 : 0, activity.PartialFailureWriteCount);
+        Assert.Equal(expectedStatus == WorldAutonomyDispatchStatuses.Unknown ? 1 : 0, activity.UnknownWriteCount);
     }
 
     [Fact]
@@ -211,9 +432,10 @@ public sealed class WorldAutonomyAgentFactoryTests
             IsWrite: false,
             RequiresRequestId: false,
             SchemaDigest: "read-schema");
+        var run = new WorldAutonomyRunState(context, ledger, [descriptor]);
         var agent = new WorldAutonomyAgentFactory().Create(
             new ScriptedChatClient(requestId: null, toolName: "get_snapshot", includeValue: true),
-            new WorldAutonomyRunState(context, ledger, [descriptor]),
+            run,
             [descriptor]);
 
         var session = await agent.CreateSessionAsync();
@@ -226,6 +448,7 @@ public sealed class WorldAutonomyAgentFactoryTests
         Assert.Equal("get_snapshot", payload.RootElement.GetProperty("toolName").GetString());
         Assert.Equal("success", payload.RootElement.GetProperty("outcome").GetString());
         Assert.Equal(JsonValueKind.Null, payload.RootElement.GetProperty("errorCode").ValueKind);
+        Assert.Equal(1, run.ActivitySnapshot.NativeReadCount);
     }
 
     [Fact]
@@ -310,12 +533,56 @@ public sealed class WorldAutonomyAgentFactoryTests
         Assert.Equal("run-1", llmCall.EvaluationId);
     }
 
+    [Fact]
+    public async Task Agent_ExplicitCacheUsesNativePrefixWhileOffKeepsLegacyInstructions()
+    {
+        var context = new WorldAutonomyRunContext(
+            "run-cache",
+            667956000757776386,
+            "message",
+            "100",
+            "episode-1",
+            "trace-1",
+            "gpt-5.6-sol",
+            "profile-digest",
+            "manifest-digest",
+            ["01900000-0000-7000-8000-000000000001"],
+            SourceChannelId: 200,
+            SourceChannelName: "general");
+        var ledger = new RecordingLedger();
+        await ledger.StartRunAsync(context.ToRunStart(DateTimeOffset.UtcNow), CancellationToken.None);
+        var cachedClient = new ReasoningCapturingChatClient();
+        var cachedAgent = new WorldAutonomyAgentFactory().Create(
+            cachedClient,
+            new WorldAutonomyRunState(context, ledger, []),
+            [],
+            promptCacheMode: WorldAutonomyPromptCacheMode.Explicit);
+
+        _ = await cachedAgent.RunAsync("scheme", await cachedAgent.CreateSessionAsync());
+
+        Assert.Null(cachedClient.Instructions);
+        Assert.NotNull(cachedClient.RawRepresentationFactory);
+
+        var legacyClient = new ReasoningCapturingChatClient();
+        var legacyAgent = new WorldAutonomyAgentFactory().Create(
+            legacyClient,
+            new WorldAutonomyRunState(context, ledger, []),
+            []);
+
+        _ = await legacyAgent.RunAsync("scheme", await legacyAgent.CreateSessionAsync());
+
+        Assert.Contains("THIS IS NOT A BIT", legacyClient.Instructions, StringComparison.Ordinal);
+        Assert.Null(legacyClient.RawRepresentationFactory);
+    }
+
     private sealed class ScriptedChatClient(
         string? requestId,
         string toolName = "write_value",
         bool includeValue = true) : IChatClient
     {
         private int _calls;
+
+        public int CallCount => _calls;
 
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
@@ -363,11 +630,123 @@ public sealed class WorldAutonomyAgentFactoryTests
         }
     }
 
+    private sealed class SiblingThenDoneChatClient : IChatClient
+    {
+        private int _calls;
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            _calls++;
+            return Task.FromResult(_calls == 1
+                ? new ChatResponse(new ChatMessage(
+                    ChatRole.Assistant,
+                    [
+                        new FunctionCallContent(
+                            "finish-call-1",
+                            WorldAutonomySpeechTool.TerminalToolName,
+                            new Dictionary<string, object?>()),
+                        new FunctionCallContent(
+                            "read-call-1",
+                            "inspect_state",
+                            new Dictionary<string, object?>()),
+                    ]))
+                : new ChatResponse(new ChatMessage(ChatRole.Assistant, "done")));
+        }
+
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
+    }
+
+    private sealed class DeterministicRetryChatClient(IReadOnlyList<string> requestIds) : IChatClient
+    {
+        private int _calls;
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            var index = Math.Min(_calls++, requestIds.Count - 1);
+            return Task.FromResult(new ChatResponse(new ChatMessage(
+                ChatRole.Assistant,
+                [new FunctionCallContent(
+                    $"model-call-{index + 1}",
+                    "write_value",
+                    new Dictionary<string, object?>
+                    {
+                        ["request_id"] = requestIds[index],
+                        ["value"] = "unchanged",
+                    })])));
+        }
+
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class CorrectedRetryChatClient(IReadOnlyList<string> requestIds) : IChatClient
+    {
+        private int _calls;
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            var call = _calls++;
+            if (call >= requestIds.Count)
+            {
+                return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, "done")));
+            }
+
+            return Task.FromResult(new ChatResponse(new ChatMessage(
+                ChatRole.Assistant,
+                [new FunctionCallContent(
+                    $"model-call-{call + 1}",
+                    "write_value",
+                    new Dictionary<string, object?>
+                    {
+                        ["request_id"] = requestIds[call],
+                        ["value"] = call == 0 ? "invalid" : "corrected",
+                    })])));
+        }
+
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose()
+        {
+        }
+    }
+
     private sealed class ReasoningCapturingChatClient : IChatClient
     {
         public string? ModelId { get; private set; }
 
         public ReasoningEffort? ReasoningEffort { get; private set; }
+
+        public string? Instructions { get; private set; }
+
+        public Func<IChatClient, object?>? RawRepresentationFactory { get; private set; }
 
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
@@ -376,6 +755,8 @@ public sealed class WorldAutonomyAgentFactoryTests
         {
             ModelId = options?.ModelId;
             ReasoningEffort = options?.Reasoning?.Effort;
+            Instructions = options?.Instructions;
+            RawRepresentationFactory = options?.RawRepresentationFactory;
             return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, "done")));
         }
 

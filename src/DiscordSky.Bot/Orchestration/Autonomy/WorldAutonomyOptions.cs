@@ -19,6 +19,10 @@ public sealed class WorldAutonomyOptions
 
     public bool ValidateStewardOnStartup { get; init; }
 
+    public bool TerminalDeliveryEnabled { get; init; }
+
+    public WorldAutonomyPromptCacheMode PromptCacheMode { get; init; } = WorldAutonomyPromptCacheMode.Off;
+
     public string LedgerPath { get; init; } = "data/world-autonomy/world-autonomy.json";
 
     public WorldAutonomyAmbientGateMode AmbientGateMode { get; init; } = WorldAutonomyAmbientGateMode.Off;
@@ -26,6 +30,20 @@ public sealed class WorldAutonomyOptions
     public double AmbientFullThreshold { get; init; } = 0.65;
 
     public double AmbientReactionThreshold { get; init; } = 0.35;
+
+    public double AmbientActionThreshold { get; init; } = 0.60;
+
+    public double AmbientJudgeConfidenceFloor { get; init; } = 0.35;
+
+    public bool AmbientPostSpeechHoldEnabled { get; init; }
+
+    public bool AmbientLowValueHoldEnabled { get; init; }
+
+    public double AmbientLowValueFloor { get; init; } = 0.15;
+
+    public int AmbientCanaryExplorationPercent { get; init; } = 10;
+
+    public int AmbientLiveExplorationPercent { get; init; } = 5;
 
     public double AmbientRecentSpeechPenalty { get; init; } = 0.15;
 
@@ -46,7 +64,14 @@ public enum WorldAutonomyAmbientGateMode
 {
     Off,
     Shadow,
+    Canary,
     Live,
+}
+
+public enum WorldAutonomyPromptCacheMode
+{
+    Off,
+    Explicit,
 }
 
 public sealed class WorldAutonomyGuildOptions
@@ -70,9 +95,18 @@ public sealed class WorldAutonomyConfiguration
         TimeSpan sessionTimeout,
         int requestIdPoolSize,
         bool validateStewardOnStartup,
+        bool terminalDeliveryEnabled,
+        WorldAutonomyPromptCacheMode promptCacheMode,
         WorldAutonomyAmbientGateMode ambientGateMode,
         double ambientFullThreshold,
         double ambientReactionThreshold,
+        double ambientActionThreshold,
+        double ambientJudgeConfidenceFloor,
+        bool ambientPostSpeechHoldEnabled,
+        bool ambientLowValueHoldEnabled,
+        double ambientLowValueFloor,
+        int ambientCanaryExplorationPercent,
+        int ambientLiveExplorationPercent,
         double ambientRecentSpeechPenalty,
         bool ambientEpisodeCoalescingEnabled,
         TimeSpan ambientEpisodeWindow,
@@ -87,9 +121,18 @@ public sealed class WorldAutonomyConfiguration
         SessionTimeout = sessionTimeout;
         RequestIdPoolSize = requestIdPoolSize;
         ValidateStewardOnStartup = validateStewardOnStartup;
+        TerminalDeliveryEnabled = terminalDeliveryEnabled;
+        PromptCacheMode = promptCacheMode;
         AmbientGateMode = ambientGateMode;
         AmbientFullThreshold = ambientFullThreshold;
         AmbientReactionThreshold = ambientReactionThreshold;
+        AmbientActionThreshold = ambientActionThreshold;
+        AmbientJudgeConfidenceFloor = ambientJudgeConfidenceFloor;
+        AmbientPostSpeechHoldEnabled = ambientPostSpeechHoldEnabled;
+        AmbientLowValueHoldEnabled = ambientLowValueHoldEnabled;
+        AmbientLowValueFloor = ambientLowValueFloor;
+        AmbientCanaryExplorationPercent = ambientCanaryExplorationPercent;
+        AmbientLiveExplorationPercent = ambientLiveExplorationPercent;
         AmbientRecentSpeechPenalty = ambientRecentSpeechPenalty;
         AmbientEpisodeCoalescingEnabled = ambientEpisodeCoalescingEnabled;
         AmbientEpisodeWindow = ambientEpisodeWindow;
@@ -111,11 +154,29 @@ public sealed class WorldAutonomyConfiguration
 
     public bool ValidateStewardOnStartup { get; }
 
+    public bool TerminalDeliveryEnabled { get; }
+
+    public WorldAutonomyPromptCacheMode PromptCacheMode { get; }
+
     public WorldAutonomyAmbientGateMode AmbientGateMode { get; }
 
     public double AmbientFullThreshold { get; }
 
     public double AmbientReactionThreshold { get; }
+
+    public double AmbientActionThreshold { get; }
+
+    public double AmbientJudgeConfidenceFloor { get; }
+
+    public bool AmbientPostSpeechHoldEnabled { get; }
+
+    public bool AmbientLowValueHoldEnabled { get; }
+
+    public double AmbientLowValueFloor { get; }
+
+    public int AmbientCanaryExplorationPercent { get; }
+
+    public int AmbientLiveExplorationPercent { get; }
 
     public double AmbientRecentSpeechPenalty { get; }
 
@@ -165,6 +226,33 @@ public sealed class WorldAutonomyConfiguration
         {
             throw new InvalidOperationException(
                 "WorldAutonomy:AmbientReactionThreshold must be between 0 and AmbientFullThreshold.");
+        }
+
+        if (options.AmbientActionThreshold is < 0.0 or > 1.0)
+        {
+            throw new InvalidOperationException("WorldAutonomy:AmbientActionThreshold must be between 0 and 1.");
+        }
+
+        if (options.AmbientJudgeConfidenceFloor is < 0.0 or > 1.0)
+        {
+            throw new InvalidOperationException("WorldAutonomy:AmbientJudgeConfidenceFloor must be between 0 and 1.");
+        }
+
+        if (options.AmbientLowValueFloor is < 0.0 or > 1.0)
+        {
+            throw new InvalidOperationException("WorldAutonomy:AmbientLowValueFloor must be between 0 and 1.");
+        }
+
+        if (options.AmbientCanaryExplorationPercent is < 0 or > 100)
+        {
+            throw new InvalidOperationException(
+                "WorldAutonomy:AmbientCanaryExplorationPercent must be between 0 and 100.");
+        }
+
+        if (options.AmbientLiveExplorationPercent is < 0 or > 100)
+        {
+            throw new InvalidOperationException(
+                "WorldAutonomy:AmbientLiveExplorationPercent must be between 0 and 100.");
         }
 
         if (options.AmbientRecentSpeechPenalty is < 0.0 or > 1.0)
@@ -238,9 +326,18 @@ public sealed class WorldAutonomyConfiguration
             TimeSpan.FromMinutes(options.SessionTimeoutMinutes),
             options.RequestIdPoolSize,
             options.ValidateStewardOnStartup,
+            options.TerminalDeliveryEnabled,
+            options.PromptCacheMode,
             options.AmbientGateMode,
             options.AmbientFullThreshold,
             options.AmbientReactionThreshold,
+            options.AmbientActionThreshold,
+            options.AmbientJudgeConfidenceFloor,
+            options.AmbientPostSpeechHoldEnabled,
+            options.AmbientLowValueHoldEnabled,
+            options.AmbientLowValueFloor,
+            options.AmbientCanaryExplorationPercent,
+            options.AmbientLiveExplorationPercent,
             options.AmbientRecentSpeechPenalty,
             options.AmbientEpisodeCoalescingEnabled,
             TimeSpan.FromMilliseconds(options.AmbientEpisodeWindowMilliseconds),

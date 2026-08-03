@@ -1,6 +1,9 @@
+#pragma warning disable MEAI001
+
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using DiscordSky.Bot.Orchestration.Autonomy;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DiscordSky.Tests;
@@ -18,8 +21,8 @@ public sealed class StewardMcpSupervisorIntegrationTests
         }
 
         var profilePath = Path.Combine(stewardRoot, "config", "profiles", "unrestricted-autonomy.example.json");
-    using var profile = JsonDocument.Parse(File.ReadAllText(profilePath));
-    var guildId = ulong.Parse(profile.RootElement.GetProperty("Discord").GetProperty("GuildId").GetString()!);
+        using var profile = JsonDocument.Parse(File.ReadAllText(profilePath));
+        var guildId = ulong.Parse(profile.RootElement.GetProperty("Discord").GetProperty("GuildId").GetString()!);
         var configuration = WorldAutonomyConfiguration.FromOptions(new WorldAutonomyOptions
         {
             StewardCommand = "dotnet",
@@ -51,7 +54,10 @@ public sealed class StewardMcpSupervisorIntegrationTests
         Assert.Equal("unrestricted", first.Catalog.Capabilities.Mode);
         Assert.Equal(first.Catalog.ToolNames.Length, bound.Tools.Length);
         Assert.Equal(first.Catalog.ToolNames.ToArray(), bound.Tools.Select(tool => tool.Function.Name).ToArray());
-        Assert.Contains(bound.SupplementaryTools, tool => tool.Name == "tool_search");
+        var search = Assert.IsType<HostedToolSearchTool>(Assert.Single(bound.SupplementaryTools));
+        Assert.Equal("tool_search", search.Name);
+        Assert.NotNull(search.DeferredTools);
+        Assert.Equal(bound.Tools.Select(tool => tool.Function.Name), search.DeferredTools!);
         var health = supervisor.GetHealthSnapshot();
         Assert.True(health.IsHealthy);
         Assert.Equal(1, health.ConfiguredGuilds);

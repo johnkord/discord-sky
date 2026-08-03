@@ -39,13 +39,28 @@ public sealed record TelemetryEvent(
     [property: JsonPropertyName("user")] string? UserHash = null,
     [property: JsonPropertyName("channel")] string? Channel = null,
     [property: JsonPropertyName("channel_hash")] string? ChannelHash = null,
+    [property: JsonPropertyName("guild_hash")] string? GuildHash = null,
     [property: JsonPropertyName("kind")] string? Kind = null,
     [property: JsonPropertyName("outcome")] string? Outcome = null,
     [property: JsonPropertyName("count")] int? Count = null,
     [property: JsonPropertyName("total")] int? Total = null,
     [property: JsonPropertyName("truncated")] bool? Truncated = null,
     [property: JsonPropertyName("call_index")] int? CallIndex = null,
+    [property: JsonPropertyName("provider_call_count")] int? ProviderCallCount = null,
+    [property: JsonPropertyName("native_read_count")] int? NativeReadCount = null,
+    [property: JsonPropertyName("native_write_count")] int? NativeWriteCount = null,
+    [property: JsonPropertyName("accepted_write_count")] int? AcceptedWriteCount = null,
+    [property: JsonPropertyName("succeeded_write_count")] int? SucceededWriteCount = null,
+    [property: JsonPropertyName("failed_write_count")] int? FailedWriteCount = null,
+    [property: JsonPropertyName("partial_failure_write_count")] int? PartialFailureWriteCount = null,
+    [property: JsonPropertyName("unknown_write_count")] int? UnknownWriteCount = null,
     [property: JsonPropertyName("top_score")] double? TopScore = null,
+    [property: JsonPropertyName("conversation_worth")] double? ConversationWorth = null,
+    [property: JsonPropertyName("conversation_hook")] string? ConversationHook = null,
+    [property: JsonPropertyName("reaction_worth")] double? ReactionWorth = null,
+    [property: JsonPropertyName("action_worth")] double? ActionWorth = null,
+    [property: JsonPropertyName("action_hook")] string? ActionHook = null,
+    [property: JsonPropertyName("confidence")] double? Confidence = null,
     [property: JsonPropertyName("query_present")] bool? QueryPresent = null,
     [property: JsonPropertyName("message_id")] ulong? MessageId = null,
     [property: JsonPropertyName("note")] string? Note = null,
@@ -67,6 +82,7 @@ public sealed record TelemetryEvent(
     [property: JsonPropertyName("input_tokens")] long? InputTokens = null,
     [property: JsonPropertyName("output_tokens")] long? OutputTokens = null,
     [property: JsonPropertyName("cached_input_tokens")] long? CachedInputTokens = null,
+    [property: JsonPropertyName("cache_write_input_tokens")] long? CacheWriteInputTokens = null,
     [property: JsonPropertyName("reasoning_tokens")] long? ReasoningTokens = null,
     [property: JsonPropertyName("total_tokens")] long? TotalTokens = null,
     [property: JsonPropertyName("response_id")] string? ResponseId = null,
@@ -126,6 +142,11 @@ public sealed record TelemetryEvent(
     [property: JsonPropertyName("budget_class")] string? BudgetClass = null,
     [property: JsonPropertyName("limit")] int? Limit = null,
     [property: JsonPropertyName("priority_sample")] bool? PrioritySample = null
+    , [property: JsonPropertyName("discord_delivered")] bool? DiscordDelivered = null
+    , [property: JsonPropertyName("visual_delivered")] bool? VisualDelivered = null
+    , [property: JsonPropertyName("memory_current_bytes")] long? MemoryCurrentBytes = null
+    , [property: JsonPropertyName("memory_limit_bytes")] long? MemoryLimitBytes = null
+    , [property: JsonPropertyName("utilization")] double? Utilization = null
 );
 
 /// <summary>Canonical event-type string constants. Use these instead of string literals at call sites.</summary>
@@ -156,16 +177,19 @@ public static class TelemetryEventTypes
     public const string ColdOpenSource = "cold_open_source";
     public const string ColdOpenCritique = "cold_open_critique";
     public const string ColdOpenProviderShadow = "cold_open_provider_shadow";
+    public const string ColdOpenTargetHealth = "cold_open_target_health";
     public const string LlmCall = "llm_call";
     public const string MemoryExtraction = "memory_extraction";
     public const string MemoryTransition = "memory_transition";
     public const string MemoryOpportunity = "memory_opportunity";
     public const string RuntimeStarted = "runtime_started";
+    public const string RuntimeResource = "runtime_resource";
     public const string CreativeRateLimited = "creative_rate_limited";
     public const string WorldAutonomySpeech = "world_autonomy_speech";
     public const string WorldAutonomyCircuit = "world_autonomy_circuit";
     public const string WorldAutonomyAudience = "world_autonomy_audience";
     public const string WorldAutonomyVisual = "world_autonomy_visual";
+    public const string WorldAutonomyRun = "world_autonomy_run";
 }
 
 /// <summary>Writes one content-free deployment boundary after the durable telemetry sink has started.</summary>
@@ -314,4 +338,6 @@ public sealed class TelemetryOptions
 
     /// <summary>Days to retain files. Older files are deleted on startup.</summary>
     public int RetentionDays { get; set; } = 30;
+
+    public TimeSpan ResourceSampleInterval { get; set; } = TimeSpan.FromMinutes(5);
 }

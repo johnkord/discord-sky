@@ -56,6 +56,7 @@ builder.Services.AddSingleton<WorldAutonomyOrchestrator>();
 builder.Services.AddSingleton<IWorldAutonomyRunner>(sp => sp.GetRequiredService<WorldAutonomyOrchestrator>());
 builder.Services.AddSingleton<WorldAutonomyRouter>();
 builder.Services.AddSingleton<WorldAutonomyAudienceGate>();
+builder.Services.AddSingleton<WorldAutonomyAmbientAdmissionCoordinator>();
 builder.Services.AddHostedService<WorldAutonomyStewardProbeService>();
 builder.Services.AddHostedService<WorldAutonomyStewardHealthService>();
 builder.Services.AddHostedService<WorldAutonomyRecoveryService>();
@@ -200,6 +201,7 @@ builder.Services.AddSingleton<FileBackedTelemetrySink>();
 builder.Services.AddSingleton<IRecallTelemetrySink>(sp => sp.GetRequiredService<FileBackedTelemetrySink>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<FileBackedTelemetrySink>());
 builder.Services.AddHostedService<RuntimeStartedTelemetryService>();
+builder.Services.AddHostedService<RuntimeResourceTelemetryService>();
 // Conversation transcript sink: captures full prompt + reply for quality evaluation. Off by default
 // (Transcript:Enabled); writes raw content to the PVC when enabled. See docs/improvement_opportunities_2026-06-10.md H2.
 builder.Services.AddSingleton<FileBackedTranscriptSink>();
@@ -230,6 +232,7 @@ builder.Services.AddHostedService(sp =>
 	sp.GetRequiredService<FileBackedReactionCapabilityRegistry>());
 // The inner-thought worth gate: one cheap-LLM call scores whether an ambient candidate is worth a real reply.
 builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.ImpulseJudge>();
+builder.Services.AddSingleton<WorldAutonomyAudienceJudge>();
 builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.AmbientChannelCoordinator>();
 builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.AmbientEpisodeShadowService>();
 builder.Services.AddSingleton<DiscordSky.Bot.Orchestration.Impulse.IAmbientEpisodeShadowSink>(sp =>

@@ -13,7 +13,7 @@ env:
   AKS_CLUSTER_NAME: jk-aks-2
   IMAGE_NAME: discordskybot
   K8S_NAMESPACE: discord-sky
-  STEWARD_REF: 4ca56f92fc92f85a0029fbc839091a0b264d5709
+  STEWARD_REF: b3d1f48a5ef55fea6a7948fce3029028c9c7542a
 
 permissions:
   contents: read

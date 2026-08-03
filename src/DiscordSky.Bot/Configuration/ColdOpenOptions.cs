@@ -72,9 +72,13 @@ public sealed class ColdOpenOptions
     public double SemanticNoveltySampleRate { get; init; } = 1.0;
 }
 
-/// <summary>One opted-in cold-open target: a guild name (optional; blank matches any) and a channel name.</summary>
+/// <summary>One opted-in cold-open target. Exact IDs take priority; names remain a compatibility fallback and label.</summary>
 public sealed class ColdOpenChannel
 {
+    public ulong? GuildId { get; init; }
+
+    public ulong? ChannelId { get; init; }
+
     public string Guild { get; init; } = string.Empty;
     public string Channel { get; init; } = string.Empty;
 }

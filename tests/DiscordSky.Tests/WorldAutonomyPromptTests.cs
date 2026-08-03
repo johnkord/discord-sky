@@ -94,6 +94,16 @@ public sealed class WorldAutonomyPromptTests
     }
 
     [Fact]
+    public void Instructions_UseExplicitFinalSpeechContractWhenTerminalDeliveryIsEnabled()
+    {
+        var instructions = WorldAutonomyPrompt.BuildInstructions(Context(), terminalDeliveryEnabled: true);
+
+        Assert.Contains(WorldAutonomySpeechTool.TerminalToolName, instructions, StringComparison.Ordinal);
+        Assert.Contains("Call it alone as your final act", instructions, StringComparison.Ordinal);
+        Assert.DoesNotContain("with speak_as_robotnik", instructions, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Instructions_KeepOperationalCanariesOffDiscord()
     {
         var instructions = WorldAutonomyPrompt.BuildInstructions(Context() with
@@ -155,6 +165,36 @@ public sealed class WorldAutonomyPromptTests
             .Count();
 
         Assert.True(suggestions > 1, "Every run was handed the same mischief suggestion.");
+    }
+
+    [Fact]
+    public void CachePrefix_ContainsOnlyStableRobotnikAndOperationalContracts()
+    {
+        var stable = WorldAutonomyPrompt.BuildStableCachePrefix(
+            hasSourceChannel: true,
+            terminalDeliveryEnabled: true);
+
+        Assert.Contains("Dr. Ivo Robotnik", stable, StringComparison.Ordinal);
+        Assert.Contains(WorldAutonomySpeechTool.TerminalToolName, stable, StringComparison.Ordinal);
+        Assert.Contains("deferred tool search", stable, StringComparison.Ordinal);
+        Assert.DoesNotContain("667956000757776386", stable, StringComparison.Ordinal);
+        Assert.DoesNotContain("01900000-0000-7000-8000-000000000001", stable, StringComparison.Ordinal);
+        Assert.DoesNotContain("Under-Minister", stable, StringComparison.Ordinal);
+        Assert.True(stable.Length >= 4096, "Stable prefix may be too short to reach the 1,024-token cache minimum.");
+    }
+
+    [Fact]
+    public void CacheSuffix_ContainsEveryRunSpecificInstruction()
+    {
+        var dynamic = WorldAutonomyPrompt.BuildDynamicCacheSuffix(Context() with
+        {
+            PersonaDirective = "Mood: seething. Under-Minister appointed."
+        });
+
+        Assert.Contains("667956000757776386", dynamic, StringComparison.Ordinal);
+        Assert.Contains("Under-Minister appointed", dynamic, StringComparison.Ordinal);
+        Assert.Contains("01900000-0000-7000-8000-000000000001", dynamic, StringComparison.Ordinal);
+        Assert.Contains("Optional inspiration", dynamic, StringComparison.Ordinal);
     }
 
     private static WorldAutonomyRunContext Context() => new(

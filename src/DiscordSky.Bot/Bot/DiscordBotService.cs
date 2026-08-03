@@ -80,6 +80,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly CancellationTokenSource _shutdownCts = new();
     private readonly WorldAutonomyRouter? _worldAutonomyRouter;
     private readonly WorldAutonomyAudienceGate? _worldAutonomyAudienceGate;
+    private readonly WorldAutonomyAmbientAdmissionCoordinator? _worldAutonomyAmbientAdmission;
     internal const int DiscordMaxMessageLength = 2000;
 
     /// <summary>How much of the room's recent conversation an autonomy run is briefed with.</summary>
@@ -135,7 +136,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         IReactionCapabilityRegistry? reactionCapabilities = null,
         MemoryOpportunityClassifier? memoryOpportunityClassifier = null,
         WorldAutonomyRouter? worldAutonomyRouter = null,
-        WorldAutonomyAudienceGate? worldAutonomyAudienceGate = null)
+        WorldAutonomyAudienceGate? worldAutonomyAudienceGate = null,
+        WorldAutonomyAmbientAdmissionCoordinator? worldAutonomyAmbientAdmission = null)
     {
         _client = client;
         _options = options.Value;
@@ -182,6 +184,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _ambientReplyQuiet = TimeSpan.FromSeconds(Math.Max(0, chaosSettings.CurrentValue.AmbientReplyQuietSeconds));
         _worldAutonomyRouter = worldAutonomyRouter;
         _worldAutonomyAudienceGate = worldAutonomyAudienceGate;
+        _worldAutonomyAmbientAdmission = worldAutonomyAmbientAdmission;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -487,63 +490,46 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             var isDirectAddress = repliedToBot.Value
                 || mentionsBotDirectly
                 || hasPrefix;
-            if (visualIntent != VisualRequestIntent.None)
+            if (!isDirectAddress)
             {
-                _telemetry.Emit(new TelemetryEvent(
-                    Timestamp: DateTimeOffset.UtcNow,
-                    EventType: TelemetryEventTypes.WorldAutonomyVisual,
-                    UserHash: UserIdHash.Hash(message.Author.Id),
-                    Channel: autonomyChannel.Name,
-                    Kind: VisualIntentName(visualIntent),
-                    Outcome: "offered",
-                    MessageId: message.Id,
-                    Reason: isDirectAddress ? "direct" : "ambient"));
-            }
-            if (!isDirectAddress && _worldAutonomyAudienceGate is not null)
-            {
-                var pulse = _channelPulse?.Snapshot(message.Channel.Id, TimeSpan.FromMinutes(10));
-                var botSpokeRecently = pulse?.LastBotAt is { } lastBotAt
-                    ? DateTimeOffset.UtcNow - lastBotAt < TimeSpan.FromMinutes(2)
-                    : DidBotSpeakRecently(message.Channel, TimeSpan.FromMinutes(2));
-                SemanticMessageView? audienceView = null;
-                try
+                if (_worldAutonomyAmbientAdmission is not null)
                 {
-                    audienceView = await _contextAggregator.BuildMessageViewAsync(
-                        message,
-                        includeHttpUnfurls: true,
+                    _ = _worldAutonomyAmbientAdmission.OfferAsync(
+                        new WorldAutonomyAmbientAdmissionRequest(
+                            autonomyChannel.Guild.Id,
+                            message.Channel.Id,
+                            message.Id,
+                            (episode, admissionCancellationToken) => HandleAmbientWorldAutonomyAsync(
+                                autonomyChannel,
+                                message,
+                                content,
+                                visualIntent,
+                                episode,
+                                admissionCancellationToken)),
                         _shutdownCts.Token);
                 }
-                catch (Exception ex)
+                else
                 {
-                    _logger.LogDebug(ex, "Could not build autonomy audience media context for message {MessageId}.", message.Id);
+                    await HandleAmbientWorldAutonomyAsync(
+                        autonomyChannel,
+                        message,
+                        content,
+                        visualIntent,
+                        episode: null,
+                        _shutdownCts.Token);
                 }
-                var gateDecision = await _worldAutonomyAudienceGate.EvaluateAsync(
-                    new WorldAutonomyAudienceRequest(
-                        GetDefaultPersona(),
-                        GetDisplayName(message.Author),
-                        audienceView?.Text ?? content,
-                        BuildAutonomyAudienceContext(message, pulse, botSpokeRecently),
-                        _empireState is { Enabled: true } ? _empireState.Current.Mood.Label : null,
-                        message.Id,
-                        autonomyChannel.Name,
-                        message.Author.Id,
-                        botSpokeRecently,
-                        autonomyChannel.Guild.Id,
-                        message.Channel.Id,
-                        audienceView?.HasMedia == true || message.Attachments.Count > 0 || message.Embeds.Count > 0,
-                        audienceView?.MediaContext),
-                    _shutdownCts.Token);
-                if (gateDecision.Action == WorldAutonomyAudienceAction.Reaction)
-                {
-                    await MaybeReactInCharacterAsync(message);
-                    return;
-                }
-                if (gateDecision.Action == WorldAutonomyAudienceAction.Silence)
-                {
-                    return;
-                }
+                return;
             }
-            if (await TryHandleWorldAutonomyAsync(autonomyChannel, message, content, isDirectAddress))
+
+            _worldAutonomyAmbientAdmission?.Cancel(autonomyChannel.Guild.Id);
+            EmitWorldAutonomyVisualOffered(autonomyChannel, message, visualIntent, "direct");
+            if (await TryHandleWorldAutonomyAsync(
+                    autonomyChannel,
+                    message,
+                    content,
+                    isDirectAddress: true,
+                    sourceEpisodeId: null,
+                    cancellationToken: _shutdownCts.Token))
             {
                 return;
             }
@@ -2112,23 +2098,175 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     /// message, in which case the caller must not also reply: the whole point is that a guild which handed
     /// Robotnik real control hears one Robotnik, and it is the one who can act on what he threatens.
     /// </summary>
+    private async Task HandleAmbientWorldAutonomyAsync(
+        SocketGuildChannel guildChannel,
+        SocketUserMessage message,
+        string content,
+        VisualRequestIntent visualIntent,
+        WorldAutonomyAmbientEpisode? episode,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        EmitWorldAutonomyVisualOffered(guildChannel, message, visualIntent, "ambient");
+        if (_worldAutonomyAudienceGate is not null)
+        {
+            var pulse = _channelPulse?.Snapshot(message.Channel.Id, TimeSpan.FromMinutes(10));
+            var botSpokeRecently = pulse?.LastBotAt is { } lastBotAt
+                ? DateTimeOffset.UtcNow - lastBotAt < TimeSpan.FromMinutes(2)
+                : DidBotSpeakRecently(message.Channel, TimeSpan.FromMinutes(2));
+            var episodeViews = new List<(SocketUserMessage Message, SemanticMessageView View)>();
+            var episodeMessages = GetAmbientEpisodeMessages(message, episode?.MessageCount ?? 1);
+            foreach (var episodeMessage in episodeMessages)
+            {
+                try
+                {
+                    var view = await _contextAggregator.BuildMessageViewAsync(
+                        episodeMessage,
+                        includeHttpUnfurls: true,
+                        cancellationToken);
+                    episodeViews.Add((episodeMessage, view));
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(
+                        ex,
+                        "Could not build autonomy audience context for episode message {MessageId}.",
+                        episodeMessage.Id);
+                }
+            }
+
+            var audienceView = episodeViews.FirstOrDefault(item => item.Message.Id == message.Id).View;
+            var mediaContext = BuildAmbientEpisodeMediaContext(episodeViews);
+            var hasMedia = episodeViews.Any(item => item.View.HasMedia) ||
+                episodeMessages.Any(item => item.Attachments.Count > 0 || item.Embeds.Count > 0);
+            var gateDecision = await _worldAutonomyAudienceGate.EvaluateAsync(
+                new WorldAutonomyAudienceRequest(
+                    GetDefaultPersona(),
+                    GetDisplayName(message.Author),
+                    audienceView?.Text ?? content,
+                    BuildAutonomyAudienceContext(message, pulse, botSpokeRecently, episode),
+                    _empireState is { Enabled: true } ? _empireState.Current.Mood.Label : null,
+                    message.Id,
+                    guildChannel.Name,
+                    message.Author.Id,
+                    botSpokeRecently,
+                    guildChannel.Guild.Id,
+                    message.Channel.Id,
+                    hasMedia,
+                    mediaContext,
+                    episode?.EpisodeId,
+                    episode?.MessageCount ?? 1),
+                cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (gateDecision.Action == WorldAutonomyAudienceAction.Reaction)
+            {
+                await MaybeReactInCharacterAsync(message);
+                return;
+            }
+            if (gateDecision.Action == WorldAutonomyAudienceAction.Silence)
+            {
+                return;
+            }
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        await TryHandleWorldAutonomyAsync(
+            guildChannel,
+            message,
+            content,
+            isDirectAddress: false,
+            episode?.EpisodeId,
+            cancellationToken);
+    }
+
+    private static IReadOnlyList<SocketUserMessage> GetAmbientEpisodeMessages(
+        SocketUserMessage trigger,
+        int episodeMessageCount)
+    {
+        var limit = Math.Clamp(episodeMessageCount, 1, 6);
+        var cutoff = trigger.Timestamp - TimeSpan.FromMinutes(10);
+        var candidates = trigger.Channel.GetCachedMessages(Math.Max(30, limit * 3))
+            .OfType<SocketUserMessage>()
+            .Where(item => !item.Author.IsBot && item.Timestamp >= cutoff && item.Timestamp <= trigger.Timestamp)
+            .ToList();
+        if (candidates.All(item => item.Id != trigger.Id))
+        {
+            candidates.Add(trigger);
+        }
+
+        return candidates
+            .OrderBy(item => item.Timestamp)
+            .ThenBy(item => item.Id)
+            .TakeLast(limit)
+            .ToArray();
+    }
+
+    private static string? BuildAmbientEpisodeMediaContext(
+        IEnumerable<(SocketUserMessage Message, SemanticMessageView View)> episodeViews)
+    {
+        var lines = episodeViews
+            .Where(item => !string.IsNullOrWhiteSpace(item.View.MediaContext))
+            .Select(item => $"{GetDisplayName(item.Message.Author)}: {item.View.MediaContext!.Trim()}")
+            .ToArray();
+        if (lines.Length == 0)
+        {
+            return null;
+        }
+
+        var combined = string.Join('\n', lines);
+        return combined.Length <= 2_400 ? combined : combined[..2_400];
+    }
+
+    private void EmitWorldAutonomyVisualOffered(
+        SocketGuildChannel guildChannel,
+        SocketUserMessage message,
+        VisualRequestIntent visualIntent,
+        string reason)
+    {
+        if (visualIntent == VisualRequestIntent.None)
+        {
+            return;
+        }
+
+        _telemetry.Emit(new TelemetryEvent(
+            Timestamp: DateTimeOffset.UtcNow,
+            EventType: TelemetryEventTypes.WorldAutonomyVisual,
+            UserHash: UserIdHash.Hash(message.Author.Id),
+            Channel: guildChannel.Name,
+            Kind: VisualIntentName(visualIntent),
+            Outcome: "offered",
+            MessageId: message.Id,
+            Reason: reason));
+    }
+
     private async Task<bool> TryHandleWorldAutonomyAsync(
         SocketGuildChannel guildChannel,
         SocketUserMessage message,
         string content,
-        bool isDirectAddress)
+        bool isDirectAddress,
+        string? sourceEpisodeId,
+        CancellationToken cancellationToken)
     {
-        var opportunity = BuildAutonomyOpportunity(guildChannel, message, content, isDirectAddress);
+        var opportunity = BuildAutonomyOpportunity(
+            guildChannel,
+            message,
+            content,
+            isDirectAddress,
+            sourceEpisodeId);
         if (!isDirectAddress)
         {
-            _ = _worldAutonomyRouter!.TryRunAsync(opportunity, _shutdownCts.Token);
+            _ = _worldAutonomyRouter!.TryRunAsync(opportunity, cancellationToken);
             return true;
         }
 
         WorldAutonomyRunResult? result;
         using (message.Channel.EnterTypingState())
         {
-            result = await _worldAutonomyRouter!.TryRunDirectAsync(opportunity, _shutdownCts.Token);
+            result = await _worldAutonomyRouter!.TryRunDirectAsync(opportunity, cancellationToken);
         }
 
         if (result is null)
@@ -2189,7 +2327,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         SocketGuildChannel guildChannel,
         SocketUserMessage message,
         string content,
-        bool isDirectAddress)
+        bool isDirectAddress,
+        string? sourceEpisodeId)
     {
         var prompt = new StringBuilder();
         prompt.Append("You are in the Discord server '").Append(guildChannel.Guild.Name)
@@ -2234,7 +2373,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             "discord_message",
             prompt.ToString(),
             message.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            SourceEpisodeId: null,
+            SourceEpisodeId: sourceEpisodeId,
             TraceId: Guid.NewGuid().ToString("N"),
             ModelOverride: null,
             IsDirectAddress: isDirectAddress,
@@ -2251,7 +2390,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private string? BuildAutonomyAudienceContext(
         SocketUserMessage message,
         ChannelPulseSnapshot? pulse,
-        bool botSpokeRecently)
+        bool botSpokeRecently,
+        WorldAutonomyAmbientEpisode? episode)
     {
         var context = new StringBuilder();
         if (pulse is not null)
@@ -2262,7 +2402,27 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
         context.Append("Robotnik spoke in the last two minutes: ")
             .Append(botSpokeRecently ? "yes" : "no").Append('.');
+        if (episode is not null)
+        {
+            context.Append(" Coalesced episode contains ").Append(episode.MessageCount)
+                .Append(" message fragment(s). Episode ID: ").Append(episode.EpisodeId).Append('.');
+        }
+
         var botId = _client.CurrentUser?.Id;
+        var recentRoom = message.Channel.GetCachedMessages(30)
+            .Where(cached => cached.Id != message.Id
+                && cached.Timestamp >= DateTimeOffset.UtcNow.AddMinutes(-10)
+                && !string.IsNullOrWhiteSpace(cached.Content))
+            .OrderBy(cached => cached.Timestamp)
+            .TakeLast(6);
+        foreach (var cached in recentRoom)
+        {
+            var speaker = cached.Author.Id == botId ? "Robotnik" : GetDisplayName(cached.Author);
+            var text = cached.Content.Replace('\n', ' ').Trim();
+            context.Append(" Recent room line from ").Append(speaker).Append(": ")
+                .Append(text.Length <= 160 ? text : string.Concat(text.AsSpan(0, 160), "..."));
+        }
+
         var recentRobotnik = botId.HasValue
             ? message.Channel.GetCachedMessages(AutonomyHistoryLimit)
                 .Where(cached => cached.Author.Id == botId.Value && !string.IsNullOrWhiteSpace(cached.Content))

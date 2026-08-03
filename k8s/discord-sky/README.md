@@ -90,6 +90,27 @@ The default dark deployment sets `WorldAutonomy__ValidateStewardOnStartup=true`,
 default immutable manifest without starting an MCP server, contacting Discord, or enabling any guild
 binding. A probe failure prevents the pod from becoming ready.
 
+## Private Proactive Target Bindings
+
+Cold-open targets may be bound to exact Discord resource IDs without placing those IDs in this repository. Create
+the optional ConfigMap out of band, providing `GuildId` and `ChannelId` together. Names are optional display labels
+and backward-compatible fallback values; when IDs are present, renames do not affect resolution.
+
+```bash
+kubectl create configmap discord-sky-runtime-bindings \
+   --namespace discord-sky \
+   --from-literal=ColdOpen__Channels__0__GuildId='<exact-guild-id>' \
+   --from-literal=ColdOpen__Channels__0__ChannelId='<exact-channel-id>' \
+   --from-literal=ColdOpen__Channels__0__Guild='<display-label>' \
+   --from-literal=ColdOpen__Channels__0__Channel='<display-label>' \
+   --dry-run=client -o yaml | kubectl apply -f -
+```
+
+The public Deployment mounts this ConfigMap optionally, and `scripts/deploy.sh` validates its key allow-list and
+ID pairs before rollout. Keep behavior policy such as `ColdOpen__Enabled` and `ColdOpen__ShadowMode` in the public
+policy ConfigMap; the private binding ConfigMap cannot override those settings. Migrate or restore targets in
+shadow mode and review opportunities before enabling live posting.
+
 See [the autonomy validation runbook](../../docs/world_autonomy_validation_runbook.md) for the required
 dark-rollout evidence, live provider smoke, disposable-guild R0 through R5 matrix, recovery checks, and
 promotion criteria.

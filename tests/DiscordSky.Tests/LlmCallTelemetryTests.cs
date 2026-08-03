@@ -2,6 +2,10 @@ using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Memory.Logging;
 using DiscordSky.Bot.Models.Orchestration;
 using Microsoft.Extensions.AI;
+using OpenAI.Responses;
+using System.ClientModel.Primitives;
+
+#pragma warning disable OPENAI001
 
 namespace DiscordSky.Tests;
 
@@ -21,14 +25,19 @@ public sealed class LlmCallTelemetryTests
                 CachedInputTokenCount = 25,
                 ReasoningTokenCount = 10,
                 TotalTokenCount = 140,
+                AdditionalCounts = new AdditionalPropertiesDictionary<long>
+                {
+                    ["cache_creation_input_tokens"] = 15,
+                },
             },
         };
         var inner = new StubChatClient(response);
         var telemetry = new InMemoryTelemetrySink();
         using var client = new TelemetryChatClient(inner, "OpenAI", telemetry);
+        var usage = new LlmRunUsageAccumulator();
         var options = new ChatOptions { ModelId = "requested-model" };
-        LlmCallTelemetry.Tag(
-            options,
+        using var taggingClient = new LlmCallTaggingChatClient(
+            client,
             "ambient_reply",
             new LlmWorkloadProfile("requested-model", "low"),
             messageId: 123,
@@ -38,9 +47,10 @@ public sealed class LlmCallTelemetryTests
                 OperationId: "operation-1",
                 EpisodeSchemaVersion: 1,
                 EvidenceDigest: "evidence-1",
-                ProjectionDigest: "projection-1"));
+                ProjectionDigest: "projection-1"),
+            usageAccumulator: usage);
 
-        await client.GetResponseAsync([new ChatMessage(ChatRole.User, "secret prompt")], options);
+        await taggingClient.GetResponseAsync([new ChatMessage(ChatRole.User, "secret prompt")], options);
 
         Assert.False(inner.Options?.AdditionalProperties?.Any() ?? false);
         var evt = Assert.Single(telemetry.Events);
@@ -61,10 +71,62 @@ public sealed class LlmCallTelemetryTests
         Assert.Equal(100, evt.InputTokens);
         Assert.Equal(40, evt.OutputTokens);
         Assert.Equal(25, evt.CachedInputTokens);
+        Assert.Equal(15, evt.CacheWriteInputTokens);
         Assert.Equal(10, evt.ReasoningTokens);
         Assert.Equal(140, evt.TotalTokens);
         Assert.Equal("resp-1", evt.ResponseId);
         Assert.Null(evt.FailureClass);
+        Assert.Equal(
+            new LlmRunUsageSnapshot(1, 100, 40, 25, 15, 10, 140),
+            usage.Snapshot());
+    }
+
+    [Fact]
+    public void CacheWriteTokens_UnknownOrAbsentKeysRemainUnknown()
+    {
+        Assert.Null(TelemetryChatClient.GetCacheWriteInputTokens((UsageDetails?)null));
+        Assert.Null(TelemetryChatClient.GetCacheWriteInputTokens(new UsageDetails()));
+        Assert.Null(TelemetryChatClient.GetCacheWriteInputTokens(new UsageDetails
+        {
+            AdditionalCounts = new AdditionalPropertiesDictionary<long>
+            {
+                ["provider_specific_count"] = 42,
+            },
+        }));
+    }
+
+    [Fact]
+    public void CacheWriteTokens_ReadsExactNativeResponsesUsagePath()
+    {
+        var native = ModelReaderWriter.Read<ResponseResult>(
+            BinaryData.FromString("""
+                {
+                  "id": "resp_test",
+                  "object": "response",
+                  "created_at": 0,
+                  "status": "completed",
+                  "model": "gpt-5.6",
+                  "output": [],
+                  "parallel_tool_calls": false,
+                  "tool_choice": "auto",
+                  "tools": [],
+                  "usage": {
+                    "input_tokens": 1200,
+                    "input_tokens_details": { "cached_tokens": 0, "cache_write_tokens": 1024 },
+                    "output_tokens": 5,
+                    "output_tokens_details": { "reasoning_tokens": 0 },
+                    "total_tokens": 1205
+                  }
+                }
+                """),
+            ModelReaderWriterOptions.Json);
+        var response = new ChatResponse(new ChatMessage(ChatRole.Assistant, "done"))
+        {
+            RawRepresentation = native,
+            Usage = new UsageDetails { InputTokenCount = 1200 },
+        };
+
+        Assert.Equal(1024, TelemetryChatClient.GetCacheWriteInputTokens(response));
     }
 
     [Fact]

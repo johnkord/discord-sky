@@ -46,6 +46,7 @@ public sealed class ColdOpenService : IHostedService, IDisposable
 
     private readonly SemaphoreSlim _lock = new(1, 1);
     private readonly Dictionary<ulong, ChannelBudget> _budgets = new();
+    private readonly Dictionary<string, string> _targetHealth = new(StringComparer.Ordinal);
     private CancellationTokenSource? _cts;
     private Task? _loop;
 
@@ -511,17 +512,53 @@ public sealed class ColdOpenService : IHostedService, IDisposable
 
     private SocketTextChannel? ResolveChannel(ColdOpenChannel target)
     {
-        if (string.IsNullOrWhiteSpace(target.Channel)) return null;
+        var resolution = ColdOpenTargetResolver.Resolve(
+            target,
+            _client.Guilds.SelectMany(guild => guild.TextChannels.Select(channel => new ColdOpenResolvableChannel(
+                guild.Id,
+                guild.Name,
+                channel.Id,
+                channel.Name))));
+        RecordTargetHealth(target, resolution);
+        return resolution.ChannelId.HasValue
+            ? _client.GetChannel(resolution.ChannelId.Value) as SocketTextChannel
+            : null;
+    }
 
-        var guild = _client.Guilds.FirstOrDefault(g =>
-            string.IsNullOrWhiteSpace(target.Guild) || string.Equals(g.Name, target.Guild, StringComparison.OrdinalIgnoreCase));
-        var channel = guild?.TextChannels.FirstOrDefault(c => string.Equals(c.Name, target.Channel, StringComparison.OrdinalIgnoreCase));
-
-        if (channel is null)
+    private void RecordTargetHealth(ColdOpenChannel target, ColdOpenTargetResolution resolution)
+    {
+        var identity = target.GuildId.HasValue || target.ChannelId.HasValue
+            ? $"id:{target.GuildId}:{target.ChannelId}"
+            : $"name:{target.Guild.Trim().ToLowerInvariant()}:{target.Channel.Trim().ToLowerInvariant()}";
+        if (_targetHealth.TryGetValue(identity, out var previous) &&
+            string.Equals(previous, resolution.Status, StringComparison.Ordinal))
         {
-            _logger.LogDebug("cold_open channel not resolvable yet: guild={Guild} channel={Channel}", target.Guild, target.Channel);
+            return;
         }
-        return channel;
+
+        _targetHealth[identity] = resolution.Status;
+        _telemetry.Emit(new TelemetryEvent(
+            Timestamp: DateTimeOffset.UtcNow,
+            EventType: TelemetryEventTypes.ColdOpenTargetHealth,
+            Channel: string.IsNullOrWhiteSpace(target.Channel) ? null : target.Channel,
+            Outcome: resolution.IsResolved ? "resolved" : "unresolved",
+            Reason: resolution.Status));
+        if (resolution.IsResolved)
+        {
+            _logger.LogInformation(
+                "cold_open target resolved: mode={Mode} guild={GuildLabel} channel={ChannelLabel}",
+                resolution.Status,
+                target.Guild,
+                target.Channel);
+        }
+        else
+        {
+            _logger.LogWarning(
+                "cold_open target unresolved: reason={Reason} guild={GuildLabel} channel={ChannelLabel}",
+                resolution.Status,
+                target.Guild,
+                target.Channel);
+        }
     }
 
     private ChannelBudget GetBudget(ulong channelId, DateTimeOffset now, ColdOpenOptions opts)

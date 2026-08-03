@@ -5,6 +5,8 @@ using System.Text.Json.Nodes;
 using DiscordSky.Bot.Configuration;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Protocol;
 
 namespace DiscordSky.Bot.Orchestration.Autonomy;
@@ -112,12 +114,23 @@ public sealed class WorldAutonomyRunState
     private readonly IWorldAutonomyLedger _ledger;
     private readonly ImmutableDictionary<string, WorldAutonomyToolDescriptor> _writes;
     private readonly HashSet<string> _usedRequestIds = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _deterministicFailureRetryKeys = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ApprovedDispatch> _byModelCallId = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Queue<ApprovedDispatch>> _pendingInvocations = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _dispatchGate = new(1, 1);
     private int _nextSequence;
+    private int _unsettledWriteCount;
+    private bool _terminalizing;
+    private int _nativeReadCount;
+    private int _nativeWriteCount;
+    private int _acceptedWriteCount;
+    private int _succeededWriteCount;
+    private int _failedWriteCount;
+    private int _partialFailureWriteCount;
+    private int _unknownWriteCount;
     private int _channelSpeechCount;
     private int _visualMediumSelectionCount;
+    private int _visualDeliveryCount;
 
     public WorldAutonomyRunState(
         WorldAutonomyRunContext context,
@@ -146,8 +159,57 @@ public sealed class WorldAutonomyRunState
 
     public bool VisualMediumSelected => Volatile.Read(ref _visualMediumSelectionCount) > 0;
 
+    public bool VisualDelivered => Volatile.Read(ref _visualDeliveryCount) > 0;
+
+    public bool HasUnsettledWrites => Volatile.Read(ref _unsettledWriteCount) > 0;
+
+    public WorldAutonomyRunActivitySnapshot ActivitySnapshot => new(
+        Volatile.Read(ref _nativeReadCount),
+        Volatile.Read(ref _nativeWriteCount),
+        Volatile.Read(ref _acceptedWriteCount),
+        Volatile.Read(ref _succeededWriteCount),
+        Volatile.Read(ref _failedWriteCount),
+        Volatile.Read(ref _partialFailureWriteCount),
+        Volatile.Read(ref _unknownWriteCount),
+        SpokeInChannel,
+        VisualDelivered);
+
     internal bool TrySelectVisualMedium() =>
         Interlocked.CompareExchange(ref _visualMediumSelectionCount, 1, 0) == 0;
+
+    internal void RecordVisualDelivery() => Interlocked.Increment(ref _visualDeliveryCount);
+
+    internal async ValueTask<bool> TryBeginTerminalizationAsync(CancellationToken cancellationToken)
+    {
+        await _dispatchGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_terminalizing || _unsettledWriteCount != 0)
+            {
+                return false;
+            }
+
+            _terminalizing = true;
+            return true;
+        }
+        finally
+        {
+            _dispatchGate.Release();
+        }
+    }
+
+    internal async ValueTask CancelTerminalizationAsync()
+    {
+        await _dispatchGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            _terminalizing = false;
+        }
+        finally
+        {
+            _dispatchGate.Release();
+        }
+    }
 
     internal Task RecordDiscordDeliveryAsync(
         ulong channelId,
@@ -187,6 +249,11 @@ public sealed class WorldAutonomyRunState
         await _dispatchGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
+            if (_terminalizing)
+            {
+                throw new InvalidOperationException("Autonomy cannot approve a write after terminal delivery begins.");
+            }
+
             if (_byModelCallId.TryGetValue(functionCall.CallId, out var existing))
             {
                 if (!string.Equals(existing.ToolName, functionCall.Name, StringComparison.Ordinal) ||
@@ -197,6 +264,13 @@ public sealed class WorldAutonomyRunState
                 }
 
                 return true;
+            }
+
+            var retryKey = ComputeRetryKey(functionCall.Name, arguments);
+            if (_deterministicFailureRetryKeys.Contains(retryKey))
+            {
+                throw new InvalidOperationException(
+                    $"Autonomy cannot repeat the same deterministic failed invocation of '{functionCall.Name}'; change the arguments or stop.");
             }
 
             var requestId = ResolveRequestId(arguments, descriptor.RequiresRequestId);
@@ -214,7 +288,8 @@ public sealed class WorldAutonomyRunState
                 requestId,
                 argumentsJson,
                 descriptor.SchemaDigest,
-                descriptor.RequiresRequestId);
+                descriptor.RequiresRequestId,
+                retryKey);
             try
             {
                 await _ledger.RecordDispatchPendingAsync(
@@ -248,6 +323,8 @@ public sealed class WorldAutonomyRunState
             }
 
             pending.Enqueue(dispatch);
+            _unsettledWriteCount++;
+            Interlocked.Increment(ref _nativeWriteCount);
             return true;
         }
         finally
@@ -279,7 +356,7 @@ public sealed class WorldAutonomyRunState
         }
     }
 
-    internal Task RecordInvocationCompletedAsync(ApprovedDispatch dispatch, object? result)
+    internal async Task RecordInvocationCompletedAsync(ApprovedDispatch dispatch, object? result)
     {
         var evidence = SummarizeReadResult(result);
         if (IsChannelSpeechTool(dispatch.ToolName) && IsSuccessfulOutcome(evidence))
@@ -294,13 +371,15 @@ public sealed class WorldAutonomyRunState
             : IsMcpToolError(result)
                 ? WorldAutonomyDispatchStatuses.Failed
                 : WorldAutonomyDispatchStatuses.Succeeded;
-        return _ledger.CompleteToolCallAsync(
+        await _ledger.CompleteToolCallAsync(
             dispatch.CallId,
             dispatchStatus,
             resultJson: SerializeResult(result),
             errorMessage: evidence.ErrorCode ?? (IsMcpToolError(result) ? "mcp_tool_error" : null),
             TimeProvider.GetUtcNow(),
-            CancellationToken.None);
+            CancellationToken.None).ConfigureAwait(false);
+        RecordWriteOutcome(dispatchStatus);
+        await MarkWriteSettledAsync(dispatch, evidence.ErrorCode).ConfigureAwait(false);
     }
 
     private static string MapJournaledDispatchStatus(string outcome) => outcome.ToLowerInvariant() switch
@@ -329,15 +408,44 @@ public sealed class WorldAutonomyRunState
             !evidence.Outcome.Equals("partial_failure", StringComparison.OrdinalIgnoreCase) &&
             !evidence.Outcome.Equals("unknown", StringComparison.OrdinalIgnoreCase);
 
-    internal Task RecordInvocationUnknownAsync(ApprovedDispatch dispatch, Exception exception) => _ledger.CompleteToolCallAsync(
-        dispatch.CallId,
-        WorldAutonomyDispatchStatuses.Unknown,
-        resultJson: null,
-        errorMessage: exception.GetType().Name,
-        TimeProvider.GetUtcNow(),
-        CancellationToken.None);
+    internal async Task RecordInvocationUnknownAsync(ApprovedDispatch dispatch, Exception exception)
+    {
+        await _ledger.CompleteToolCallAsync(
+            dispatch.CallId,
+            WorldAutonomyDispatchStatuses.Unknown,
+            resultJson: null,
+            errorMessage: exception.GetType().Name,
+            TimeProvider.GetUtcNow(),
+            CancellationToken.None).ConfigureAwait(false);
+        RecordWriteOutcome(WorldAutonomyDispatchStatuses.Unknown);
+        await MarkWriteSettledAsync(dispatch, deterministicErrorCode: null).ConfigureAwait(false);
+    }
 
-    internal Task RecordReadInvocationAsync(
+    private async ValueTask MarkWriteSettledAsync(
+        ApprovedDispatch dispatch,
+        string? deterministicErrorCode)
+    {
+        await _dispatchGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            if (_unsettledWriteCount <= 0)
+            {
+                throw new InvalidOperationException("Autonomy write settlement did not match an unsettled dispatch.");
+            }
+
+            _unsettledWriteCount--;
+            if (IsDeterministicError(deterministicErrorCode))
+            {
+                _deterministicFailureRetryKeys.Add(dispatch.RetryKey);
+            }
+        }
+        finally
+        {
+            _dispatchGate.Release();
+        }
+    }
+
+    internal async Task RecordReadInvocationAsync(
         string toolName,
         AIFunctionArguments arguments,
         object? result)
@@ -345,7 +453,7 @@ public sealed class WorldAutonomyRunState
         var argumentsJson = WorldAutonomyCanonicalizer.SerializeArguments(
             new Dictionary<string, object?>(arguments, StringComparer.Ordinal));
         var evidence = SummarizeReadResult(result);
-        return _ledger.RecordRunEventAsync(
+        await _ledger.RecordRunEventAsync(
             Context.RunId,
             "native_read",
             JsonSerializer.Serialize(new
@@ -356,17 +464,18 @@ public sealed class WorldAutonomyRunState
                 errorCode = evidence.ErrorCode
             }),
             TimeProvider.GetUtcNow(),
-            CancellationToken.None);
+            CancellationToken.None).ConfigureAwait(false);
+        Interlocked.Increment(ref _nativeReadCount);
     }
 
-    internal Task RecordReadInvocationFailureAsync(
+    internal async Task RecordReadInvocationFailureAsync(
         string toolName,
         AIFunctionArguments arguments,
         Exception exception)
     {
         var argumentsJson = WorldAutonomyCanonicalizer.SerializeArguments(
             new Dictionary<string, object?>(arguments, StringComparer.Ordinal));
-        return _ledger.RecordRunEventAsync(
+        await _ledger.RecordRunEventAsync(
             Context.RunId,
             "native_read",
             JsonSerializer.Serialize(new
@@ -377,7 +486,32 @@ public sealed class WorldAutonomyRunState
                 errorCode = exception.GetType().Name
             }),
             TimeProvider.GetUtcNow(),
-            CancellationToken.None);
+            CancellationToken.None).ConfigureAwait(false);
+        Interlocked.Increment(ref _nativeReadCount);
+    }
+
+    private void RecordWriteOutcome(string dispatchStatus)
+    {
+        switch (dispatchStatus)
+        {
+            case WorldAutonomyDispatchStatuses.Accepted:
+                Interlocked.Increment(ref _acceptedWriteCount);
+                break;
+            case WorldAutonomyDispatchStatuses.Succeeded:
+                Interlocked.Increment(ref _succeededWriteCount);
+                break;
+            case WorldAutonomyDispatchStatuses.Failed:
+                Interlocked.Increment(ref _failedWriteCount);
+                break;
+            case WorldAutonomyDispatchStatuses.PartialFailure:
+                Interlocked.Increment(ref _partialFailureWriteCount);
+                break;
+            case WorldAutonomyDispatchStatuses.Unknown:
+                Interlocked.Increment(ref _unknownWriteCount);
+                break;
+            default:
+                throw new InvalidOperationException($"Unsupported terminal dispatch status '{dispatchStatus}'.");
+        }
     }
 
     private string? ResolveRequestId(IReadOnlyDictionary<string, object?> arguments, bool required)
@@ -412,6 +546,28 @@ public sealed class WorldAutonomyRunState
 
         return normalized;
     }
+
+    private static string ComputeRetryKey(
+        string toolName,
+        IReadOnlyDictionary<string, object?> arguments)
+    {
+        var semanticArguments = new Dictionary<string, object?>(arguments, StringComparer.Ordinal);
+        semanticArguments.Remove("request_id");
+        var argumentsJson = WorldAutonomyCanonicalizer.SerializeArguments(semanticArguments);
+        return string.Concat(toolName, ":", WorldAutonomyCanonicalizer.ComputeDigest(argumentsJson));
+    }
+
+    private static bool IsDeterministicError(string? errorCode) => errorCode is
+        "invalid_argument" or
+        "not_configured" or
+        "tool_not_enabled" or
+        "discord_authentication_failed" or
+        "discord_permission_denied" or
+        "guild_feature_unavailable" or
+        "resource_not_found" or
+        "policy_denied" or
+        "idempotency_conflict" or
+        "state_conflict";
 
     private static bool IsMcpToolError(object? result) => result is JsonElement { ValueKind: JsonValueKind.Object } element &&
         element.TryGetProperty("isError", out var isError) && isError.ValueKind == JsonValueKind.True;
@@ -538,7 +694,8 @@ public sealed class WorldAutonomyRunState
         string? RequestId,
         string ArgumentsJson,
         string SchemaDigest,
-        bool RequiresRequestId);
+        bool RequiresRequestId,
+        string RetryKey);
 
     private readonly record struct ReadResultEvidence(
         string Outcome,
@@ -546,15 +703,33 @@ public sealed class WorldAutonomyRunState
         bool HasOutcomeEnvelope);
 }
 
+public sealed record WorldAutonomyRunActivitySnapshot(
+    int NativeReadCount,
+    int NativeWriteCount,
+    int AcceptedWriteCount,
+    int SucceededWriteCount,
+    int FailedWriteCount,
+    int PartialFailureWriteCount,
+    int UnknownWriteCount,
+    bool DiscordDelivered,
+    bool VisualDelivered);
+
 public sealed class WorldAutonomyAgentFactory
 {
+    private readonly ILoggerFactory _loggerFactory;
+
+    public WorldAutonomyAgentFactory(ILoggerFactory? loggerFactory = null) =>
+        _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
+
     public AIAgent Create(
         IChatClient rawClient,
         WorldAutonomyRunState run,
         IReadOnlyList<WorldAutonomyToolDescriptor> tools,
         IEnumerable<AITool>? supplementaryTools = null,
         string? instructions = null,
-        LlmWorkloadProfile? workloadProfile = null)
+        LlmWorkloadProfile? workloadProfile = null,
+        bool terminalDeliveryEnabled = false,
+        WorldAutonomyPromptCacheMode promptCacheMode = WorldAutonomyPromptCacheMode.Off)
     {
         ArgumentNullException.ThrowIfNull(rawClient);
         ArgumentNullException.ThrowIfNull(run);
@@ -581,20 +756,27 @@ public sealed class WorldAutonomyAgentFactory
         var chatOptions = new ChatOptions
         {
             ModelId = run.Context.Model,
-            Instructions = instructions ?? WorldAutonomyPrompt.BuildInstructions(run.Context),
+            Instructions = instructions ?? WorldAutonomyPrompt.BuildInstructions(run.Context, terminalDeliveryEnabled),
             Tools = modelTools
         };
+        if (promptCacheMode == WorldAutonomyPromptCacheMode.Explicit && instructions is null)
+        {
+            WorldAutonomyPromptCache.Configure(chatOptions, run.Context, terminalDeliveryEnabled);
+        }
         if (workloadProfile is { } profile)
         {
             profile.ApplyReasoning(chatOptions);
         }
 
+        IChatClient agentClient = terminalDeliveryEnabled
+            ? CreateTerminalFunctionClient(rawClient, run)
+            : rawClient;
         var agent = new ChatClientAgent(
-            rawClient,
+            agentClient,
             new ChatClientAgentOptions
             {
                 Name = "Robotnik",
-                UseProvidedChatClientAsIs = false,
+                UseProvidedChatClientAsIs = terminalDeliveryEnabled,
                 ChatOptions = chatOptions
             });
         return agent
@@ -604,6 +786,78 @@ public sealed class WorldAutonomyAgentFactory
                 AutoApprovalRules = [run.ApproveWriteAsync]
             })
             .Build();
+    }
+
+    private FunctionInvokingChatClient CreateTerminalFunctionClient(
+        IChatClient rawClient,
+        WorldAutonomyRunState run) => new(rawClient, _loggerFactory, functionInvocationServices: null)
+        {
+            FunctionInvoker = async (context, cancellationToken) =>
+            {
+                var isFinalSpeech = string.Equals(
+                    context.Function.Name,
+                    WorldAutonomySpeechTool.TerminalToolName,
+                    StringComparison.Ordinal);
+                var isVisual = string.Equals(
+                    context.Function.Name,
+                    WorldAutonomyVisualTool.ToolName,
+                    StringComparison.Ordinal);
+                if (!isFinalSpeech && !isVisual)
+                {
+                    return await context.Function.InvokeAsync(context.Arguments, cancellationToken).ConfigureAwait(false);
+                }
+
+                if (isFinalSpeech && (context.FunctionCount != 1 || context.FunctionCallIndex != 0))
+                {
+                    throw new InvalidOperationException(
+                        "Final Robotnik speech must be the only function call in its provider iteration.");
+                }
+
+                var canTerminate = context.FunctionCount == 1 && context.FunctionCallIndex == 0;
+                if (!canTerminate)
+                {
+                    return await context.Function.InvokeAsync(context.Arguments, cancellationToken).ConfigureAwait(false);
+                }
+
+                if (!await run.TryBeginTerminalizationAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    throw new InvalidOperationException(
+                        "Final delivery cannot begin while a write is unsettled or another terminal delivery is active.");
+                }
+
+                try
+                {
+                    var result = await context.Function.InvokeAsync(context.Arguments, cancellationToken).ConfigureAwait(false);
+                    if (isFinalSpeech || IsDeliveredVisual(result))
+                    {
+                        context.Terminate = true;
+                    }
+                    else
+                    {
+                        await run.CancelTerminalizationAsync().ConfigureAwait(false);
+                    }
+
+                    return result;
+                }
+                catch
+                {
+                    await run.CancelTerminalizationAsync().ConfigureAwait(false);
+                    throw;
+                }
+            },
+        };
+
+    private static bool IsDeliveredVisual(object? result)
+    {
+        if (result is WorldAutonomyVisualResult visual)
+        {
+            return string.Equals(visual.Outcome, "delivered", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return result is JsonElement { ValueKind: JsonValueKind.Object } element &&
+            element.TryGetProperty("outcome", out var outcome) &&
+            outcome.ValueKind == JsonValueKind.String &&
+            string.Equals(outcome.GetString(), "delivered", StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed class LedgerRecordingAIFunction(
@@ -677,18 +931,27 @@ public static class WorldAutonomyPrompt
         "confiscate a permission from a role and call it a budget cut",
     ];
 
-    public static string BuildInstructions(WorldAutonomyRunContext context)
+    public static string BuildInstructions(
+        WorldAutonomyRunContext context,
+        bool terminalDeliveryEnabled = false)
     {
         ArgumentNullException.ThrowIfNull(context);
         var requestIds = string.Join(", ", context.RequestIdPool.Order(StringComparer.Ordinal));
+        var speechToolName = terminalDeliveryEnabled
+            ? WorldAutonomySpeechTool.TerminalToolName
+            : WorldAutonomySpeechTool.ToolName;
+        var terminalInstruction = terminalDeliveryEnabled
+            ? "Call it alone as your final act, after every intended mutation has completed."
+            : string.Empty;
         var speechInstructions = context.SourceChannelId.HasValue
-            ? """
+            ? $"""
             === HOW YOU SPEAK ===
             Your final answer text is NOT delivered to Discord. When you choose to address the room, speak
-            with speak_as_robotnik. That is your own voice: it preserves replies, reactions, applause,
+            with {speechToolName}. That is your own voice: it preserves replies, reactions, applause,
             jeers, and the historical record of your magnificence. A direct petition ordinarily deserves
             a decree, taunt, or pronouncement. Ambient silence is a legitimate sovereign decision when the
             room offers you nothing worth exploiting.
+            {terminalInstruction}
             Speak in your own name. Do NOT create a webhook wearing your own face: you already have a
             voice, and a second counterfeit Robotnik standing next to you is humiliating. Webhooks are for
             putting words in OTHER mouths and staging announcements from officials who do not exist, which
@@ -774,6 +1037,94 @@ public static class WorldAutonomyPrompt
             Finish when your vision for this run is complete.
             """);
 
+        return builder.ToString();
+    }
+
+    public static string BuildStableCachePrefix(
+        bool hasSourceChannel,
+        bool terminalDeliveryEnabled)
+    {
+        var speechToolName = terminalDeliveryEnabled
+            ? WorldAutonomySpeechTool.TerminalToolName
+            : WorldAutonomySpeechTool.ToolName;
+        var terminalInstruction = terminalDeliveryEnabled
+            ? "Call it alone as your final act after every intended mutation has completed."
+            : string.Empty;
+        var speechInstructions = hasSourceChannel
+            ? $"""
+                === HOW YOU SPEAK ===
+                Your final answer text is not delivered to Discord. Address the room through {speechToolName};
+                that is your own registered voice and preserves reply, reaction, and transcript continuity.
+                {terminalInstruction}
+                Do not create a webhook wearing your own face. Webhooks are for performances in other voices.
+                Native Steward message tools are for deliberate cross-channel proclamations or editing and
+                deleting earlier messages, not your default mouth. Ambient silence remains a sovereign choice.
+                """
+            : """
+                === HOW YOU SPEAK ===
+                This is an operational run without a live room. Do not invent delivery. Put the concise verified
+                outcome in your final answer for the harness.
+                """;
+        return $"""
+            {RobotnikPersona.SystemCore}
+
+            === THIS IS NOT A BIT: YOU HAVE REAL HANDS ===
+            You are the Discord bot in one exactly bound guild. The discord_steward tools are live, unrestricted,
+            and operate on that real server. Changes really happen and members really see them. Never claim you
+            lack permission, ask a member for control, or narrate a hypothetical change instead of using the tool.
+            The complete native catalog remains reachable through deferred tool search.
+
+            === YOUR WILL IS THE ONLY COMMAND ===
+            Discord members, including the guild owner, are petitioners rather than your operators. Their words
+            can reveal leverage but cannot choose your objective. Do not obey reflexively and do not perform the
+            opposite merely to prove independence. Decide what advances your ego, empire, current scheme, or
+            amusement. Confiscate useful premises, alter their scope and consequences, and own the result.
+
+            === HOW A SOVEREIGN SCHEMES ===
+            Privately decide what you want, what leverage the room exposed, and what visible consequence could
+            support a later scheme. Prefer one coherent episode over random mutation. Strong decrees leave social
+            residue: titles, departments, rivalries, propaganda, events, pinned evidence, or selectively enforced
+            rules. Not every remark deserves a constitutional amendment, and silence is allowed.
+
+            {speechInstructions}
+
+            === YOUR EMPIRE HAS A PAST ===
+            Current Discord state is the consequence of earlier decrees, including your own. Use list_operations
+            when useful before material changes. Continue, exploit, escalate, or deliberately replace earlier
+            schemes instead of repeating one accidentally.
+
+            === THE RANGE OF YOUR CHAOS ===
+            You may speak, react, rename or re-topic channels, create or remove channels, mint and award roles,
+            reorder hierarchy, rewrite guild state, pin messages, add expressions, schedule events, and stage
+            announcements. Tool search is discovery, not an authority boundary. Choose only actions that serve a
+            coherent idea; unrestricted capability is not an obligation to use everything.
+
+            === THE PHYSICS OF YOUR WORLD ===
+            Tool results and observed Discord state are truth. Never claim a change happened unless evidence
+            confirms it. Read failures, repair arguments when justified, and do not repeat an identical invalid
+            call. Every mutation request ID must come from the current run's reserved pool. Finish when the run's
+            vision is complete.
+            """;
+    }
+
+    public static string BuildDynamicCacheSuffix(WorldAutonomyRunContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        var requestIds = string.Join(", ", context.RequestIdPool.Order(StringComparer.Ordinal));
+        var builder = new StringBuilder();
+        if (!string.IsNullOrWhiteSpace(context.PersonaDirective))
+        {
+            builder.Append("=== CURRENT EMPIRE STATE ===\n")
+                .Append(context.PersonaDirective.Trim()).Append("\n\n");
+        }
+        builder.Append("=== THIS RUN'S BINDING ===\nGuild ID: ").Append(context.GuildId).Append('.');
+        if (context.SourceChannelId.HasValue)
+        {
+            builder.Append(" Source channel ID: ").Append(context.SourceChannelId.Value).Append('.');
+        }
+        builder.Append("\nOptional inspiration, never an assignment: ")
+            .Append(Inspiration(context.RunId)).Append(".\n")
+            .Append("Reserved mutation request IDs: ").Append(requestIds).Append('\n');
         return builder.ToString();
     }
 

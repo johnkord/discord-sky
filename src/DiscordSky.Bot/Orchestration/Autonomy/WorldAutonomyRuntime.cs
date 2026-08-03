@@ -108,6 +108,16 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         if (!_providerCircuit.TryEnter(out var circuit))
         {
             EmitCircuitEvent(opportunity, "suppressed", circuit.Reason);
+            _telemetry.Emit(WorldAutonomyRunTelemetry.Create(
+                opportunity,
+                context: null,
+                model: null,
+                status: "provider_circuit_open",
+                failureReason: circuit.Reason,
+                startedAt: _timeProvider.GetUtcNow(),
+                completedAt: _timeProvider.GetUtcNow(),
+                activity: null,
+                usage: new LlmRunUsageAccumulator().Snapshot()));
             return new WorldAutonomyRunResult(
                 RunId: null,
                 opportunity.GuildId,
@@ -136,6 +146,8 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
             opportunity.SourceAuthorDisplayName);
         var startedAt = _timeProvider.GetUtcNow();
         await _ledger.StartRunAsync(context.ToRunStart(startedAt), cancellationToken).ConfigureAwait(false);
+        var usageAccumulator = new LlmRunUsageAccumulator();
+        WorldAutonomyRunState? runState = null;
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(_configuration.SessionTimeout);
@@ -162,18 +174,27 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
                 "world_autonomy",
                 mainProfile with { Model = model },
                 messageId: ulong.TryParse(opportunity.SourceMessageId, out var sourceMessageId) ? sourceMessageId : null,
-                evaluationId: context.RunId);
-            var runState = new WorldAutonomyRunState(context, _ledger, catalog.Tools, _timeProvider);
+                evaluationId: context.RunId,
+                usageAccumulator: usageAccumulator);
+            runState = new WorldAutonomyRunState(context, _ledger, catalog.Tools, _timeProvider);
             var supplementaryTools = catalog.SupplementaryTools.Cast<AITool>().ToList();
             if (_speechTool is not null && opportunity.SourceChannelId.HasValue)
             {
-                supplementaryTools.Add(_speechTool.Bind(opportunity, context, runState));
+                supplementaryTools.Add(_speechTool.Bind(
+                    opportunity,
+                    context,
+                    runState,
+                    _configuration.TerminalDeliveryEnabled));
             }
             if (_visualTool is not null
                 && opportunity.SourceChannelId.HasValue
                 && opportunity.VisualIntent != VisualRequestIntent.None)
             {
-                supplementaryTools.Add(_visualTool.Bind(opportunity, context, runState));
+                supplementaryTools.Add(_visualTool.Bind(
+                    opportunity,
+                    context,
+                    runState,
+                    _configuration.TerminalDeliveryEnabled));
             }
 
             var agent = _agentFactory.Create(
@@ -181,7 +202,9 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
                 runState,
                 catalog.Tools,
                 supplementaryTools,
-                workloadProfile: mainProfile with { Model = model });
+                workloadProfile: mainProfile with { Model = model },
+                terminalDeliveryEnabled: _configuration.TerminalDeliveryEnabled,
+                promptCacheMode: _configuration.PromptCacheMode);
             var agentSession = await agent.CreateSessionAsync().ConfigureAwait(false);
             var response = await agent.RunAsync(
                 opportunity.Prompt,
@@ -197,13 +220,15 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
             {
                 EmitCircuitEvent(opportunity, "recovered", null);
             }
+            var completedAt = _timeProvider.GetUtcNow();
             await _ledger.CompleteRunAsync(
                 context.RunId,
                 WorldAutonomyRunStatuses.Succeeded,
                 response.Text,
                 failureReason: null,
-                _timeProvider.GetUtcNow(),
+                completedAt,
                 CancellationToken.None).ConfigureAwait(false);
+            EmitRunEvent(opportunity, context, model, WorldAutonomyRunStatuses.Succeeded, null, startedAt, completedAt, runState, usageAccumulator);
             return new WorldAutonomyRunResult(
                 context.RunId,
                 opportunity.GuildId,
@@ -215,13 +240,15 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && timeout.IsCancellationRequested)
         {
             _providerCircuit.RecordFailure(new TimeoutException("World autonomy provider probe timed out."));
+            var completedAt = _timeProvider.GetUtcNow();
             await _ledger.CompleteRunAsync(
                 context.RunId,
                 WorldAutonomyRunStatuses.TimedOut,
                 finalText: null,
                 failureReason: "session_timeout",
-                _timeProvider.GetUtcNow(),
+                completedAt,
                 CancellationToken.None).ConfigureAwait(false);
+            EmitRunEvent(opportunity, context, model, WorldAutonomyRunStatuses.TimedOut, "session_timeout", startedAt, completedAt, runState, usageAccumulator);
             return new WorldAutonomyRunResult(
                 context.RunId,
                 opportunity.GuildId,
@@ -232,19 +259,21 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         catch (OperationCanceledException)
         {
             _providerCircuit.RecordFailure(new OperationCanceledException("World autonomy provider probe was cancelled."));
+            var completedAt = _timeProvider.GetUtcNow();
             await _ledger.CompleteRunAsync(
                 context.RunId,
                 WorldAutonomyRunStatuses.Failed,
                 finalText: null,
                 failureReason: "cancelled",
-                _timeProvider.GetUtcNow(),
+                completedAt,
                 CancellationToken.None).ConfigureAwait(false);
             await _ledger.RecordRunEventAsync(
                 context.RunId,
                 "cancelled",
                 payloadJson: null,
-                _timeProvider.GetUtcNow(),
+                completedAt,
                 CancellationToken.None).ConfigureAwait(false);
+            EmitRunEvent(opportunity, context, model, WorldAutonomyRunStatuses.Failed, "cancelled", startedAt, completedAt, runState, usageAccumulator);
             throw;
         }
         catch (Exception exception)
@@ -255,13 +284,15 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
                 EmitCircuitEvent(opportunity, "opened", _providerCircuit.Snapshot().Reason);
             }
             _logger.LogError(exception, "Autonomy run {RunId} failed for guild {GuildId}.", context.RunId, opportunity.GuildId);
+            var completedAt = _timeProvider.GetUtcNow();
             await _ledger.CompleteRunAsync(
                 context.RunId,
                 WorldAutonomyRunStatuses.Failed,
                 finalText: null,
                 failureReason: exception.GetType().Name,
-                _timeProvider.GetUtcNow(),
+                completedAt,
                 CancellationToken.None).ConfigureAwait(false);
+            EmitRunEvent(opportunity, context, model, WorldAutonomyRunStatuses.Failed, exception.GetType().Name, startedAt, completedAt, runState, usageAccumulator);
             return new WorldAutonomyRunResult(
                 context.RunId,
                 opportunity.GuildId,
@@ -280,12 +311,79 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
             MessageId: ulong.TryParse(opportunity.SourceMessageId, out var messageId) ? messageId : null,
             Reason: reason));
 
+    private void EmitRunEvent(
+        WorldAutonomyOpportunity opportunity,
+        WorldAutonomyRunContext context,
+        string model,
+        string status,
+        string? failureReason,
+        DateTimeOffset startedAt,
+        DateTimeOffset completedAt,
+        WorldAutonomyRunState? runState,
+        LlmRunUsageAccumulator usageAccumulator) =>
+        _telemetry.Emit(WorldAutonomyRunTelemetry.Create(
+            opportunity,
+            context,
+            model,
+            status,
+            failureReason,
+            startedAt,
+            completedAt,
+            runState?.ActivitySnapshot,
+            usageAccumulator.Snapshot()));
+
     private static string BuildProviderUnavailableDecree() =>
         "The Imperial model treasury has sealed its vaults while the accountants scream. " +
         "Your petition remains beneath my boot until funding resumes.";
 
     private static string FirstNonEmpty(params string?[] values) => values
         .First(value => !string.IsNullOrWhiteSpace(value))!;
+}
+
+internal static class WorldAutonomyRunTelemetry
+{
+    public static TelemetryEvent Create(
+        WorldAutonomyOpportunity opportunity,
+        WorldAutonomyRunContext? context,
+        string? model,
+        string status,
+        string? failureReason,
+        DateTimeOffset startedAt,
+        DateTimeOffset completedAt,
+        WorldAutonomyRunActivitySnapshot? activity,
+        LlmRunUsageSnapshot usage) => new(
+            Timestamp: completedAt,
+            EventType: TelemetryEventTypes.WorldAutonomyRun,
+            ChannelHash: opportunity.SourceChannelId.HasValue
+                ? UserIdHash.Hash(opportunity.SourceChannelId.Value)
+                : null,
+            GuildHash: UserIdHash.Hash(opportunity.GuildId),
+            Kind: opportunity.IsDirectAddress ? "direct" : "ambient",
+            Outcome: status,
+            ProviderCallCount: usage.ProviderCallCount,
+            NativeReadCount: activity?.NativeReadCount ?? 0,
+            NativeWriteCount: activity?.NativeWriteCount ?? 0,
+            AcceptedWriteCount: activity?.AcceptedWriteCount ?? 0,
+            SucceededWriteCount: activity?.SucceededWriteCount ?? 0,
+            FailedWriteCount: activity?.FailedWriteCount ?? 0,
+            PartialFailureWriteCount: activity?.PartialFailureWriteCount ?? 0,
+            UnknownWriteCount: activity?.UnknownWriteCount ?? 0,
+            MessageId: ulong.TryParse(opportunity.SourceMessageId, out var messageId) ? messageId : null,
+            Reason: failureReason,
+            Model: model,
+            LatencyMs: Math.Max(0, (long)(completedAt - startedAt).TotalMilliseconds),
+            EvaluationId: context?.RunId,
+            Workload: "world_autonomy",
+            InputTokens: usage.InputTokens,
+            OutputTokens: usage.OutputTokens,
+            CachedInputTokens: usage.CachedInputTokens,
+            CacheWriteInputTokens: usage.CacheWriteInputTokens,
+            ReasoningTokens: usage.ReasoningTokens,
+            TotalTokens: usage.TotalTokens,
+            OperationId: context?.RunId ?? opportunity.TraceId,
+            EpisodeId: opportunity.SourceEpisodeId,
+            DiscordDelivered: activity?.DiscordDelivered ?? false,
+            VisualDelivered: activity?.VisualDelivered ?? false);
 }
 
 public sealed class WorldAutonomyRouter
@@ -318,8 +416,8 @@ public sealed class WorldAutonomyRouter
         _postSpeechGuard?.RecordSpeech(guildId, channelId);
 
     /// <summary>
-    /// Fire-and-forget entry point for ambient opportunities. A burst coalesces to the newest room state,
-    /// while every direct audience already waiting for Robotnik keeps its place ahead of ambient business.
+    /// Fire-and-forget entry point for an ambient episode that already passed admission. While a run is active,
+    /// only the newest waiting ambient episode is retained and direct audiences keep priority.
     /// </summary>
     public Task TryRunAsync(WorldAutonomyOpportunity opportunity, CancellationToken cancellationToken)
     {
@@ -331,25 +429,20 @@ public sealed class WorldAutonomyRouter
 
         var mailbox = _guildMailboxes.GetOrAdd(opportunity.GuildId, _ => new GuildMailbox());
         Task? worker = null;
-        CancellationTokenSource? debounceToReset;
         lock (mailbox.Gate)
         {
             mailbox.Ambient = new PendingOpportunity(opportunity, cancellationToken, Completion: null);
-            mailbox.AmbientReady = !_configuration.AmbientEpisodeCoalescingEnabled;
-            mailbox.AmbientVersion++;
-            debounceToReset = mailbox.AmbientDelay;
             if (!mailbox.WorkerRunning)
             {
                 mailbox.WorkerRunning = true;
                 worker = ProcessMailboxAsync(mailbox, opportunity.GuildId);
             }
         }
-        TryCancel(debounceToReset);
 
         if (worker is null)
         {
             _logger.LogDebug(
-                "Coalesced ambient autonomy opportunity for guild {GuildId}, trigger {Trigger}.",
+                "Replaced pending ambient autonomy episode for guild {GuildId}, trigger {Trigger}.",
                 opportunity.GuildId,
                 opportunity.Trigger);
             return Task.CompletedTask;
@@ -377,22 +470,17 @@ public sealed class WorldAutonomyRouter
             TaskCreationOptions.RunContinuationsAsynchronously);
         var mailbox = _guildMailboxes.GetOrAdd(opportunity.GuildId, _ => new GuildMailbox());
         var queued = false;
-        CancellationTokenSource? debounceToCancel;
         lock (mailbox.Gate)
         {
             queued = mailbox.WorkerRunning;
             mailbox.Direct.Enqueue(new PendingOpportunity(opportunity, cancellationToken, completion));
             mailbox.Ambient = null;
-            mailbox.AmbientReady = false;
-            mailbox.AmbientVersion++;
-            debounceToCancel = mailbox.AmbientDelay;
             if (!mailbox.WorkerRunning)
             {
                 mailbox.WorkerRunning = true;
                 _ = ProcessMailboxAsync(mailbox, opportunity.GuildId);
             }
         }
-        TryCancel(debounceToCancel);
 
         if (queued)
         {
@@ -410,8 +498,6 @@ public sealed class WorldAutonomyRouter
         while (true)
         {
             PendingOpportunity? pending = null;
-            CancellationTokenSource? ambientDelay = null;
-            long ambientVersion = 0;
             lock (mailbox.Gate)
             {
                 if (mailbox.Direct.Count > 0)
@@ -420,18 +506,8 @@ public sealed class WorldAutonomyRouter
                 }
                 else if (mailbox.Ambient is not null)
                 {
-                    if (_configuration.AmbientEpisodeCoalescingEnabled && !mailbox.AmbientReady)
-                    {
-                        ambientDelay = new CancellationTokenSource();
-                        mailbox.AmbientDelay = ambientDelay;
-                        ambientVersion = mailbox.AmbientVersion;
-                    }
-                    else
-                    {
-                        pending = mailbox.Ambient;
-                        mailbox.Ambient = null;
-                        mailbox.AmbientReady = false;
-                    }
+                    pending = mailbox.Ambient;
+                    mailbox.Ambient = null;
                 }
                 else
                 {
@@ -440,47 +516,9 @@ public sealed class WorldAutonomyRouter
                 }
             }
 
-            if (ambientDelay is not null)
-            {
-                var elapsed = false;
-                try
-                {
-                    await Task.Delay(_configuration.AmbientEpisodeWindow, ambientDelay.Token).ConfigureAwait(false);
-                    elapsed = true;
-                }
-                catch (OperationCanceledException) when (ambientDelay.IsCancellationRequested)
-                {
-                }
-
-                lock (mailbox.Gate)
-                {
-                    if (ReferenceEquals(mailbox.AmbientDelay, ambientDelay))
-                    {
-                        mailbox.AmbientDelay = null;
-                    }
-                    if (elapsed && mailbox.AmbientVersion == ambientVersion && mailbox.Ambient is not null)
-                    {
-                        mailbox.AmbientReady = true;
-                    }
-                }
-                ambientDelay.Dispose();
-                continue;
-            }
-
             var selected = pending!;
             var result = await RunOpportunityAsync(selected, guildId).ConfigureAwait(false);
             selected.Completion?.TrySetResult(result);
-        }
-    }
-
-    private static void TryCancel(CancellationTokenSource? cancellation)
-    {
-        try
-        {
-            cancellation?.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
         }
     }
 
@@ -521,12 +559,6 @@ public sealed class WorldAutonomyRouter
         public Queue<PendingOpportunity> Direct { get; } = new();
 
         public PendingOpportunity? Ambient { get; set; }
-
-        public bool AmbientReady { get; set; }
-
-        public long AmbientVersion { get; set; }
-
-        public CancellationTokenSource? AmbientDelay { get; set; }
 
         public bool WorkerRunning { get; set; }
     }
