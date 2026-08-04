@@ -9,16 +9,15 @@ namespace DiscordSky.Tests;
 public sealed class WorldAutonomyAudienceGateTests
 {
     [Theory]
-    [InlineData(0.80, 0.10, 0.10, false, WorldAutonomyAudienceAction.FullAutonomy)]
-    [InlineData(0.70, 0.50, 0.10, true, WorldAutonomyAudienceAction.Reaction)]
-    [InlineData(0.20, 0.10, 0.80, true, WorldAutonomyAudienceAction.FullAutonomy)]
-    [InlineData(0.20, 0.50, 0.10, false, WorldAutonomyAudienceAction.Reaction)]
-    [InlineData(0.20, 0.10, 0.10, false, WorldAutonomyAudienceAction.Silence)]
+    [InlineData(0.80, 0.10, 0.10, WorldAutonomyAudienceAction.Conversation)]
+    [InlineData(0.70, 0.50, 0.10, WorldAutonomyAudienceAction.Conversation)]
+    [InlineData(0.20, 0.10, 0.80, WorldAutonomyAudienceAction.FullAutonomy)]
+    [InlineData(0.20, 0.50, 0.10, WorldAutonomyAudienceAction.Reaction)]
+    [InlineData(0.20, 0.10, 0.10, WorldAutonomyAudienceAction.Silence)]
     public void Decide_AllocatesAttentionByIndependentWorthAxes(
         double conversationWorth,
         double reactionWorth,
         double actionWorth,
-        bool botSpokeRecently,
         WorldAutonomyAudienceAction expected)
     {
         var actual = WorldAutonomyAudienceGate.Decide(
@@ -29,44 +28,38 @@ public sealed class WorldAutonomyAudienceGateTests
                 actionWorth,
                 "action",
                 Confidence: 0.9),
-            botSpokeRecently,
             fullThreshold: 0.65,
             reactionThreshold: 0.35,
             actionThreshold: 0.60,
-            recentSpeechPenalty: 0.15,
             confidenceFloor: 0.35);
 
         Assert.Equal(expected, actual);
     }
 
     [Fact]
-    public void Decide_FailsOpenWhenJudgeHasNoVerdict()
+    public void Decide_FailsClosedWhenJudgeHasNoVerdict()
     {
         var actual = WorldAutonomyAudienceGate.Decide(
             null,
-            botSpokeRecently: true,
             fullThreshold: 0.65,
             reactionThreshold: 0.35,
             actionThreshold: 0.60,
-            recentSpeechPenalty: 0.15,
             confidenceFloor: 0.35);
 
-        Assert.Equal(WorldAutonomyAudienceAction.FullAutonomy, actual);
+        Assert.Equal(WorldAutonomyAudienceAction.Silence, actual);
     }
 
     [Fact]
-    public void Decide_FailsOpenWhenJudgeConfidenceIsLow()
+    public void Decide_FailsClosedWhenJudgeConfidenceIsLow()
     {
         var actual = WorldAutonomyAudienceGate.Decide(
             new WorldAutonomyAudienceVerdict(0.0, string.Empty, 0.0, 0.0, string.Empty, Confidence: 0.2),
-            botSpokeRecently: true,
             fullThreshold: 0.65,
             reactionThreshold: 0.35,
             actionThreshold: 0.60,
-            recentSpeechPenalty: 0.15,
             confidenceFloor: 0.35);
 
-        Assert.Equal(WorldAutonomyAudienceAction.FullAutonomy, actual);
+        Assert.Equal(WorldAutonomyAudienceAction.Silence, actual);
     }
 
     [Fact]
@@ -89,8 +82,8 @@ public sealed class WorldAutonomyAudienceGateTests
             "{\"conversation_worth\":0.1,\"conversation_hook\":\"\",\"reaction_worth\":0.1," +
             "\"action_worth\":0.1,\"action_hook\":\"\",\"confidence\":0.9}");
         var telemetry = new RecordingTelemetrySink();
-        var gate = Gate(configuration, client, telemetry, new WorldAutonomyProviderCircuit(
-            NullLogger<WorldAutonomyProviderCircuit>.Instance));
+        var gate = Gate(configuration, client, telemetry, new LlmProviderGuard(
+            NullLogger<LlmProviderGuard>.Instance));
 
         var decision = await gate.EvaluateAsync(Request(), CancellationToken.None);
 
@@ -105,28 +98,28 @@ public sealed class WorldAutonomyAudienceGateTests
     }
 
     [Fact]
-    public async Task Evaluate_OpenProviderCircuitSkipsUtilityCallAndDelegatesToRouter()
+    public async Task Evaluate_OpenProviderCircuitSkipsUtilityCallAndSuppressesAmbientWork()
     {
         var configuration = Configuration(WorldAutonomyAmbientGateMode.Live);
         var client = new StubChatClient("{}");
         var telemetry = new RecordingTelemetrySink();
-        var circuit = new WorldAutonomyProviderCircuit(
-            NullLogger<WorldAutonomyProviderCircuit>.Instance);
+        var circuit = new LlmProviderGuard(
+            NullLogger<LlmProviderGuard>.Instance);
         circuit.RecordFailure(new InvalidOperationException("credit_balance_exhausted"));
         var gate = Gate(configuration, client, telemetry, circuit);
 
         var decision = await gate.EvaluateAsync(Request(), CancellationToken.None);
 
-        Assert.Equal(WorldAutonomyAudienceAction.FullAutonomy, decision.Action);
+        Assert.Equal(WorldAutonomyAudienceAction.Silence, decision.Action);
         Assert.Equal("provider_circuit_open", decision.Reason);
         Assert.Equal(0, client.CallCount);
         var metric = Assert.Single(telemetry.Events);
-        Assert.Equal("full_autonomy", metric.Outcome);
+        Assert.Equal("silence", metric.Outcome);
         Assert.Equal("provider_circuit_open", metric.Reason);
     }
 
     [Fact]
-    public async Task Evaluate_CanaryKeepsReactionPredictionAsFullAutonomy()
+    public async Task Evaluate_CanaryRoutesReactionPredictionToReaction()
     {
         var configuration = Configuration(WorldAutonomyAmbientGateMode.Canary);
         var client = new StubChatClient(VerdictJson(0.1, 0.8, 0.1));
@@ -134,11 +127,11 @@ public sealed class WorldAutonomyAudienceGateTests
             configuration,
             client,
             new RecordingTelemetrySink(),
-            new WorldAutonomyProviderCircuit(NullLogger<WorldAutonomyProviderCircuit>.Instance));
+            new LlmProviderGuard(NullLogger<LlmProviderGuard>.Instance));
 
         var decision = await gate.EvaluateAsync(Request(), CancellationToken.None);
 
-        Assert.Equal(WorldAutonomyAudienceAction.FullAutonomy, decision.Action);
+        Assert.Equal(WorldAutonomyAudienceAction.Reaction, decision.Action);
         Assert.Equal(WorldAutonomyAudienceAction.Reaction, decision.PredictedAction);
         Assert.False(decision.IsExplorationRun);
     }
@@ -155,7 +148,7 @@ public sealed class WorldAutonomyAudienceGateTests
             configuration,
             client,
             new RecordingTelemetrySink(),
-            new WorldAutonomyProviderCircuit(NullLogger<WorldAutonomyProviderCircuit>.Instance));
+            new LlmProviderGuard(NullLogger<LlmProviderGuard>.Instance));
 
         var decision = await gate.EvaluateAsync(Request(), CancellationToken.None);
 
@@ -176,15 +169,35 @@ public sealed class WorldAutonomyAudienceGateTests
             configuration,
             client,
             telemetry,
-            new WorldAutonomyProviderCircuit(NullLogger<WorldAutonomyProviderCircuit>.Instance),
+            new LlmProviderGuard(NullLogger<LlmProviderGuard>.Instance),
+            nextDouble: () => 0.5);
+
+        var decision = await gate.EvaluateAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(WorldAutonomyAudienceAction.Conversation, decision.Action);
+        Assert.Equal(WorldAutonomyAudienceAction.Silence, decision.PredictedAction);
+        Assert.True(decision.IsExplorationRun);
+        Assert.True(Assert.Single(telemetry.Events).IsExplorationRun);
+    }
+
+    [Fact]
+    public async Task Evaluate_CanaryConversationExplorationSamplesFullAutonomy()
+    {
+        var configuration = Configuration(
+            WorldAutonomyAmbientGateMode.Canary,
+            canaryExplorationPercent: 100);
+        var gate = Gate(
+            configuration,
+            new StubChatClient(VerdictJson(0.8, 0.1, 0.1)),
+            new RecordingTelemetrySink(),
+            new LlmProviderGuard(NullLogger<LlmProviderGuard>.Instance),
             nextDouble: () => 0.5);
 
         var decision = await gate.EvaluateAsync(Request(), CancellationToken.None);
 
         Assert.Equal(WorldAutonomyAudienceAction.FullAutonomy, decision.Action);
-        Assert.Equal(WorldAutonomyAudienceAction.Silence, decision.PredictedAction);
+        Assert.Equal(WorldAutonomyAudienceAction.Conversation, decision.PredictedAction);
         Assert.True(decision.IsExplorationRun);
-        Assert.True(Assert.Single(telemetry.Events).IsExplorationRun);
     }
 
     [Fact]
@@ -201,13 +214,36 @@ public sealed class WorldAutonomyAudienceGateTests
             configuration,
             client,
             new RecordingTelemetrySink(),
-            new WorldAutonomyProviderCircuit(NullLogger<WorldAutonomyProviderCircuit>.Instance),
+            new LlmProviderGuard(NullLogger<LlmProviderGuard>.Instance),
             guard);
 
         var decision = await gate.EvaluateAsync(Request(), CancellationToken.None);
 
         Assert.Equal(WorldAutonomyAudienceAction.FullAutonomy, decision.Action);
         Assert.Equal(WorldAutonomyAudienceAction.FullAutonomy, decision.PredictedAction);
+    }
+
+    [Fact]
+    public async Task Evaluate_HighConversationWorthEscapesPostSpeechHold()
+    {
+        var configuration = Configuration(
+            WorldAutonomyAmbientGateMode.Canary,
+            postSpeechHoldEnabled: true,
+            canaryExplorationPercent: 0);
+        var guard = new WorldAutonomyPostSpeechGuard(configuration);
+        guard.RecordSpeech(4001, 6001);
+        var client = new StubChatClient(VerdictJson(0.74, 0.08, 0.1));
+        var gate = Gate(
+            configuration,
+            client,
+            new RecordingTelemetrySink(),
+            new LlmProviderGuard(NullLogger<LlmProviderGuard>.Instance),
+            guard);
+
+        var decision = await gate.EvaluateAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(WorldAutonomyAudienceAction.Conversation, decision.Action);
+        Assert.Equal(WorldAutonomyAudienceAction.Conversation, decision.PredictedAction);
     }
 
     [Fact]
@@ -286,7 +322,6 @@ public sealed class WorldAutonomyAudienceGateTests
             AmbientGateMode = mode,
             AmbientFullThreshold = 0.65,
             AmbientReactionThreshold = 0.35,
-            AmbientRecentSpeechPenalty = 0.15,
             AmbientPostSpeechGuardEnabled = true,
             AmbientPostSpeechHoldEnabled = postSpeechHoldEnabled,
             AmbientLowValueHoldEnabled = lowValueHoldEnabled,
@@ -297,7 +332,7 @@ public sealed class WorldAutonomyAudienceGateTests
         WorldAutonomyConfiguration configuration,
         IChatClient client,
         IRecallTelemetrySink telemetry,
-        WorldAutonomyProviderCircuit circuit,
+        LlmProviderGuard circuit,
         WorldAutonomyPostSpeechGuard? guard = null,
         Func<double>? nextDouble = null)
     {

@@ -106,7 +106,6 @@ public sealed class WorldAutonomyConfigurationTests
             AmbientLowValueFloor = 0.12,
             AmbientCanaryExplorationPercent = 11,
             AmbientLiveExplorationPercent = 6,
-            AmbientRecentSpeechPenalty = 0.1,
             AmbientEpisodeCoalescingEnabled = true,
             AmbientEpisodeWindowMilliseconds = 1250,
             AmbientPostSpeechGuardEnabled = true,
@@ -114,6 +113,18 @@ public sealed class WorldAutonomyConfigurationTests
             PromptCacheMode = WorldAutonomyPromptCacheMode.Explicit,
             AmbientPostSpeechHumanTurns = 3,
             AmbientPostSpeechWindowMinutes = 8,
+            Budget = new WorldAutonomyBudgetOptions
+            {
+                StatePath = "budget.json",
+                AmbientFullPerHour = 2,
+                AmbientFullPerDay = 8,
+                AmbientConversationPerHour = 9,
+                AmbientConversationPerDay = 45,
+                DirectFullPerHour = 5,
+                DirectFullPerDay = 25,
+                DirectConversationPerHour = 10,
+                DirectConversationPerDay = 50,
+            },
         });
 
         Assert.Equal(WorldAutonomyAmbientGateMode.Canary, configuration.AmbientGateMode);
@@ -126,7 +137,6 @@ public sealed class WorldAutonomyConfigurationTests
         Assert.Equal(0.12, configuration.AmbientLowValueFloor);
         Assert.Equal(11, configuration.AmbientCanaryExplorationPercent);
         Assert.Equal(6, configuration.AmbientLiveExplorationPercent);
-        Assert.Equal(0.1, configuration.AmbientRecentSpeechPenalty);
         Assert.True(configuration.AmbientEpisodeCoalescingEnabled);
         Assert.Equal(TimeSpan.FromMilliseconds(1250), configuration.AmbientEpisodeWindow);
         Assert.True(configuration.AmbientPostSpeechGuardEnabled);
@@ -134,5 +144,10 @@ public sealed class WorldAutonomyConfigurationTests
         Assert.Equal(WorldAutonomyPromptCacheMode.Explicit, configuration.PromptCacheMode);
         Assert.Equal(3, configuration.AmbientPostSpeechHumanTurns);
         Assert.Equal(TimeSpan.FromMinutes(8), configuration.AmbientPostSpeechWindow);
+        Assert.Equal("budget.json", configuration.Budget.StatePath);
+        Assert.Equal(2, configuration.Budget.AmbientFullPerHour);
+        Assert.Equal(9, configuration.Budget.AmbientConversationPerHour);
+        Assert.Equal(5, configuration.Budget.DirectFullPerHour);
+        Assert.Equal(10, configuration.Budget.DirectConversationPerHour);
     }
 }

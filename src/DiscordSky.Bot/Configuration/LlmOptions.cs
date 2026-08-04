@@ -65,6 +65,8 @@ public sealed class LlmOptions
     /// </summary>
     public Dictionary<string, LlmProviderOptions> Providers { get; init; } = new(StringComparer.OrdinalIgnoreCase);
 
+    public LlmProviderGuardOptions Guard { get; init; } = new();
+
     // ── Convenience accessors for the active provider ────────────────
 
     /// <summary>Returns the currently active provider config, or throws if not found.</summary>
@@ -77,6 +79,19 @@ public sealed class LlmOptions
             $"LLM provider '{ActiveProvider}' is not configured. " +
             $"Available providers: [{string.Join(", ", Providers.Keys)}]");
     }
+}
+
+public sealed class LlmProviderGuardOptions
+{
+    public bool Enabled { get; init; } = true;
+
+    public double HourlyUsdLimit { get; init; } = 1.0;
+
+    public double DailyUsdLimit { get; init; } = 3.0;
+
+    public int ProbeIntervalMinutes { get; init; } = 5;
+
+    public string StatePath { get; init; } = "data/llm-provider-guard.json";
 }
 
 /// <summary>

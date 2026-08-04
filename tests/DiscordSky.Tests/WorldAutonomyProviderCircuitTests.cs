@@ -1,16 +1,18 @@
 using DiscordSky.Bot.Orchestration.Autonomy;
+using DiscordSky.Bot.Configuration;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DiscordSky.Tests;
 
-public sealed class WorldAutonomyProviderCircuitTests
+public sealed class LlmProviderGuardTests
 {
     [Fact]
     public void QuotaFailure_OpensImmediately_AndAllowsOneHalfOpenProbe()
     {
         var clock = new MutableTimeProvider(DateTimeOffset.Parse("2026-08-02T12:00:00Z"));
-        var circuit = new WorldAutonomyProviderCircuit(
-            NullLogger<WorldAutonomyProviderCircuit>.Instance,
+        var circuit = new LlmProviderGuard(
+            NullLogger<LlmProviderGuard>.Instance,
             clock,
             TimeSpan.FromMinutes(1));
 
@@ -32,8 +34,8 @@ public sealed class WorldAutonomyProviderCircuitTests
     public void FailedHalfOpenProbe_ReleasesProbeAndSchedulesAnother()
     {
         var clock = new MutableTimeProvider(DateTimeOffset.Parse("2026-08-02T12:00:00Z"));
-        var circuit = new WorldAutonomyProviderCircuit(
-            NullLogger<WorldAutonomyProviderCircuit>.Instance,
+        var circuit = new LlmProviderGuard(
+            NullLogger<LlmProviderGuard>.Instance,
             clock,
             TimeSpan.FromSeconds(30));
         circuit.RecordFailure(new InvalidOperationException("invalid_api_key"));
@@ -49,13 +51,144 @@ public sealed class WorldAutonomyProviderCircuitTests
     [Fact]
     public void OrdinaryRequestFailure_DoesNotOpenAClosedCircuit()
     {
-        var circuit = new WorldAutonomyProviderCircuit(
-            NullLogger<WorldAutonomyProviderCircuit>.Instance);
+        var circuit = new LlmProviderGuard(
+            NullLogger<LlmProviderGuard>.Instance);
 
         Assert.False(circuit.RecordFailure(new InvalidOperationException("bad tool arguments")));
         Assert.True(circuit.TryEnter(out var snapshot));
         Assert.False(snapshot.IsOpen);
     }
+
+    [Fact]
+    public void CostBudget_PersistsAndBlocksBeforeTheNextExpensiveCall()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"llm-provider-guard-{Guid.NewGuid():N}.json");
+        try
+        {
+            var clock = new MutableTimeProvider(DateTimeOffset.Parse("2026-08-03T12:00:00Z"));
+            var options = new LlmProviderGuardOptions
+            {
+                StatePath = path,
+                HourlyUsdLimit = 0.80,
+                DailyUsdLimit = 1.0,
+            };
+            var guard = new LlmProviderGuard(
+                NullLogger<LlmProviderGuard>.Instance,
+                clock,
+                options: options);
+
+            Assert.True(guard.TryBeginCall("gpt-5.6-sol", true, out var lease, out _));
+            guard.RecordCallSuccess(lease, Response(input: 10_000, output: 1_000));
+            Assert.False(guard.TryBeginCall("gpt-5.6-sol", true, out _, out var blocked));
+            Assert.Equal("hourly_cost_budget_exhausted", blocked.Reason);
+
+            var restored = new LlmProviderGuard(
+                NullLogger<LlmProviderGuard>.Instance,
+                clock,
+                options: options);
+            Assert.False(restored.TryBeginCall("gpt-5.6-sol", true, out _, out _));
+        }
+        finally
+        {
+            File.Delete(path);
+            File.Delete(string.Concat(path, ".tmp"));
+        }
+    }
+
+    [Fact]
+    public void CostBudget_CorruptStateFailsClosedAndRewritesValidState()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"llm-provider-guard-{Guid.NewGuid():N}.json");
+        try
+        {
+            File.WriteAllText(path, "{}");
+            var guard = new LlmProviderGuard(
+                NullLogger<LlmProviderGuard>.Instance,
+                new MutableTimeProvider(DateTimeOffset.Parse("2026-08-03T12:00:00Z")),
+                options: new LlmProviderGuardOptions
+                {
+                    StatePath = path,
+                    HourlyUsdLimit = 1.0,
+                    DailyUsdLimit = 3.0,
+                });
+
+            Assert.False(guard.TryBeginCall("gpt-5.6-sol", true, out _, out var blocked));
+            Assert.Equal("hourly_cost_budget_exhausted", blocked.Reason);
+            Assert.Contains("hourlyCostUsd", File.ReadAllText(path));
+        }
+        finally
+        {
+            File.Delete(path);
+            File.Delete(string.Concat(path, ".tmp"));
+        }
+    }
+
+    [Fact]
+    public void EstimateUpperBoundCost_UsesModelSpecificCachedWriteAndOutputRates()
+    {
+        var response = Response(input: 1_000, output: 100, cached: 400, cacheWrite: 300);
+
+        var cost = LlmProviderGuard.EstimateUpperBoundCost("gpt-5.6-sol", response);
+
+        Assert.Equal(0.006575, cost, precision: 6);
+    }
+
+    [Fact]
+    public void EstimateUpperBoundCost_TreatsUnobservedGpt56UncachedInputAsWrites()
+    {
+        var response = new ChatResponse(new ChatMessage(ChatRole.Assistant, "done"))
+        {
+            Usage = new UsageDetails
+            {
+                InputTokenCount = 1_000,
+                CachedInputTokenCount = 400,
+                OutputTokenCount = 100,
+            },
+        };
+
+        var cost = LlmProviderGuard.EstimateUpperBoundCost("gpt-5.6-sol", response);
+
+        Assert.Equal(0.00695, cost, precision: 6);
+    }
+
+    [Fact]
+    public void ExpensiveCallReservation_BoundsConcurrentExposure()
+    {
+        var guard = new LlmProviderGuard(
+            NullLogger<LlmProviderGuard>.Instance,
+            options: new LlmProviderGuardOptions
+            {
+                HourlyUsdLimit = 1.0,
+                DailyUsdLimit = 3.0,
+                StatePath = Path.Combine(Path.GetTempPath(), $"guard-{Guid.NewGuid():N}.json"),
+            });
+
+        Assert.True(guard.TryBeginCall("gpt-5.6-sol", true, out var lease, out _));
+        Assert.Equal(0.75, lease.ReservedUsd);
+        Assert.False(guard.TryBeginCall("unknown-expensive-model", true, out _, out var blocked));
+        Assert.Equal("hourly_cost_budget_exhausted", blocked.Reason);
+
+        guard.RecordCallFailure(lease, new InvalidOperationException("local cancellation"));
+    }
+
+    private static ChatResponse Response(
+        long input,
+        long output,
+        long cached = 0,
+        long cacheWrite = 0) => new(new ChatMessage(ChatRole.Assistant, "done"))
+        {
+            ModelId = "gpt-5.6-sol",
+            Usage = new UsageDetails
+            {
+                InputTokenCount = input,
+                OutputTokenCount = output,
+                CachedInputTokenCount = cached,
+                AdditionalCounts = new AdditionalPropertiesDictionary<long>
+                {
+                    ["cache_write_input_tokens"] = cacheWrite,
+                },
+            },
+        };
 
     private sealed class MutableTimeProvider(DateTimeOffset now) : TimeProvider
     {

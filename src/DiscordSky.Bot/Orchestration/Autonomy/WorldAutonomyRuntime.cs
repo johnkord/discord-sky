@@ -51,7 +51,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
     private readonly WorldAutonomySpeechTool? _speechTool;
     private readonly WorldAutonomyVisualTool? _visualTool;
     private readonly IRecallTelemetrySink _telemetry;
-    private readonly WorldAutonomyProviderCircuit _providerCircuit;
+    private readonly LlmProviderGuard _providerGuard;
     private readonly TimeProvider _timeProvider;
 
     public WorldAutonomyOrchestrator(
@@ -64,7 +64,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         WorldAutonomySpeechTool? speechTool = null,
         WorldAutonomyVisualTool? visualTool = null,
         IRecallTelemetrySink? telemetry = null,
-        WorldAutonomyProviderCircuit? providerCircuit = null,
+        LlmProviderGuard? providerGuard = null,
         TimeProvider? timeProvider = null)
     {
         _configuration = configuration;
@@ -77,8 +77,8 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         _visualTool = visualTool;
         _telemetry = telemetry ?? new NoOpTelemetrySink();
         _timeProvider = timeProvider ?? TimeProvider.System;
-        _providerCircuit = providerCircuit ?? new WorldAutonomyProviderCircuit(
-            Microsoft.Extensions.Logging.Abstractions.NullLogger<WorldAutonomyProviderCircuit>.Instance,
+        _providerGuard = providerGuard ?? new LlmProviderGuard(
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<LlmProviderGuard>.Instance,
             _timeProvider);
     }
 
@@ -105,7 +105,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
             throw new InvalidOperationException("World autonomy requires an API key for the active LLM provider.");
         }
 
-        if (!_providerCircuit.TryEnter(out var circuit))
+        if (!_providerGuard.TryEnter(out var circuit))
         {
             EmitCircuitEvent(opportunity, "suppressed", circuit.Reason);
             _telemetry.Emit(WorldAutonomyRunTelemetry.Create(
@@ -170,7 +170,9 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
                 new TelemetryChatClient(
                     LlmChatClientFactory.Create(provider, model),
                     _llmOptions.CurrentValue.ActiveProvider,
-                    _telemetry),
+                    _telemetry,
+                    _providerGuard,
+                    ownsProviderGuardLease: false),
                 "world_autonomy",
                 mainProfile with { Model = model },
                 messageId: ulong.TryParse(opportunity.SourceMessageId, out var sourceMessageId) ? sourceMessageId : null,
@@ -216,7 +218,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
             {
                 _visualTool.RecordNotSelected(opportunity, context);
             }
-            if (_providerCircuit.RecordSuccess())
+            if (_providerGuard.RecordSuccess())
             {
                 EmitCircuitEvent(opportunity, "recovered", null);
             }
@@ -239,7 +241,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && timeout.IsCancellationRequested)
         {
-            _providerCircuit.RecordFailure(new TimeoutException("World autonomy provider probe timed out."));
+            _providerGuard.RecordFailure(new TimeoutException("World autonomy provider probe timed out."));
             var completedAt = _timeProvider.GetUtcNow();
             await _ledger.CompleteRunAsync(
                 context.RunId,
@@ -258,7 +260,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         }
         catch (OperationCanceledException)
         {
-            _providerCircuit.RecordFailure(new OperationCanceledException("World autonomy provider probe was cancelled."));
+            _providerGuard.RecordFailure(new OperationCanceledException("World autonomy provider probe was cancelled."));
             var completedAt = _timeProvider.GetUtcNow();
             await _ledger.CompleteRunAsync(
                 context.RunId,
@@ -278,27 +280,33 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         }
         catch (Exception exception)
         {
-            var circuitOpened = _providerCircuit.RecordFailure(exception);
+            var circuitOpened = _providerGuard.RecordFailure(exception);
             if (circuitOpened)
             {
-                EmitCircuitEvent(opportunity, "opened", _providerCircuit.Snapshot().Reason);
+                EmitCircuitEvent(opportunity, "opened", _providerGuard.Snapshot().Reason);
             }
             _logger.LogError(exception, "Autonomy run {RunId} failed for guild {GuildId}.", context.RunId, opportunity.GuildId);
             var completedAt = _timeProvider.GetUtcNow();
+            var failureReason = exception is LlmProviderBlockedException blocked
+                ? blocked.Reason
+                : exception.GetType().Name;
             await _ledger.CompleteRunAsync(
                 context.RunId,
                 WorldAutonomyRunStatuses.Failed,
                 finalText: null,
-                failureReason: exception.GetType().Name,
+                failureReason,
                 completedAt,
                 CancellationToken.None).ConfigureAwait(false);
-            EmitRunEvent(opportunity, context, model, WorldAutonomyRunStatuses.Failed, exception.GetType().Name, startedAt, completedAt, runState, usageAccumulator);
+            EmitRunEvent(opportunity, context, model, WorldAutonomyRunStatuses.Failed, failureReason, startedAt, completedAt, runState, usageAccumulator);
             return new WorldAutonomyRunResult(
                 context.RunId,
                 opportunity.GuildId,
                 WorldAutonomyRunStatuses.Failed,
-                FinalText: circuitOpened && opportunity.IsDirectAddress ? BuildProviderUnavailableDecree() : null,
-                FailureReason: exception.GetType().Name);
+                FinalText: opportunity.IsDirectAddress &&
+                    (circuitOpened || exception is LlmProviderBlockedException)
+                        ? BuildProviderUnavailableDecree()
+                        : null,
+                FailureReason: failureReason);
         }
     }
 

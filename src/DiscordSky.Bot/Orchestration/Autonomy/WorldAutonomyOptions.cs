@@ -45,8 +45,6 @@ public sealed class WorldAutonomyOptions
 
     public int AmbientLiveExplorationPercent { get; init; } = 5;
 
-    public double AmbientRecentSpeechPenalty { get; init; } = 0.15;
-
     public bool AmbientEpisodeCoalescingEnabled { get; init; }
 
     public int AmbientEpisodeWindowMilliseconds { get; init; } = 1500;
@@ -56,6 +54,8 @@ public sealed class WorldAutonomyOptions
     public int AmbientPostSpeechHumanTurns { get; init; } = 2;
 
     public int AmbientPostSpeechWindowMinutes { get; init; } = 10;
+
+    public WorldAutonomyBudgetOptions Budget { get; init; } = new();
 
     public Dictionary<string, WorldAutonomyGuildOptions> EnabledGuilds { get; init; } = new(StringComparer.Ordinal);
 }
@@ -107,12 +107,12 @@ public sealed class WorldAutonomyConfiguration
         double ambientLowValueFloor,
         int ambientCanaryExplorationPercent,
         int ambientLiveExplorationPercent,
-        double ambientRecentSpeechPenalty,
         bool ambientEpisodeCoalescingEnabled,
         TimeSpan ambientEpisodeWindow,
         bool ambientPostSpeechGuardEnabled,
         int ambientPostSpeechHumanTurns,
         TimeSpan ambientPostSpeechWindow,
+        WorldAutonomyBudgetOptions budget,
         ImmutableDictionary<ulong, WorldAutonomyGuildBinding> enabledGuilds)
     {
         StewardCommand = stewardCommand;
@@ -133,12 +133,12 @@ public sealed class WorldAutonomyConfiguration
         AmbientLowValueFloor = ambientLowValueFloor;
         AmbientCanaryExplorationPercent = ambientCanaryExplorationPercent;
         AmbientLiveExplorationPercent = ambientLiveExplorationPercent;
-        AmbientRecentSpeechPenalty = ambientRecentSpeechPenalty;
         AmbientEpisodeCoalescingEnabled = ambientEpisodeCoalescingEnabled;
         AmbientEpisodeWindow = ambientEpisodeWindow;
         AmbientPostSpeechGuardEnabled = ambientPostSpeechGuardEnabled;
         AmbientPostSpeechHumanTurns = ambientPostSpeechHumanTurns;
         AmbientPostSpeechWindow = ambientPostSpeechWindow;
+        Budget = budget;
         EnabledGuilds = enabledGuilds;
     }
 
@@ -178,8 +178,6 @@ public sealed class WorldAutonomyConfiguration
 
     public int AmbientLiveExplorationPercent { get; }
 
-    public double AmbientRecentSpeechPenalty { get; }
-
     public bool AmbientEpisodeCoalescingEnabled { get; }
 
     public TimeSpan AmbientEpisodeWindow { get; }
@@ -189,6 +187,8 @@ public sealed class WorldAutonomyConfiguration
     public int AmbientPostSpeechHumanTurns { get; }
 
     public TimeSpan AmbientPostSpeechWindow { get; }
+
+    public WorldAutonomyBudgetOptions Budget { get; }
 
     public ImmutableDictionary<ulong, WorldAutonomyGuildBinding> EnabledGuilds { get; }
 
@@ -255,11 +255,6 @@ public sealed class WorldAutonomyConfiguration
                 "WorldAutonomy:AmbientLiveExplorationPercent must be between 0 and 100.");
         }
 
-        if (options.AmbientRecentSpeechPenalty is < 0.0 or > 1.0)
-        {
-            throw new InvalidOperationException("WorldAutonomy:AmbientRecentSpeechPenalty must be between 0 and 1.");
-        }
-
         if (options.AmbientEpisodeWindowMilliseconds is < 0 or > 10000)
         {
             throw new InvalidOperationException(
@@ -277,6 +272,8 @@ public sealed class WorldAutonomyConfiguration
             throw new InvalidOperationException(
                 "WorldAutonomy:AmbientPostSpeechWindowMinutes must be between 1 and 60.");
         }
+
+        ValidateBudget(options.Budget);
 
         var bindings = ImmutableDictionary.CreateBuilder<ulong, WorldAutonomyGuildBinding>();
         foreach (var (configuredGuildId, configuredBinding) in options.EnabledGuilds ?? [])
@@ -338,12 +335,63 @@ public sealed class WorldAutonomyConfiguration
             options.AmbientLowValueFloor,
             options.AmbientCanaryExplorationPercent,
             options.AmbientLiveExplorationPercent,
-            options.AmbientRecentSpeechPenalty,
             options.AmbientEpisodeCoalescingEnabled,
             TimeSpan.FromMilliseconds(options.AmbientEpisodeWindowMilliseconds),
             options.AmbientPostSpeechGuardEnabled,
             options.AmbientPostSpeechHumanTurns,
             TimeSpan.FromMinutes(options.AmbientPostSpeechWindowMinutes),
+            options.Budget,
             bindings.ToImmutable());
     }
+
+    private static void ValidateBudget(WorldAutonomyBudgetOptions budget)
+    {
+        ArgumentNullException.ThrowIfNull(budget);
+        if (string.IsNullOrWhiteSpace(budget.StatePath))
+        {
+            throw new InvalidOperationException("WorldAutonomy:Budget:StatePath must be non-empty.");
+        }
+
+        foreach (var (name, value) in new Dictionary<string, int>
+        {
+            [nameof(budget.AmbientFullPerHour)] = budget.AmbientFullPerHour,
+            [nameof(budget.AmbientFullPerDay)] = budget.AmbientFullPerDay,
+            [nameof(budget.AmbientConversationPerHour)] = budget.AmbientConversationPerHour,
+            [nameof(budget.AmbientConversationPerDay)] = budget.AmbientConversationPerDay,
+            [nameof(budget.DirectFullPerHour)] = budget.DirectFullPerHour,
+            [nameof(budget.DirectFullPerDay)] = budget.DirectFullPerDay,
+            [nameof(budget.DirectConversationPerHour)] = budget.DirectConversationPerHour,
+            [nameof(budget.DirectConversationPerDay)] = budget.DirectConversationPerDay,
+        })
+        {
+            if (value is < 0 or > 10_000)
+            {
+                throw new InvalidOperationException(
+                    $"WorldAutonomy:Budget:{name} must be between 0 and 10000.");
+            }
+        }
+    }
+}
+
+public sealed class WorldAutonomyBudgetOptions
+{
+    public bool Enabled { get; init; } = true;
+
+    public string StatePath { get; init; } = "data/world-autonomy/admission-budget.json";
+
+    public int AmbientFullPerHour { get; init; } = 4;
+
+    public int AmbientFullPerDay { get; init; } = 16;
+
+    public int AmbientConversationPerHour { get; init; } = 12;
+
+    public int AmbientConversationPerDay { get; init; } = 60;
+
+    public int DirectFullPerHour { get; init; } = 8;
+
+    public int DirectFullPerDay { get; init; } = 40;
+
+    public int DirectConversationPerHour { get; init; } = 16;
+
+    public int DirectConversationPerDay { get; init; } = 80;
 }

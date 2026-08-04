@@ -81,6 +81,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly WorldAutonomyRouter? _worldAutonomyRouter;
     private readonly WorldAutonomyAudienceGate? _worldAutonomyAudienceGate;
     private readonly WorldAutonomyAmbientAdmissionCoordinator? _worldAutonomyAmbientAdmission;
+    private readonly WorldAutonomyBudget? _worldAutonomyBudget;
+    private readonly WorldAutonomyConversationService? _worldAutonomyConversation;
     internal const int DiscordMaxMessageLength = 2000;
 
     /// <summary>How much of the room's recent conversation an autonomy run is briefed with.</summary>
@@ -137,7 +139,9 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         MemoryOpportunityClassifier? memoryOpportunityClassifier = null,
         WorldAutonomyRouter? worldAutonomyRouter = null,
         WorldAutonomyAudienceGate? worldAutonomyAudienceGate = null,
-        WorldAutonomyAmbientAdmissionCoordinator? worldAutonomyAmbientAdmission = null)
+        WorldAutonomyAmbientAdmissionCoordinator? worldAutonomyAmbientAdmission = null,
+        WorldAutonomyBudget? worldAutonomyBudget = null,
+        WorldAutonomyConversationService? worldAutonomyConversation = null)
     {
         _client = client;
         _options = options.Value;
@@ -185,6 +189,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _worldAutonomyRouter = worldAutonomyRouter;
         _worldAutonomyAudienceGate = worldAutonomyAudienceGate;
         _worldAutonomyAmbientAdmission = worldAutonomyAmbientAdmission;
+        _worldAutonomyBudget = worldAutonomyBudget;
+        _worldAutonomyConversation = worldAutonomyConversation;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -523,6 +529,31 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
             _worldAutonomyAmbientAdmission?.Cancel(autonomyChannel.Guild.Id);
             EmitWorldAutonomyVisualOffered(autonomyChannel, message, visualIntent, "direct");
+            var directBudget = _worldAutonomyBudget?.TryConsume(WorldAutonomyBudgetKind.DirectFull);
+            if (directBudget is { Allowed: false })
+            {
+                var delivered = await HandleWorldAutonomyConversationAsync(
+                    BuildDirectConversationRequest(autonomyChannel, message, content),
+                    cancellationToken: _shutdownCts.Token);
+                if (!delivered)
+                {
+                    const string fallback =
+                        "The Imperial audience chamber has reached its spending decree. " +
+                        "Your petition is recorded beneath my boot; return when the treasury reopens.";
+                    await SendChunkedAsync(
+                        message.Channel,
+                        fallback,
+                        new MessageReference(message.Id),
+                        _options.DefaultPersona,
+                        source: "world_autonomy_budget_fallback",
+                        triggerMessageId: message.Id,
+                        replyTargetMessageId: message.Id);
+                    _worldAutonomyRouter?.RecordDeliveredSpeech(
+                        autonomyChannel.Guild.Id,
+                        message.Channel.Id);
+                }
+                return;
+            }
             if (await TryHandleWorldAutonomyAsync(
                     autonomyChannel,
                     message,
@@ -2143,23 +2174,24 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             var mediaContext = BuildAmbientEpisodeMediaContext(episodeViews);
             var hasMedia = episodeViews.Any(item => item.View.HasMedia) ||
                 episodeMessages.Any(item => item.Attachments.Count > 0 || item.Embeds.Count > 0);
+            var audienceRequest = new WorldAutonomyAudienceRequest(
+                GetDefaultPersona(),
+                GetDisplayName(message.Author),
+                audienceView?.Text ?? content,
+                BuildAutonomyAudienceContext(message, pulse, botSpokeRecently, episode),
+                _empireState is { Enabled: true } ? _empireState.Current.Mood.Label : null,
+                message.Id,
+                guildChannel.Name,
+                message.Author.Id,
+                botSpokeRecently,
+                guildChannel.Guild.Id,
+                message.Channel.Id,
+                hasMedia,
+                mediaContext,
+                episode?.EpisodeId,
+                episode?.MessageCount ?? 1);
             var gateDecision = await _worldAutonomyAudienceGate.EvaluateAsync(
-                new WorldAutonomyAudienceRequest(
-                    GetDefaultPersona(),
-                    GetDisplayName(message.Author),
-                    audienceView?.Text ?? content,
-                    BuildAutonomyAudienceContext(message, pulse, botSpokeRecently, episode),
-                    _empireState is { Enabled: true } ? _empireState.Current.Mood.Label : null,
-                    message.Id,
-                    guildChannel.Name,
-                    message.Author.Id,
-                    botSpokeRecently,
-                    guildChannel.Guild.Id,
-                    message.Channel.Id,
-                    hasMedia,
-                    mediaContext,
-                    episode?.EpisodeId,
-                    episode?.MessageCount ?? 1),
+                audienceRequest,
                 cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             if (gateDecision.Action == WorldAutonomyAudienceAction.Reaction)
@@ -2171,9 +2203,44 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             {
                 return;
             }
+            if (gateDecision.Action == WorldAutonomyAudienceAction.Conversation)
+            {
+                await HandleWorldAutonomyConversationAsync(
+                    BuildConversationRequest(audienceRequest, isDirectAddress: false),
+                    cancellationToken);
+                return;
+            }
         }
 
         cancellationToken.ThrowIfCancellationRequested();
+        var fullBudget = _worldAutonomyBudget?.TryConsume(WorldAutonomyBudgetKind.AmbientFull);
+        if (fullBudget is { Allowed: false })
+        {
+            var fallback = new WorldAutonomyAudienceRequest(
+                GetDefaultPersona(),
+                GetDisplayName(message.Author),
+                content,
+                BuildAutonomyAudienceContext(
+                    message,
+                    _channelPulse?.Snapshot(message.Channel.Id, TimeSpan.FromMinutes(10)),
+                    DidBotSpeakRecently(message.Channel, TimeSpan.FromMinutes(2)),
+                    episode),
+                _empireState is { Enabled: true } ? _empireState.Current.Mood.Label : null,
+                message.Id,
+                guildChannel.Name,
+                message.Author.Id,
+                BotSpokeRecently: false,
+                guildChannel.Guild.Id,
+                message.Channel.Id,
+                HasMedia: message.Attachments.Count > 0 || message.Embeds.Count > 0,
+                MediaContext: null,
+                episode?.EpisodeId,
+                episode?.MessageCount ?? 1);
+            await HandleWorldAutonomyConversationAsync(
+                BuildConversationRequest(fallback, isDirectAddress: false),
+                cancellationToken);
+            return;
+        }
         await TryHandleWorldAutonomyAsync(
             guildChannel,
             message,
@@ -2182,6 +2249,69 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             episode?.EpisodeId,
             cancellationToken);
     }
+
+    private async Task<bool> HandleWorldAutonomyConversationAsync(
+        WorldAutonomyConversationRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (_worldAutonomyConversation is null)
+        {
+            return false;
+        }
+
+        var budgetKind = request.IsDirectAddress
+            ? WorldAutonomyBudgetKind.DirectConversation
+            : WorldAutonomyBudgetKind.AmbientConversation;
+        var budget = _worldAutonomyBudget?.TryConsume(budgetKind);
+        if (budget is { Allowed: false })
+        {
+            return false;
+        }
+
+        var result = await _worldAutonomyConversation.RespondAsync(request, cancellationToken);
+        if (result is null)
+        {
+            return false;
+        }
+
+        _worldAutonomyRouter?.RecordDeliveredSpeech(request.GuildId, request.ChannelId);
+        return true;
+    }
+
+    private WorldAutonomyConversationRequest BuildConversationRequest(
+        WorldAutonomyAudienceRequest request,
+        bool isDirectAddress) => new(
+            request.GuildId,
+            request.ChannelId,
+            request.MessageId,
+            request.AuthorId,
+            request.AuthorDisplayName,
+            request.ChannelName,
+            request.PersonaName,
+            request.MessageText,
+            request.SituationContext,
+            request.MediaContext,
+            request.MoodLabel,
+            request.EpisodeId,
+            isDirectAddress);
+
+    private WorldAutonomyConversationRequest BuildDirectConversationRequest(
+        SocketGuildChannel guildChannel,
+        SocketUserMessage message,
+        string content) => new(
+            guildChannel.Guild.Id,
+            message.Channel.Id,
+            message.Id,
+            message.Author.Id,
+            GetDisplayName(message.Author),
+            guildChannel.Name,
+            GetDefaultPersona(),
+            content,
+            RenderAutonomyHistory(message),
+            MediaContext: null,
+            _empireState is { Enabled: true } ? _empireState.Current.Mood.Label : null,
+            EpisodeId: null,
+            IsDirectAddress: true);
 
     private static IReadOnlyList<SocketUserMessage> GetAmbientEpisodeMessages(
         SocketUserMessage trigger,

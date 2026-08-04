@@ -1,5 +1,8 @@
 using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Integrations.Images;
+using DiscordSky.Bot.Orchestration.Autonomy;
+using Microsoft.Extensions.Logging.Abstractions;
+using OpenAI;
 
 namespace DiscordSky.Tests;
 
@@ -129,5 +132,30 @@ public sealed class ImageGeneratorHelpersTests
         var result = gen.GenerateAsync("x", ImageRequestOptions.FromConfig(new ImageOptions()), CancellationToken.None).Result;
         Assert.False(result.Success);
         Assert.Equal(ImageResult.ErrorDisabled, result.Error);
+    }
+
+    [Fact]
+    public async Task OpenAiGenerator_ProviderGuardBlocksBeforeNetworkCall()
+    {
+        var guard = new LlmProviderGuard(
+            NullLogger<LlmProviderGuard>.Instance,
+            options: new LlmProviderGuardOptions
+            {
+                HourlyUsdLimit = 0.10,
+                DailyUsdLimit = 1.0,
+                StatePath = Path.Combine(Path.GetTempPath(), $"image-guard-{Guid.NewGuid():N}.json"),
+            });
+        var generator = new OpenAIImageGenerator(
+            new OpenAIClient("not-a-real-key"),
+            guard,
+            NullLogger<OpenAIImageGenerator>.Instance);
+
+        var result = await generator.GenerateAsync(
+            "Never reaches the network.",
+            ImageRequestOptions.FromConfig(new ImageOptions()),
+            CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal(ImageResult.ErrorRateLimited, result.Error);
     }
 }

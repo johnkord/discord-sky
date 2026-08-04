@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Models.Orchestration;
+using DiscordSky.Bot.Orchestration.Autonomy;
 using Microsoft.Extensions.AI;
 using OpenAI.Responses;
 
@@ -200,12 +201,21 @@ internal sealed class TelemetryChatClient : IChatClient
     private readonly IChatClient _inner;
     private readonly string _provider;
     private readonly IRecallTelemetrySink _telemetry;
+    private readonly LlmProviderGuard? _providerGuard;
+    private readonly bool _ownsProviderGuardLease;
 
-    public TelemetryChatClient(IChatClient inner, string provider, IRecallTelemetrySink telemetry)
+    public TelemetryChatClient(
+        IChatClient inner,
+        string provider,
+        IRecallTelemetrySink telemetry,
+        LlmProviderGuard? providerGuard = null,
+        bool ownsProviderGuardLease = true)
     {
         _inner = inner;
         _provider = provider;
         _telemetry = telemetry;
+        _providerGuard = providerGuard;
+        _ownsProviderGuardLease = ownsProviderGuardLease;
     }
 
     public async Task<ChatResponse> GetResponseAsync(
@@ -216,9 +226,26 @@ internal sealed class TelemetryChatClient : IChatClient
         var (forwarded, metadata) = LlmCallTelemetry.Prepare(options);
         var callIndex = metadata?.NextCallIndex();
         var startedAt = Stopwatch.GetTimestamp();
+        LlmProviderCallLease? lease = null;
         try
         {
+            if (_providerGuard is not null)
+            {
+                var model = forwarded?.ModelId ?? "unknown";
+                if (!_providerGuard.TryBeginCall(
+                        model,
+                        _ownsProviderGuardLease,
+                        out lease,
+                        out var guard))
+                {
+                    throw new LlmProviderBlockedException(guard.Reason ?? "provider_guard_open");
+                }
+            }
             var response = await _inner.GetResponseAsync(messages, forwarded, cancellationToken);
+            if (lease is not null)
+            {
+                _providerGuard!.RecordCallSuccess(lease, response);
+            }
             var cacheWriteInputTokens = GetCacheWriteInputTokens(response);
             Emit(
                 metadata,
@@ -235,11 +262,19 @@ internal sealed class TelemetryChatClient : IChatClient
         }
         catch (OperationCanceledException)
         {
+            if (lease is not null)
+            {
+                _providerGuard!.RecordCallFailure(lease, new OperationCanceledException());
+            }
             Emit(metadata, callIndex, startedAt, "cancelled", forwarded?.ModelId, null, null, null, null, "OperationCanceledException");
             throw;
         }
         catch (Exception ex)
         {
+            if (lease is not null)
+            {
+                _providerGuard!.RecordCallFailure(lease, ex);
+            }
             Emit(metadata, callIndex, startedAt, "error", forwarded?.ModelId, null, null, null, null, ex.GetType().Name);
             throw;
         }
@@ -253,33 +288,85 @@ internal sealed class TelemetryChatClient : IChatClient
         var (forwarded, metadata) = LlmCallTelemetry.Prepare(options);
         var callIndex = metadata?.NextCallIndex();
         var startedAt = Stopwatch.GetTimestamp();
-        await using var enumerator = _inner
-            .GetStreamingResponseAsync(messages, forwarded, cancellationToken)
-            .GetAsyncEnumerator(cancellationToken);
-
-        while (true)
+        LlmProviderCallLease? lease = null;
+        if (_providerGuard is not null)
         {
-            bool hasNext;
-            try
+            var model = forwarded?.ModelId ?? "unknown";
+            if (!_providerGuard.TryBeginCall(
+                    model,
+                    _ownsProviderGuardLease,
+                    out lease,
+                    out var guard))
             {
-                hasNext = await enumerator.MoveNextAsync();
+                Emit(
+                    metadata,
+                    callIndex,
+                    startedAt,
+                    "error",
+                    model,
+                    null,
+                    null,
+                    null,
+                    null,
+                    nameof(LlmProviderBlockedException));
+                throw new LlmProviderBlockedException(guard.Reason ?? "provider_guard_open");
             }
-            catch (OperationCanceledException)
-            {
-                Emit(metadata, callIndex, startedAt, "cancelled", forwarded?.ModelId, null, null, null, null, "OperationCanceledException");
-                throw;
-            }
-            catch (Exception ex)
-            {
-                Emit(metadata, callIndex, startedAt, "error", forwarded?.ModelId, null, null, null, null, ex.GetType().Name);
-                throw;
-            }
-
-            if (!hasNext) break;
-            yield return enumerator.Current;
         }
+        var leaseSettled = false;
+        try
+        {
+            await using var enumerator = _inner
+                .GetStreamingResponseAsync(messages, forwarded, cancellationToken)
+                .GetAsyncEnumerator(cancellationToken);
 
-        Emit(metadata, callIndex, startedAt, "ok", forwarded?.ModelId, null, null, null, null, null);
+            while (true)
+            {
+                bool hasNext;
+                try
+                {
+                    hasNext = await enumerator.MoveNextAsync();
+                }
+                catch (OperationCanceledException)
+                {
+                    if (lease is not null)
+                    {
+                        _providerGuard!.RecordCallFailure(lease, new OperationCanceledException());
+                        leaseSettled = true;
+                    }
+                    Emit(metadata, callIndex, startedAt, "cancelled", forwarded?.ModelId, null, null, null, null, "OperationCanceledException");
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    if (lease is not null)
+                    {
+                        _providerGuard!.RecordCallFailure(lease, ex);
+                        leaseSettled = true;
+                    }
+                    Emit(metadata, callIndex, startedAt, "error", forwarded?.ModelId, null, null, null, null, ex.GetType().Name);
+                    throw;
+                }
+
+                if (!hasNext) break;
+                yield return enumerator.Current;
+            }
+
+            if (lease is not null)
+            {
+                _providerGuard!.RecordCallSuccess(lease, response: null);
+                leaseSettled = true;
+            }
+            Emit(metadata, callIndex, startedAt, "ok", forwarded?.ModelId, null, null, null, null, null);
+        }
+        finally
+        {
+            if (lease is not null && !leaseSettled)
+            {
+                _providerGuard!.RecordCallFailure(
+                    lease,
+                    new OperationCanceledException("Streaming response enumeration ended before completion."));
+            }
+        }
     }
 
     public object? GetService(Type serviceType, object? serviceKey = null) =>

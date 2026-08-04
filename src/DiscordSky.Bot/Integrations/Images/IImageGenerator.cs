@@ -3,6 +3,7 @@ using DiscordSky.Bot.Configuration;
 using Microsoft.Extensions.Logging;
 using OpenAI;
 using OpenAI.Images;
+using DiscordSky.Bot.Orchestration.Autonomy;
 
 namespace DiscordSky.Bot.Integrations.Images;
 
@@ -112,10 +113,15 @@ public sealed class OpenAIImageGenerator : IImageGenerator
 {
     private readonly OpenAIClient _openAiClient;
     private readonly ILogger<OpenAIImageGenerator> _logger;
+    private readonly LlmProviderGuard _providerGuard;
 
-    public OpenAIImageGenerator(OpenAIClient openAiClient, ILogger<OpenAIImageGenerator> logger)
+    public OpenAIImageGenerator(
+        OpenAIClient openAiClient,
+        LlmProviderGuard providerGuard,
+        ILogger<OpenAIImageGenerator> logger)
     {
         _openAiClient = openAiClient;
+        _providerGuard = providerGuard;
         _logger = logger;
     }
 
@@ -123,21 +129,34 @@ public sealed class OpenAIImageGenerator : IImageGenerator
 
     public async Task<ImageResult> GenerateAsync(string prompt, ImageRequestOptions options, CancellationToken cancellationToken)
     {
-        var generationOptions = new ImageGenerationOptions
+        if (!_providerGuard.TryBeginCall(
+                options.Model,
+                ownsCircuitLease: true,
+                out var lease,
+                out var guard))
         {
-            Quality = new GeneratedImageQuality(options.Quality.ToLowerInvariant()),
-            Size = ParseSize(options.Size),
-            OutputFileFormat = new GeneratedImageFileFormat(NormalizeFormat(options.OutputFormat)),
-            ModerationLevel = new GeneratedImageModerationLevel(options.Moderation.ToLowerInvariant()),
-            // ResponseFormat intentionally unset: gpt-image models reject response_format and return base64 by default.
-        };
+            _logger.LogInformation("Image generation held by provider guard: {Reason}.", guard.Reason);
+            return ImageResult.Fail(ImageResult.ErrorRateLimited);
+        }
 
         try
         {
+            var generationOptions = new ImageGenerationOptions
+            {
+                Quality = new GeneratedImageQuality(options.Quality.ToLowerInvariant()),
+                Size = ParseSize(options.Size),
+                OutputFileFormat = new GeneratedImageFileFormat(NormalizeFormat(options.OutputFormat)),
+                ModerationLevel = new GeneratedImageModerationLevel(options.Moderation.ToLowerInvariant()),
+                // ResponseFormat intentionally unset: gpt-image models reject response_format and return base64 by default.
+            };
+
             // The model is bound per call so the spontaneous (fast) and commissioned (quality) tiers can use
             // different GPT Image models from one generator. GetImageClient is a cheap wrapper.
             var client = _openAiClient.GetImageClient(options.Model);
             ClientResult<GeneratedImage> result = await client.GenerateImageAsync(prompt, generationOptions, cancellationToken);
+            _providerGuard.RecordFixedCostSuccess(
+                lease,
+                ImageCost.Estimate(options.Model, options.Quality));
             var image = result.Value;
             var bytes = image.ImageBytes?.ToArray();
             if (bytes is null || bytes.Length == 0)
@@ -148,10 +167,12 @@ public sealed class OpenAIImageGenerator : IImageGenerator
         }
         catch (OperationCanceledException)
         {
+            _providerGuard.RecordCallFailure(lease, new OperationCanceledException());
             throw;
         }
         catch (ClientResultException ex)
         {
+            _providerGuard.RecordCallFailure(lease, ex);
             var code = Classify(ex);
             // The API error message is safe to log (it describes the request problem, not user content) and
             // is the fastest way to diagnose org-verification (403) or bad-parameter failures.
@@ -160,6 +181,7 @@ public sealed class OpenAIImageGenerator : IImageGenerator
         }
         catch (Exception ex)
         {
+            _providerGuard.RecordCallFailure(lease, ex);
             _logger.LogWarning(ex, "Image generation failed unexpectedly.");
             return ImageResult.Fail(ImageResult.ErrorGeneric);
         }

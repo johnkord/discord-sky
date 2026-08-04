@@ -46,7 +46,7 @@ builder.Services.AddSingleton<FileBackedWorldAutonomyLedger>();
 builder.Services.AddSingleton<IWorldAutonomyLedger>(sp => sp.GetRequiredService<FileBackedWorldAutonomyLedger>());
 builder.Services.AddSingleton<StewardMcpSupervisor>();
 builder.Services.AddSingleton<WorldAutonomyAgentFactory>();
-builder.Services.AddSingleton<WorldAutonomyProviderCircuit>();
+builder.Services.AddSingleton<LlmProviderGuard>();
 builder.Services.AddSingleton<WorldAutonomyPostSpeechGuard>();
 builder.Services.AddSingleton<IWorldAutonomyMessageTransport, DiscordWorldAutonomyMessageTransport>();
 builder.Services.AddSingleton<IWorldAutonomyVisualTransport, DiscordWorldAutonomyVisualTransport>();
@@ -57,6 +57,8 @@ builder.Services.AddSingleton<IWorldAutonomyRunner>(sp => sp.GetRequiredService<
 builder.Services.AddSingleton<WorldAutonomyRouter>();
 builder.Services.AddSingleton<WorldAutonomyAudienceGate>();
 builder.Services.AddSingleton<WorldAutonomyAmbientAdmissionCoordinator>();
+builder.Services.AddSingleton<WorldAutonomyBudget>();
+builder.Services.AddSingleton<WorldAutonomyConversationService>();
 builder.Services.AddHostedService<WorldAutonomyStewardProbeService>();
 builder.Services.AddHostedService<WorldAutonomyStewardHealthService>();
 builder.Services.AddHostedService<WorldAutonomyRecoveryService>();
@@ -165,7 +167,8 @@ builder.Services.AddSingleton<IChatClient>(sp =>
 	return new TelemetryChatClient(
 		client,
 		llmOptions.ActiveProvider,
-		sp.GetRequiredService<IRecallTelemetrySink>());
+		sp.GetRequiredService<IRecallTelemetrySink>(),
+		sp.GetRequiredService<LlmProviderGuard>());
 });
 
 builder.Services.AddHttpClient<TweetUnfurler>();
@@ -297,6 +300,7 @@ builder.Services.AddSingleton<IImageGenerator>(sp =>
 		imageOptions.ProviderName, imageOptions.Model);
 	return new OpenAIImageGenerator(
 		openAiClient,
+		sp.GetRequiredService<LlmProviderGuard>(),
 		loggerFactory.CreateLogger<OpenAIImageGenerator>());
 });
 // Shared generation core used by both the !sky(image) command and the model-decided generate_image tool.

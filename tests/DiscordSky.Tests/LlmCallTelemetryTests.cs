@@ -1,7 +1,9 @@
 using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Memory.Logging;
 using DiscordSky.Bot.Models.Orchestration;
+using DiscordSky.Bot.Orchestration.Autonomy;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging.Abstractions;
 using OpenAI.Responses;
 using System.ClientModel.Primitives;
 
@@ -147,6 +149,63 @@ public sealed class LlmCallTelemetryTests
         Assert.Equal("grok", evt.Model);
     }
 
+    [Fact]
+    public async Task Call_ProviderGuardBlocksBeforeInnerProviderInvocation()
+    {
+        var response = new ChatResponse(new ChatMessage(ChatRole.Assistant, "should not run"));
+        var inner = new StubChatClient(response);
+        var telemetry = new InMemoryTelemetrySink();
+        var guard = new LlmProviderGuard(
+            NullLogger<LlmProviderGuard>.Instance,
+            options: new LlmProviderGuardOptions
+            {
+                HourlyUsdLimit = 0.10,
+                DailyUsdLimit = 1.0,
+                StatePath = Path.Combine(Path.GetTempPath(), $"guard-{Guid.NewGuid():N}.json"),
+            });
+        using var client = new TelemetryChatClient(inner, "OpenAI", telemetry, guard);
+        var options = new ChatOptions { ModelId = "gpt-5.6-sol" };
+        LlmCallTelemetry.Tag(options, "main_reply", new LlmWorkloadProfile("gpt-5.6-sol", "ExtraHigh"));
+
+        var exception = await Assert.ThrowsAsync<LlmProviderBlockedException>(() =>
+            client.GetResponseAsync([new ChatMessage(ChatRole.User, "prompt")], options));
+
+        Assert.Equal("hourly_cost_budget_exhausted", exception.Reason);
+        Assert.Equal(0, inner.CallCount);
+        var evt = Assert.Single(telemetry.Events);
+        Assert.Equal("error", evt.Outcome);
+        Assert.Equal(nameof(LlmProviderBlockedException), evt.FailureClass);
+    }
+
+    [Fact]
+    public async Task StreamingCall_EarlyDisposalReleasesProviderReservation()
+    {
+        var guard = new LlmProviderGuard(
+            NullLogger<LlmProviderGuard>.Instance,
+            options: new LlmProviderGuardOptions
+            {
+                HourlyUsdLimit = 1.0,
+                DailyUsdLimit = 3.0,
+                StatePath = Path.Combine(Path.GetTempPath(), $"guard-{Guid.NewGuid():N}.json"),
+            });
+        using var client = new TelemetryChatClient(
+            new StreamingChatClient(),
+            "OpenAI",
+            new InMemoryTelemetrySink(),
+            guard);
+        var options = new ChatOptions { ModelId = "gpt-5.6-sol" };
+
+        await using (var enumerator = client
+            .GetStreamingResponseAsync([new ChatMessage(ChatRole.User, "prompt")], options)
+            .GetAsyncEnumerator())
+        {
+            Assert.True(await enumerator.MoveNextAsync());
+        }
+
+        Assert.True(guard.TryBeginCall("gpt-5.6-sol", true, out var lease, out _));
+        guard.RecordCallFailure(lease, new InvalidOperationException("test cleanup"));
+    }
+
     private sealed class StubChatClient : IChatClient
     {
         private readonly ChatResponse _response;
@@ -155,11 +214,14 @@ public sealed class LlmCallTelemetryTests
 
         public ChatOptions? Options { get; private set; }
 
+        public int CallCount { get; private set; }
+
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
             ChatOptions? options = null,
             CancellationToken cancellationToken = default)
         {
+            CallCount++;
             Options = options;
             return Task.FromResult(_response);
         }
@@ -184,6 +246,28 @@ public sealed class LlmCallTelemetryTests
             IEnumerable<ChatMessage> messages,
             ChatOptions? options = null,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
+    }
+
+    private sealed class StreamingChatClient : IChatClient
+    {
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            yield return new ChatResponseUpdate(ChatRole.Assistant, "first");
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return new ChatResponseUpdate(ChatRole.Assistant, "second");
+        }
 
         public object? GetService(Type serviceType, object? serviceKey = null) => null;
         public void Dispose() { }

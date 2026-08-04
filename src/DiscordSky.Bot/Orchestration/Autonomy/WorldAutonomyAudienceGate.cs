@@ -7,6 +7,7 @@ namespace DiscordSky.Bot.Orchestration.Autonomy;
 public enum WorldAutonomyAudienceAction
 {
     FullAutonomy,
+    Conversation,
     Reaction,
     Silence,
 }
@@ -45,7 +46,7 @@ public sealed class WorldAutonomyAudienceGate
     private readonly WorldAutonomyAudienceJudge _judge;
     private readonly IRecallTelemetrySink _telemetry;
     private readonly WorldAutonomyPostSpeechGuard _postSpeechGuard;
-    private readonly WorldAutonomyProviderCircuit _providerCircuit;
+    private readonly LlmProviderGuard _providerGuard;
     private readonly Func<double> _nextDouble;
 
     public WorldAutonomyAudienceGate(
@@ -53,8 +54,8 @@ public sealed class WorldAutonomyAudienceGate
         WorldAutonomyAudienceJudge judge,
         IRecallTelemetrySink telemetry,
         WorldAutonomyPostSpeechGuard postSpeechGuard,
-        WorldAutonomyProviderCircuit providerCircuit)
-        : this(configuration, judge, telemetry, postSpeechGuard, providerCircuit, Random.Shared.NextDouble)
+        LlmProviderGuard providerGuard)
+        : this(configuration, judge, telemetry, postSpeechGuard, providerGuard, Random.Shared.NextDouble)
     {
     }
 
@@ -63,14 +64,14 @@ public sealed class WorldAutonomyAudienceGate
         WorldAutonomyAudienceJudge judge,
         IRecallTelemetrySink telemetry,
         WorldAutonomyPostSpeechGuard postSpeechGuard,
-        WorldAutonomyProviderCircuit providerCircuit,
+        LlmProviderGuard providerGuard,
         Func<double> nextDouble)
     {
         _configuration = configuration;
         _judge = judge;
         _telemetry = telemetry;
         _postSpeechGuard = postSpeechGuard;
-        _providerCircuit = providerCircuit;
+        _providerGuard = providerGuard;
         _nextDouble = nextDouble;
     }
 
@@ -87,11 +88,11 @@ public sealed class WorldAutonomyAudienceGate
                 "gate_off");
         }
 
-        if (_providerCircuit.Snapshot().IsOpen)
+        if (_providerGuard.Snapshot().IsOpen)
         {
             var delegated = new WorldAutonomyAudienceDecision(
-                WorldAutonomyAudienceAction.FullAutonomy,
-                WorldAutonomyAudienceAction.FullAutonomy,
+                WorldAutonomyAudienceAction.Silence,
+                WorldAutonomyAudienceAction.Silence,
                 null,
                 "provider_circuit_open");
             EmitTelemetry(request, delegated, 0);
@@ -106,15 +107,15 @@ public sealed class WorldAutonomyAudienceGate
         var verdict = await _judge.JudgeAsync(request, cancellationToken);
         var predicted = Decide(
             verdict,
-            request.BotSpokeRecently,
             _configuration.AmbientFullThreshold,
             _configuration.AmbientReactionThreshold,
             _configuration.AmbientActionThreshold,
-            _configuration.AmbientRecentSpeechPenalty,
             _configuration.AmbientJudgeConfidenceFloor);
         var cadenceHold = _configuration.AmbientPostSpeechHoldEnabled &&
             !cadence.Allowed && verdict is not null &&
             verdict.Confidence >= _configuration.AmbientJudgeConfidenceFloor &&
+            verdict.ConversationWorth < _configuration.AmbientFullThreshold &&
+            verdict.ReactionWorth < _configuration.AmbientReactionThreshold &&
             verdict.ActionWorth < _configuration.AmbientActionThreshold;
         var lowValueHold = _configuration.AmbientLowValueHoldEnabled && verdict is not null &&
             verdict.Confidence >= _configuration.AmbientJudgeConfidenceFloor &&
@@ -135,15 +136,17 @@ public sealed class WorldAutonomyAudienceGate
             : lowValueHold
             ? "all_axes_below_floor"
             : verdict is null
-            ? "judge_unavailable_fail_open"
+            ? "judge_unavailable_fail_closed"
             : verdict.Confidence < _configuration.AmbientJudgeConfidenceFloor
-            ? "judge_low_confidence_fail_open"
+            ? "judge_low_confidence_fail_closed"
             : ActionName(predicted);
-        var canaryHold = cadenceHold || lowValueHold;
         var explorationCandidate = _configuration.AmbientGateMode switch
         {
-            WorldAutonomyAmbientGateMode.Canary => canaryHold,
-            WorldAutonomyAmbientGateMode.Live => predicted == WorldAutonomyAudienceAction.Silence,
+            WorldAutonomyAmbientGateMode.Canary => predicted != WorldAutonomyAudienceAction.FullAutonomy,
+            WorldAutonomyAmbientGateMode.Live => predicted is
+                WorldAutonomyAudienceAction.Conversation or
+                WorldAutonomyAudienceAction.Reaction or
+                WorldAutonomyAudienceAction.Silence,
             _ => false,
         };
         var explorationPercent = _configuration.AmbientGateMode == WorldAutonomyAmbientGateMode.Canary
@@ -152,7 +155,9 @@ public sealed class WorldAutonomyAudienceGate
         var exploration = explorationCandidate && _nextDouble() < explorationPercent / 100.0;
         var action = _configuration.AmbientGateMode switch
         {
-            WorldAutonomyAmbientGateMode.Canary when canaryHold && !exploration => WorldAutonomyAudienceAction.Silence,
+            WorldAutonomyAmbientGateMode.Canary when exploration => ExplorationAction(predicted),
+            WorldAutonomyAmbientGateMode.Live when exploration => ExplorationAction(predicted),
+            WorldAutonomyAmbientGateMode.Canary when !exploration => predicted,
             WorldAutonomyAmbientGateMode.Live when !exploration => predicted,
             _ => WorldAutonomyAudienceAction.FullAutonomy,
         };
@@ -194,22 +199,26 @@ public sealed class WorldAutonomyAudienceGate
     private static string ActionName(WorldAutonomyAudienceAction action) => action switch
     {
         WorldAutonomyAudienceAction.FullAutonomy => "full_autonomy",
+        WorldAutonomyAudienceAction.Conversation => "conversation",
         WorldAutonomyAudienceAction.Reaction => "reaction",
         _ => "silence",
     };
 
+    private static WorldAutonomyAudienceAction ExplorationAction(WorldAutonomyAudienceAction predicted) =>
+        predicted == WorldAutonomyAudienceAction.Conversation
+            ? WorldAutonomyAudienceAction.FullAutonomy
+            : WorldAutonomyAudienceAction.Conversation;
+
     internal static WorldAutonomyAudienceAction Decide(
         WorldAutonomyAudienceVerdict? verdict,
-        bool botSpokeRecently,
         double fullThreshold,
         double reactionThreshold,
         double actionThreshold,
-        double recentSpeechPenalty,
         double confidenceFloor)
     {
         if (verdict is null || verdict.Confidence < confidenceFloor)
         {
-            return WorldAutonomyAudienceAction.FullAutonomy;
+            return WorldAutonomyAudienceAction.Silence;
         }
 
         if (verdict.ActionWorth >= actionThreshold)
@@ -217,12 +226,9 @@ public sealed class WorldAutonomyAudienceGate
             return WorldAutonomyAudienceAction.FullAutonomy;
         }
 
-        var effectiveFullThreshold = botSpokeRecently
-            ? Math.Min(1.0, fullThreshold + recentSpeechPenalty)
-            : fullThreshold;
-        if (verdict.ConversationWorth >= effectiveFullThreshold)
+        if (verdict.ConversationWorth >= fullThreshold)
         {
-            return WorldAutonomyAudienceAction.FullAutonomy;
+            return WorldAutonomyAudienceAction.Conversation;
         }
 
         return verdict.ReactionWorth >= reactionThreshold

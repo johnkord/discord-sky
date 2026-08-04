@@ -147,6 +147,9 @@ public sealed record TelemetryEvent(
     , [property: JsonPropertyName("memory_current_bytes")] long? MemoryCurrentBytes = null
     , [property: JsonPropertyName("memory_limit_bytes")] long? MemoryLimitBytes = null
     , [property: JsonPropertyName("utilization")] double? Utilization = null
+    , [property: JsonPropertyName("estimated_cost_usd")] double? EstimatedCostUsd = null
+    , [property: JsonPropertyName("hourly_cost_usd")] double? HourlyCostUsd = null
+    , [property: JsonPropertyName("daily_cost_usd")] double? DailyCostUsd = null
 );
 
 /// <summary>Canonical event-type string constants. Use these instead of string literals at call sites.</summary>
@@ -190,6 +193,9 @@ public static class TelemetryEventTypes
     public const string WorldAutonomyAudience = "world_autonomy_audience";
     public const string WorldAutonomyVisual = "world_autonomy_visual";
     public const string WorldAutonomyRun = "world_autonomy_run";
+    public const string WorldAutonomyConversation = "world_autonomy_conversation";
+    public const string WorldAutonomyBudget = "world_autonomy_budget";
+    public const string LlmProviderGuard = "llm_provider_guard";
 }
 
 /// <summary>Writes one content-free deployment boundary after the durable telemetry sink has started.</summary>

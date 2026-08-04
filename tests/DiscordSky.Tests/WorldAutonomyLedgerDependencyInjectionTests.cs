@@ -1,4 +1,6 @@
 using DiscordSky.Bot.Orchestration.Autonomy;
+using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Memory.Logging;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
@@ -21,6 +23,27 @@ public sealed class WorldAutonomyLedgerDependencyInjectionTests
         var ledger = provider.GetRequiredService<FileBackedWorldAutonomyLedger>();
 
         Assert.NotNull(ledger);
+    }
+
+    [Fact]
+    public void ProviderGuard_ResolvesThroughConfiguredLlmOptions()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<IOptions<LlmOptions>>(Options.Create(new LlmOptions
+        {
+            Guard = new LlmProviderGuardOptions
+            {
+                HourlyUsdLimit = -1,
+                DailyUsdLimit = 3,
+            },
+        }));
+        services.AddSingleton<IRecallTelemetrySink, NoOpTelemetrySink>();
+        services.AddSingleton<LlmProviderGuard>();
+
+        using var provider = services.BuildServiceProvider();
+
+        Assert.Throws<InvalidOperationException>(() => provider.GetRequiredService<LlmProviderGuard>());
     }
 
     private sealed class TemporaryDirectory : IDisposable

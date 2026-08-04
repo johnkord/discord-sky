@@ -13,24 +13,34 @@ data:
   WorldAutonomy__SessionTimeoutMinutes: "20"
   WorldAutonomy__RequestIdPoolSize: "40"
   WorldAutonomy__ValidateStewardOnStartup: "true"
-  WorldAutonomy__TerminalDeliveryEnabled: "false"
+  WorldAutonomy__TerminalDeliveryEnabled: "true"
   WorldAutonomy__PromptCacheMode: "Off"
   WorldAutonomy__LedgerPath: "/app/data/user_memories/world-autonomy/world-autonomy.json"
-  # Host-side attention allocation. Shadow records utility-model silence/reaction/full predictions while the
-  # current xhigh behavior remains intact. Promote to Canary one hold lever at a time, then Live after review.
-  WorldAutonomy__AmbientGateMode: "Shadow"
+  # Canary enforces four-way routing with 10% full-autonomy exploration for non-structural predictions.
+  # Direct audiences bypass admission but have a separate full-agent route budget.
+  WorldAutonomy__AmbientGateMode: "Canary"
   WorldAutonomy__AmbientFullThreshold: "0.65"
   WorldAutonomy__AmbientReactionThreshold: "0.35"
-  WorldAutonomy__AmbientActionThreshold: "0.60"
+  # Lower Canary threshold keeps uncertain structural opportunities fail-open; the 4/hour route budget bounds cost.
+  WorldAutonomy__AmbientActionThreshold: "0.35"
   WorldAutonomy__AmbientJudgeConfidenceFloor: "0.35"
   WorldAutonomy__AmbientPostSpeechHoldEnabled: "true"
   WorldAutonomy__AmbientLowValueHoldEnabled: "false"
   WorldAutonomy__AmbientLowValueFloor: "0.15"
   WorldAutonomy__AmbientCanaryExplorationPercent: "10"
   WorldAutonomy__AmbientLiveExplorationPercent: "5"
-  WorldAutonomy__AmbientRecentSpeechPenalty: "0.15"
-  # A short live debounce merges link-plus-comment fragments before xhigh starts. The post-speech material gate
-  # follows AmbientGateMode, so it is telemetry-only during this shadow stage.
+  WorldAutonomy__Budget__Enabled: "true"
+  WorldAutonomy__Budget__StatePath: "/app/data/user_memories/world-autonomy/admission-budget.json"
+  WorldAutonomy__Budget__AmbientFullPerHour: "4"
+  WorldAutonomy__Budget__AmbientFullPerDay: "16"
+  WorldAutonomy__Budget__AmbientConversationPerHour: "12"
+  WorldAutonomy__Budget__AmbientConversationPerDay: "60"
+  WorldAutonomy__Budget__DirectFullPerHour: "8"
+  WorldAutonomy__Budget__DirectFullPerDay: "40"
+  WorldAutonomy__Budget__DirectConversationPerHour: "16"
+  WorldAutonomy__Budget__DirectConversationPerDay: "80"
+  # A short debounce merges link-plus-comment fragments before admission. Post-speech cadence may hold only
+  # episodes already below conversation, reaction, and action thresholds.
   WorldAutonomy__AmbientEpisodeCoalescingEnabled: "true"
   WorldAutonomy__AmbientEpisodeWindowMilliseconds: "1500"
   WorldAutonomy__AmbientPostSpeechGuardEnabled: "true"
@@ -72,6 +82,11 @@ data:
   # maintenance, and gpt-5.4-mini remains the cheap non-reasoning utility judge.
   # ConfigMap values override the Secret because configMapRef follows secretRef in the Deployment.
   LLM__ActiveProvider: "OpenAI"
+  LLM__Guard__Enabled: "true"
+  LLM__Guard__HourlyUsdLimit: "1.0"
+  LLM__Guard__DailyUsdLimit: "3.0"
+  LLM__Guard__ProbeIntervalMinutes: "5"
+  LLM__Guard__StatePath: "/app/data/user_memories/llm-provider-guard.json"
   LLM__Providers__OpenAI__ChatModel: "gpt-5.6-sol"
   LLM__Providers__OpenAI__AmbientModel: "gpt-5.6-sol"
   LLM__Providers__OpenAI__UtilityModel: "gpt-5.4-mini"
@@ -119,10 +134,8 @@ data:
   Chaos__UseWorthGate: "true"
   Chaos__AmbientWorthThreshold: "0.5"
   Chaos__AmbientReplyQuietSeconds: "90"
-  # Proactive cold opens: LIVE TRIAL as of 2026-07-06 (2-day shadow harvest reviewed; owner cleared going live).
-  # Keep cold opens in Shadow while migrating the target from mutable names to private exact IDs. Restore Live
-  # only after the ID-bound target resolves and new shadow opportunities have been reviewed.
-  ColdOpen__Enabled: "true"
+  # Disabled while prepaid credits are scarce. ShadowMode still protects against accidental posting if re-enabled.
+  ColdOpen__Enabled: "false"
   ColdOpen__ShadowMode: "true"
   ColdOpen__Channels__0__Guild: "Trump's Ballroom"
   ColdOpen__Channels__0__Channel: "secret-chat"
