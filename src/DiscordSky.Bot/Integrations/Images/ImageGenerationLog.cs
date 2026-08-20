@@ -32,7 +32,8 @@ public sealed record ImageGenerationRecord(
     [property: JsonPropertyName("reason")] string? Reason = null,
     [property: JsonPropertyName("guild_id")] ulong? GuildId = null,
     [property: JsonPropertyName("evidence_message_ids")] IReadOnlyList<ulong>? EvidenceMessageIds = null,
-    [property: JsonPropertyName("prompt_digest")] string? PromptDigest = null)
+    [property: JsonPropertyName("prompt_digest")] string? PromptDigest = null,
+    [property: JsonPropertyName("final_prompt")] string? FinalPrompt = null)
 {
     public const string OutcomeOk = "ok";
     public const string OutcomeRefused = "refused";

@@ -43,6 +43,8 @@ public sealed class MediaSemanticCache
         _clock = clock ?? TimeProvider.System;
     }
 
+    internal int EntryCount => _cache.Count;
+
     internal async Task<MediaSemanticResult> DescribeAsync(
         ulong messageId,
         DateTimeOffset messageTimestamp,

@@ -123,6 +123,7 @@ Locate and inspect the current implementations of these conceptual stores:
 - persistent character/world state;
 - sent-message ownership/correlation state;
 - current effective configuration and startup routing;
+- persistent route-budget and provider-guard state, including UTC windows and reservations;
 - Discord messages, replies, attachments, and current reactions;
 - moderation/audit records and external threat labels;
 - historical platform logs when current stdout is incomplete.
@@ -212,6 +213,9 @@ fallback sends, message deletion, reaction removal, retention boundaries, and pr
 
 - Ambient: eligible human messages -> probability sample -> worth judgment -> text/image/silence action ->
   lease/budget veto -> model calls -> delivery -> uptake.
+- World autonomy: coalesced episode -> audience call -> predicted route -> Canary exploration -> route budget ->
+  `FullAutonomy|Conversation|Reaction|Silence` -> provider guard -> delivery. Reconcile full-agent and
+  conversation routes separately; a held full route may legitimately degrade to conversation.
 - Cold open: warm-channel gate -> judge cooldown -> composition -> hook dedupe -> shadow/live -> critique ->
   delivery -> uptake.
 - Reaction: judge opportunity -> decline/invalid/failure/react -> Discord add success -> current reaction.
@@ -219,6 +223,8 @@ fallback sends, message deletion, reaction removal, retention boundaries, and pr
 - Memory: hint/inline availability -> recall call -> returned notes -> reference touch -> later use ->
   consolidation/eviction.
 - Persistent state: tick due -> activity gate -> model call -> verifier -> commit -> version/mood/rank change.
+- Continuity shadow: eligible autonomy route -> admissible memory/rank brief -> IDs/digest telemetry. A shadow
+  candidate is not proof that the brief entered a prompt; verify the live mode and prompt source.
 - Safety: message/account opportunity -> detector/AutoMod/new-account decision -> alert/block -> moderator action ->
   later ban label.
 
@@ -264,6 +270,9 @@ Prefer median, p95, max, and failure count over averages alone.
 - Effective model/effort versus configured model/effort to catch routing drift.
 - Cost estimate where pricing data is trustworthy. Label estimates as estimates.
 - Separate provider latency from surrounding context gathering, tools, generation, and Discord send time.
+- Separate provider API failures from local `LlmProviderBlockedException` admission holds. Reconstruct the guard
+  equation from persisted spend plus in-flight reservation; do not call an hourly hold a funding outage.
+- Reconcile text estimates and fixed image costs against `llm_provider_guard outcome=recorded` totals.
 
 ### Reception and quality proxies
 
@@ -284,10 +293,15 @@ Do not declare a line funny from these proxies. Route that judgment to `discord-
 - Reactions: decision validity, delivery success, emoji variety, media versus text behavior, density by channel.
 - Media semantics: media detection, summary availability/failure, reuse versus duplicate vision calls, incoherence.
 - Images: source, model/quality, budget/refusal/failure, latency, cost, delivery, and reception. Audit zero-use paths.
+- Image grounding: join trigger/evidence IDs to the bounded `final_prompt` and digest. Treat older records without
+  `final_prompt` as non-reconstructable rather than guessing from the caption.
 - Memory: notes/user, additions, exact/semantic duplicates, kind mix, ever-referenced share, recall adoption,
   consolidation success, stale accumulation, and suppression behavior.
 - Persistent state: tick due/commit/reject rate, version movement, mood reachability, rank aging, and whether state
   leaks into repetitive response templates.
+- Runtime resources: trend cgroup usage by pod lifetime, then separate Sky RSS, direct-child RSS, managed heap,
+  fragmentation, GC counts, threads, and bounded cache counts. A restart reset proves retained high water, not
+  which process or object owns it. Check node MemoryPressure and system/cache memory before recommending a limit.
 - Safety: detections, alerts, blocks, false positives, predicted versus missed bans, and no-op reconciliation writes.
 
 ## Phase 7: read the interactions
@@ -353,6 +367,8 @@ Apply these deliberately. The most valuable findings often live in negative spac
 - Feedback-loop contamination: the bot rewards its own reactions, tunes against its holdout, or repeats its winners
   until they decay.
 - Config/source drift: code supports one policy while live overrides select another.
+- Reservation masking: a conservative in-flight reservation makes a nominal dollar ceiling behave much lower
+  than recorded spend. Compare known-model reservation with observed p95/max call cost and concurrency.
 - Stale metric: a score still rewards behavior that a later intentional redesign removed.
 - Feature coupling: enabling, suppressing, or slowing one subsystem changes another subsystem's opportunities.
 - Timing cascade: context, recall, retries, image work, or delivery latency moves a later action outside its useful

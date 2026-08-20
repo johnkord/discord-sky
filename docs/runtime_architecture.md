@@ -1,342 +1,233 @@
-# Discord Sky — Runtime Architecture
+# Discord Sky Runtime Architecture
 
-This document describes how the Discord Sky bot operates at runtime: how it starts, processes messages, interacts with OpenAI, and delivers responses.
+This document describes the current Discord Sky runtime. It focuses on ownership boundaries, provider routing,
+world autonomy, durable state, and the operational signals required to explain production behavior.
 
----
+## 1. Runtime And Dependencies
 
-## 1. Technology Stack
+| Component | Current implementation |
+| --- | --- |
+| Runtime | .NET 8, `Microsoft.NET.Sdk.Web` |
+| Discord | Discord.Net 3.20.1 |
+| AI abstraction | Microsoft.Extensions.AI 10.8.3 |
+| Agent framework | Microsoft Agent Framework OpenAI adapter 1.15.0 |
+| MCP | ModelContextProtocol 1.4.1 |
+| World-autonomy child | Discord Steward, .NET 10, pinned and bundled at deploy time |
+| Deployment | One AKS Deployment, one replica, Recreate strategy, Azure Files PVC |
 
-| Component | Technology | Version |
-|---|---|---|
-| Runtime | .NET 8.0 | `net8.0` |
-| Project SDK | `Microsoft.NET.Sdk.Web` | ASP.NET Core Web Host |
-| Discord library | Discord.NET | 3.14.1 |
-| AI abstraction | Microsoft.Extensions.AI | 10.3.0 (transitive) |
-| AI provider bridge | Microsoft.Agents.AI.OpenAI | 1.0.0-rc1 |
-| OpenAI SDK | OpenAI | 2.8.0 (transitive) |
-| Deployment | Docker + Kubernetes (AKS) | — |
-
-The `Microsoft.NET.Sdk.Web` provides ASP.NET Core hosting, logging, options, and dependency injection without additional NuGet references. Only two explicit packages are needed: `Discord.Net` and `Microsoft.Agents.AI.OpenAI`.
-
----
-
-## 2. Startup Sequence
-
-The entry point is `Program.cs`, which uses the ASP.NET Core `WebApplication` pattern.
-
-### 2.1 Dependency Injection Registration
-
-```
-WebApplication.CreateBuilder(args)
-  ├─ WebHost.UseUrls("http://+:8080")
-  ├─ Configure<BotOptions>("Bot")
-  ├─ Configure<ChaosSettings>("Chaos")
-  ├─ Configure<OpenAIOptions>("OpenAI")
-  ├─ Singleton: DiscordSocketConfig
-  │     GatewayIntents = Guilds | GuildMessages | MessageContent | DirectMessages
-  │     MessageCacheSize = 100
-  ├─ Singleton: DiscordSocketClient
-  ├─ Singleton: IChatClient
-  │     OpenAIClient(apiKey).GetChatClient(model).AsIChatClient()
-  ├─ Singleton: SafetyFilter
-  ├─ Singleton: ContextAggregator
-  ├─ Singleton: CreativeOrchestrator
-  └─ HostedService: DiscordBotService
-```
+`Program.cs` binds typed options, registers singleton services, creates the active-provider `IChatClient`, wraps
+it in telemetry and the shared provider guard, and starts the Discord gateway plus background services.
 
-Key observations:
-- **All services are singletons.** The bot runs as a single long-lived process with one Discord WebSocket connection and one OpenAI client.
-- Configuration types (`BotOptions`, `ChaosSettings`, `OpenAIOptions`) are consumed via `IOptions<T>` — there is no bare singleton registration.
-- The `IChatClient` is resolved once at startup using `OpenAIClient → ChatClient → AsIChatClient()`. The model string used for this initial `GetChatClient()` call may be overridden per-request via `ChatOptions.ModelId`, but the underlying transport client is shared.
+The active provider is selected by `LLM:ActiveProvider`. Each workload resolves a typed profile containing model,
+reasoning effort, and optional reasoning summary. Per-request model selection stays inside one shared transport,
+telemetry, deadline, and guard boundary.
 
-### 2.2 Health Endpoint
+## 2. Startup And Health
 
-After `builder.Build()`, the application registers an HTTP health endpoint:
+Startup performs these material checks:
 
-```
-GET /healthz
-  → ConnectionState.Connected  → 200 { status: "healthy",  connection: "connected" }
-  → otherwise                  → 503 { status: "degraded", connection: "<state>" }
-```
+1. Bind and validate bot, LLM, image, memory, reaction, Empire, and world-autonomy options.
+2. Construct one `DiscordSocketClient` with the intents needed by enabled features.
+3. Construct the active-provider chat client and log the workload routing matrix.
+4. Start durable telemetry, transcript, reaction, image, memory, and state services.
+5. Probe the bundled Steward executable.
+6. Authenticate the active LLM provider with `GET /v1/models`; OpenAI also validates configured model access.
+7. Connect Discord and start one isolated Steward child per exact private guild binding.
 
-This provides application-level health reporting to Kubernetes liveness and readiness probes (see Section 9).
+`GET /healthz` returns 200 only when:
 
-### 2.3 Host Startup
+- the Discord gateway is Connected; and
+- every configured Steward child is healthy.
 
-`app.RunAsync()` starts the ASP.NET Core host, which:
+The payload includes configured and healthy autonomy guild counts plus per-guild state. Health does not make a
+paid LLM call. Provider health comes from startup validation, `llm_call`, and `llm_provider_guard` telemetry.
 
-1. Opens the HTTP listener on port 8080 for the `/healthz` endpoint.
-2. Calls `DiscordBotService.StartAsync()`:
-   - Hooks three event handlers: `Log`, `MessageReceived`, `Ready`.
-   - If `Bot:Token` is empty, logs a warning and enters **dry mode** (no Discord connection — useful for testing).
-   - Otherwise: calls `LoginAsync(TokenType.Bot, token)`, then `StartAsync()`, and optionally `SetGameAsync(status)`.
-3. When the WebSocket connects and the `Ready` event fires, `OnReadyAsync` passes the bot's own user ID to `ContextAggregator.SetBotUserId()` so it can later distinguish its own messages in history.
+## 3. Message Ownership
 
----
+Every Discord message enters `DiscordBotService`. Ownership is decided before creative generation so two Robotnik
+paths do not answer the same trigger.
 
-## 3. Message Processing Pipeline
+High-level order:
 
-Every Discord message arrives via the `MessageReceived` event. The top-level handler `OnMessageReceivedAsync` wraps all processing in a try-catch: unhandled exceptions are logged and a brief error notification is sent to the channel, ensuring a single bad message never crashes the process.
+1. Ignore self messages and record channel pulse/activity.
+2. Run safety surfaces that must see bots or non-allow-listed channels.
+3. Handle local bot-management commands and explicit persona/image commands.
+4. If the guild is bound to world autonomy, route the message through the autonomy owner.
+5. Otherwise use direct mention/reply/command or ordinary ambient orchestration.
+6. If no text reply is selected, the reaction judge may add one bounded emoji verdict.
+7. Buffer eligible human text for debounced memory extraction.
 
-### 3.1 Gate Filters (in order)
+Local commands such as memory deletion, memory inspection, scam reporting, Empire inspection, explicit persona
+overrides, and explicit image commands remain outside world autonomy because they address the application rather
+than petitioning Robotnik.
 
-```
-OnMessageReceivedAsync(rawMessage) → try { ProcessMessageAsync(rawMessage) }
-  │
-  ├─ [1] Type gate: must be SocketUserMessage (rejects system messages)
-  ├─ [2] Bot gate: message.Author.IsBot → reject (never responds to bots)
-  ├─ [3] Ban-word gate: ChaosSettings.ContainsBanWord(content) → reject
-  └─ [4] Channel gate: BotOptions.IsChannelAllowed(channelName) → reject
-```
+## 4. Ordinary Creative Pipeline
 
-If `AllowedChannelNames` is empty, all channels pass gate 4.
+The ordinary pipeline builds an immutable interaction episode and a semantic message view containing normalized
+text, Discord embeds/attachments, cached media semantics, and bounded HTTP unfurls. `CreativeOrchestrator` then:
 
-### 3.2 Invocation Routing
+- resolves the workload profile;
+- applies the Robotnik character core and per-turn flavor;
+- adds bounded channel/reply context;
+- offers recall and image tools when the invocation permits them;
+- enforces target IDs against server-owned known-message state;
+- records prompt/reply transcript and provider telemetry;
+- returns text, reply target, and optional attachment bytes.
 
-After passing all gates, the message is classified into one of three invocation kinds:
+`SendChunkedAsync` enforces Discord's 2,000-character limit. Only the first chunk carries a reply reference. Every
+sent chunk is registered in `SentMessageRegistry` with persona, source, trigger, episode, and reply-target metadata.
 
-```
-              ┌─────────────────────────────────┐
-              │     Is the message a reply to    │
-              │       one of the bot's own       │
-              │           messages?              │
-              └────────┬───────────┬─────────────┘
-                   Yes │           │ No
-                       ▼           ▼
-             HandleDirectReply   Does content start
-                                 with CommandPrefix?
-                                   │
-                              Yes  │  No
-                               ▼   ▼
-                    HandlePersona  Roll ambient
-                 (Command kind)    chance dice
-                                      │
-                            roll < AmbientReplyChance?
-                               │           │
-                           Yes │           │ No
-                               ▼           ▼
-                    HandlePersona     (ignored)
-                    (Ambient kind)
-```
+## 5. World Autonomy
 
-**Direct Reply detection** checks `message.Reference.MessageId`, fetches the referenced message (from cache or API), and verifies the referenced author is the bot. The persona used for the original bot message is looked up in the **persona cache** (see Section 6.3), falling back to the configured default.
+World autonomy is enabled only by exact private guild bindings. Each enabled guild owns:
 
-**Command invocation** strips the prefix and parses optional persona/topic syntax:
-- `!sky` → default persona, no topic
-- `!sky hello` → default persona, topic="hello"
-- `!sky(Gandalf) You shall not pass` → persona="Gandalf", topic="You shall not pass"
+- one isolated Steward child process;
+- one native tool catalog bound to that guild;
+- one mailbox that preserves direct FIFO and coalesces ambient work;
+- independent durable Steward paths and a shared Sky autonomy ledger.
 
-**Ambient invocation** is probabilistic: `AmbientReplyChance` (default 0.25 = 25%) per message.
+### 5.1 Ambient admission
 
-### 3.3 Typing Indicator
+Rapid ambient fragments are coalesced before semantic work. A utility-model audience judge scores independent
+conversation, reaction, and structural-action worth. The host chooses one route:
 
-For `Command` and `DirectReply` invocations, the bot triggers a typing indicator (`TriggerTypingAsync`) before calling the orchestrator. Ambient invocations skip this to remain stealthy.
+| Route | Behavior |
+| --- | --- |
+| `Silence` | No creative model call |
+| `Reaction` | One constrained emoji path |
+| `Conversation` | One Sol/xhigh call, no tools, one concise line |
+| `FullAutonomy` | Sol/xhigh agent plus deferred Steward tool discovery |
 
-### 3.4 Cancellation
+Canary mode enforces the prediction and samples bounded asymmetric exploration. Predicted silence/reaction may
+explore conversation; predicted conversation may explore full autonomy. Structural predictions remain full.
 
-All handler methods accept the shutdown `CancellationToken` (from `_shutdownCts`). If the host is shutting down while a message is being processed, the token signals cancellation, allowing graceful interruption of long-running OpenAI calls or Discord API fetches.
+Persistent route budgets cap ambient full, ambient conversation, direct full, and direct conversation separately.
+An exhausted ambient full route degrades to conversation. Direct petitions bypass ambient admission but still obey
+direct route and global provider budgets.
 
----
+### 5.2 Full agent
 
-## 4. Context Gathering
+Sky creates a run context, binds the Steward catalog, and gives the model a hosted `tool_search` namespace. Native
+schemas use deferred loading, so all tools remain callable without placing every schema in the first prompt.
 
-`ContextAggregator` builds the context payload that is sent to the AI model.
+The full agent receives:
 
-### 4.1 Channel History (`GatherHistoryAsync`)
+- guild/channel/self identity;
+- recent channel history and current trigger;
+- Robotnik sovereignty and opportunity directives;
+- current Empire directive;
+- registered Sky speech and visual tools;
+- unrestricted Steward authority for the bound guild.
 
-1. Fetches `HistoryMessageLimit * 2` recent messages from the channel (over-fetches to account for filtering).
-2. Filters out:
-   - The trigger message itself
-   - Messages from other bots (unless it's this bot with `IncludeOwnMessagesInHistory = true`)
-   - Messages starting with the command prefix (to avoid feeding `!sky` invocations back)
-   - Messages with no text content and no images
-3. Orders by timestamp (oldest first), takes the most recent `HistoryMessageLimit` messages.
-4. Calls `TrimImageOverflow` to ensure the total image count across all messages doesn't exceed `HistoryImageLimit`. When trimming, it retains the **most recent** images.
+Terminal Sky speech or visual delivery stops the loop when no unsettled write remains. Tool calls and run outcomes
+are journaled for recovery. A failed or interrupted write is reconciled against Steward's durable operation state.
 
-### 4.2 Image Collection (`CollectImages`)
+### 5.3 Conversation route
 
-For each message, images are extracted from two sources:
+The conversation service deliberately receives no Steward tools, request IDs, mutation contract, or function loop.
+It may not claim server changes. It uses the same Sol/xhigh voice quality, registered transport, transcript sink,
+reaction attribution, and provider guard as other routes.
 
-1. **Attachments**: checked via `ContentType` (starts with `image/`) or file extension (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.bmp`).
-2. **Inline URLs**: extracted via regex from message content, filtered by extension.
+### 5.4 Continuity shadow
 
-Both sources are gated by:
-- HTTPS-only scheme enforcement
-- Host allowlist (`cdn.discordapp.com`, `media.discordapp.net` by default)
-- Deduplication by URL
+The dominant autonomy routes do not currently receive stored user memory text. A shadow-only observer ranks up to
+two admissible memories against the trigger and includes current Empire rank presence in a bounded private brief.
+It emits memory IDs, counts, score, digest, and length, but never changes a prompt. Promotion requires relevance
+review and a separate canary.
 
-### 4.3 Reply Chain (`GatherReplyChainAsync`)
+## 6. Memory
 
-For `DirectReply` invocations, the aggregator walks the `Reference.MessageId` chain backwards:
+Human messages are collected in per-channel debounced windows capped by message count and duration. The extraction
+pipeline uses Luna with structured memory-operation verification and durable yield telemetry.
 
-1. Starts at the trigger message
-2. Fetches each parent message via `channel.GetMessageAsync()`
-3. Stops when: no more parents, circular reference detected (via `HashSet<ulong>`), or `ReplyChainDepth` (default 40) reached
-4. Reverses the chain to oldest-first order
+The opportunity gate supports:
 
-This chain is later rendered prominently in the user prompt, distinct from the channel history.
+- `Off`: run every sampled extraction;
+- `Shadow`: record would-run/would-skip, never suppress;
+- `Live`: skip predicted zero-yield windows while retaining bounded exploration.
 
-### 4.4 Channel & Temporal Context (`BuildChannelContext`)
+Shutdown flush policy is independent so pending windows can still run during graceful termination.
 
-`DiscordBotService` assembles a `ChannelContext` record from the `SocketCommandContext` before each invocation. All data comes from Discord's cached state — no additional API calls are required.
+Memories are stored per user on the PVC. Read paths apply suppression, supersession, instruction-shape, kind, and
+relevance policies. Recall touches only surfaced memory IDs/content, restoring recency and reference counts.
 
-| Field | Source |
-|---|---|
-| `ChannelName` | `SocketGuildChannel.Name` |
-| `ChannelTopic` | `SocketTextChannel.Topic` (the channel description) |
-| `ServerName` | `SocketGuild.Name` |
-| `IsNsfw` | `SocketTextChannel.IsNsfw` |
-| `ThreadName` | `IThreadChannel.Name` (if in a thread) |
-| `MemberCount` | `SocketGuild.MemberCount` |
-| `RecentMessageCount` | Count of cached messages in the last hour (up to 100 sampled) |
-| `BotLastSpokeAt` | Timestamp of the bot's most recent cached message in the channel |
+## 7. Empire State
 
-This context is passed on the `CreativeRequest` and rendered in the user prompt as two metadata lines: a channel/server line and a temporal line (see Section 5.2).
+Empire State is a persistent JSON snapshot with a structured mood/rank spine and a bounded freeform war-room body.
+A six-hour activity-gated tick advances mood/ranks deterministically and optionally asks the utility model to rewrite
+the body. The rewrite must pass a structural verifier before commit. Writes are atomic and retain a rollback ring.
 
----
+The current tick sees the prior body, mood, and recent participant names. It does not yet consume a durable queue of
+verified Discord actions or reception events.
 
-## 5. AI Interaction
+## 8. Images
 
-`CreativeOrchestrator.ExecuteAsync` is the core orchestration method.
+Explicit commands, model-selected image tools, ambient visual choice, and world-autonomy visuals share
+`ImageToolService`. It owns:
 
-### 5.1 Rate Limiting Pre-Check
+- daily, per-user, monthly, and concurrency budgets;
+- mandatory 1990s cartoon style suffix;
+- approved-model policy;
+- provider call and fixed-cost accounting;
+- durable outcome records.
 
-`SafetyFilter.ShouldRateLimit()` uses a sliding 1-hour window with thread-safe locking. A `Queue<DateTimeOffset>` (guarded by `lock`) tracks prompt timestamps, evicts entries older than 1 hour, and rejects if the count exceeds `MaxPromptsPerHour` (default 20). If rate-limited:
-- Command/DirectReply: returns "I'm catching my breath—try again soon!"
-- Ambient: returns empty string (silently suppressed)
+The private image log stores model/quality/latency/cost, source/tier, trigger and evidence IDs, prompt digest, and a
+bounded final prompt actually sent to the provider. Image bytes are not persisted by Sky.
 
-### 5.2 Prompt Construction
+## 9. Provider Guard And Cost
 
-The AI request is built from two components:
+`LlmProviderGuard` is a singleton shared by active-provider chat calls and OpenAI images. It provides:
 
-**System Instructions** (`BuildSystemInstructions`):
-- Sets the persona: "You are roleplaying as {persona}"
-- Adjusts behavior based on invocation kind (DirectReply gets specific instructions about reading reply chains and staying responsive to the current message)
-- Thread-aware: if in a Discord thread, encourages more chaotic responses
-- Includes a critical requirement to always call the `send_discord_message` tool
+- quota/auth circuit opening;
+- one half-open probe after the configured interval;
+- conservative in-flight reservation by known model;
+- persistent UTC hourly/daily estimated spend;
+- pre-provider blocking and durable guard telemetry.
 
-**User Content** (`BuildUserContent`):
-- **Channel & temporal metadata**: if `ChannelContext` is present, renders two lines — a channel line (`Channel: #cooking | Server: Friend Group | Topic: "Share recipes" | Server members: 34`) and a temporal line (`Current time: Tuesday 2:34 PM UTC | Channel activity: 12 messages (moderate) | Bot last spoke: 15 min ago`)
-- For DirectReply: renders the reply chain prominently with `=== CONVERSATION HISTORY ===` markers, then highlights the current message with `>>> CURRENT MESSAGE <<<`
-- Renders metadata: invoker name, user ID
-- Appends the topic (if present) or instructs the model to continue conversation naturally
-- Appends each history message as a structured `TextContent` line: `{MessageId} | {Author} | age_minutes={N} | bot={true/false} => {content}`
-- For messages with images, appends `UriContent` entries (passed as vision inputs to the API)
+Known Sol, mini/Luna, image, and unknown models use separate reservations. On success, the reservation is released
+and replaced with measured token cost or fixed image cost. Corrupt persisted state fails closed through the current
+UTC day. Persistence failure after a successful provider response is fail-soft so it never causes a paid retry.
 
-### 5.3 Chat Options
+## 10. Delivery And Reception
 
-```csharp
-ChatOptions {
-    ModelId = ResolveModel(persona),     // per-persona override or default
-    Instructions = <system prompt>,       // injected automatically
-    MaxOutputTokens = hasReasoning ? clamp(MaxTokens*3, 1500, 4096)
-                                   : clamp(MaxTokens, 300, 1024),
-    Tools = [SendDiscordMessageTool],     // AIFunctionDeclaration (schema-only)
-    ToolMode = ChatToolMode.RequireSpecific("send_discord_message"),
-    Reasoning = { Effort, Output }        // optional, parsed from config strings
-}
-```
+`SentMessageRegistry` is the process-local, bounded ownership index for every explicit Sky send. It is capped at
+1,000 entries and evicts entries older than 24 hours when pruning is needed.
 
-**Ambient token cap**: for `Ambient` invocations, `MaxOutputTokens` is further clamped to a maximum of 512 tokens to reduce cost and response length.
+Human reactions normally resolve source/persona through the registry. On a miss, Sky now fetches the Discord
+message, verifies that its author is the bot, and recovers it as `post_restart` or `discord_system`. Robotnik's own
+emoji reactions are rejected before this read path.
 
-Key design decisions:
-- **Forced tool call**: `ChatToolMode.RequireSpecific` forces the model to always produce a tool call rather than free-form text. This guarantees structured output.
-- **Schema-only tool declaration**: Using `AIFunctionDeclaration` (no implementation delegate) prevents the M.E.AI auto-invoke loop. The tool call is parsed manually.
-- **Model override per persona**: `IntentModelOverrides["Remix"] = "gpt-5.2"` routes specific personas to different models.
-- **Reasoning budget**: When reasoning is enabled, output tokens are tripled to accommodate the reasoning trace plus the tool call.
+Deterministic no-model autonomy fallbacks are recorded in the transcript sink with `model_invoked=false`, concrete
+reason, trigger, and reply target. Successful full-agent final-text fallbacks are marked model-invoked.
 
-### 5.4 Retry with Exponential Backoff
+## 11. Durable Observability
 
-`GetResponseWithRetryAsync` wraps `_chatClient.GetResponseAsync()` with automatic retry:
+Primary durable sources:
 
-- Up to **3 attempts** before giving up.
-- Only retries on **transient errors**: `HttpRequestException`, `TaskCanceledException`, `TimeoutException`.
-- **Exponential backoff**: 2s, 4s delays between retries (2^attempt seconds).
-- Respects the shutdown `CancellationToken` — won't retry after cancellation.
+| Source | Purpose |
+| --- | --- |
+| Telemetry JSONL | opportunities, routes, calls, costs, resources, transitions, failures |
+| Transcript JSONL | full model prompt/reply and host fallback records |
+| Reaction JSONL | human add/remove reception events |
+| Image JSONL | generation opportunity, prompt evidence, cost, outcome |
+| User memory JSON | current per-user learned state |
+| Empire JSON | current mood/ranks/body |
+| Guard/budget JSON | restart-surviving spend and route counters |
+| Autonomy/Steward journals | run, tool, dispatch, and recovery evidence |
 
-### 5.5 Response Parsing
+`runtime_resource` samples cgroup current/limit, Sky RSS, direct-child RSS/count, managed heap, GC heap and
+fragmentation, collection counts, threads, and bounded memory/media/sent-message cache counts. Warning and critical
+bands are 80 and 90 percent of the cgroup limit.
 
-After the response is received:
+Telemetry is owner-private. Most identifiers are hashed, but selected features may retain bounded raw context for
+quality review. Transcripts and final image prompts contain raw private content by design.
 
-1. Scans all `FunctionCallContent` items in the response for one named `send_discord_message`.
-2. Calls `TryParseToolCallArguments()` to extract `mode`, `text`, and optional `target_message_id`.
-3. Validates the `target_message_id` against the `knownMessages` dictionary (built from history) — if the model hallucinates an ID not in the history, it downgrades to broadcast mode.
-4. Scrubs the text through `SafetyFilter.ScrubBannedContent()` (replaces ban words with `***`).
-5. If the tool call is missing or unparseable, falls back to either raw response text or a placeholder like `[{persona} pauses dramatically but says nothing.]`.
+## 12. Shutdown And Deployment
 
----
+On graceful shutdown, Sky flushes pending memory windows, cancels in-flight work, unhooks Discord message/reaction
+handlers, logs out, and disposes the client. Persistent route/guard/journal state survives pod replacement.
 
-## 6. Response Delivery
-
-Back in `DiscordBotService`, the orchestrator's `CreativeResult` is consumed.
-
-### 6.1 Reply Behavior
-
-| Invocation Kind | Reply Behavior |
-|---|---|
-| Command | Sends to channel; if `ReplyToMessageId` is set, uses Discord's reply feature |
-| Ambient | Same as Command, but if result is empty, message is silently suppressed (no send) |
-| DirectReply | Always replies (defaults to replying to the trigger message if orchestrator doesn't specify a different target) |
-
-Discord's `MessageReference` is used for reply threading.
-
-### 6.2 Message Chunking
-
-`SendChunkedAsync` handles Discord's 2000-character message limit. If the response exceeds the limit, it is split into multiple messages using `ChunkMessage`:
-
-1. Attempts to split at the nearest **newline** within the last half of the chunk.
-2. Falls back to splitting at the nearest **space**.
-3. As a last resort, performs a hard split at the character limit.
-4. Leading whitespace is trimmed from each subsequent chunk.
-5. Only the first chunk carries the reply `MessageReference`; follow-up chunks are free-standing.
-
-### 6.3 Persona Cache
-
-After each send, `CachePersona` stores the mapping `messageId → (persona, timestamp)` in a `ConcurrentDictionary`. This allows `HandleDirectReplyAsync` to look up which persona was used when the bot originally responded, maintaining character continuity across reply chains.
-
-- **TTL**: entries older than 24 hours are evicted.
-- **Size cap**: when the cache exceeds 500 entries, stale entries are pruned.
-
----
-
-## 7. Safety Mechanisms
-
-| Mechanism | Implementation | Default |
-|---|---|---|
-| Rate limiting | Sliding 1-hour window, `lock` + `Queue<DateTimeOffset>` (thread-safe) | 20 prompts/hour |
-| Ban words (inbound) | `ChaosSettings.ContainsBanWord()` — drops messages on sight | Empty list |
-| Ban words (outbound) | `SafetyFilter.ScrubBannedContent()` — pre-compiled `Regex` replaces with `***` | Empty list |
-| Channel allowlist | `BotOptions.IsChannelAllowed()` — empty = all channels allowed | Empty (all) |
-| Image host allowlist | HTTPS + specific hosts for image vision | Discord CDN only |
-| Bot ignores bots | `message.Author.IsBot` in gate filter | Always on |
-| Reply target validation | Only known message IDs from history accepted | Always on |
-
-The ban-word regex is compiled once at `SafetyFilter` construction (`RegexOptions.IgnoreCase | RegexOptions.Compiled`) and reused for all subsequent scrub operations. If no ban words are configured, the regex is `null` and scrubbing is a no-op.
-
----
-
-## 8. Shutdown & Disposal
-
-`DiscordBotService` implements both `IHostedService.StopAsync` and `IAsyncDisposable`.
-
-**StopAsync:**
-1. Signals `_shutdownCts` via `CancelAsync()`, which cancels all in-flight message handlers and OpenAI calls.
-2. Unhooks all event handlers (`Log`, `MessageReceived`, `Ready`).
-3. Calls `LogoutAsync` + `StopAsync` on the Discord client.
-
-**DisposeAsync:**
-1. Disposes the `CancellationTokenSource`.
-2. Calls `_client.DisposeAsync()` to release the WebSocket.
-
-The ASP.NET Core host handles SIGTERM/SIGINT, triggering `StopAsync` followed by `DisposeAsync`. The HTTP health endpoint also shuts down gracefully as part of the host lifecycle.
-
----
-
-## 9. Deployment Architecture
-
-The bot runs as a single-replica Kubernetes Deployment on AKS:
-
-- **Image**: Multi-stage Docker build (SDK for build → `aspnet:8.0` runtime for execution), exposes port 8080.
-- **Configuration**: `ConfigMap` for non-sensitive settings (including `ASPNETCORE_URLS: "http://+:8080"`), `Secret` for token and API key.
-- **Resources**: 100m–250m CPU, 256Mi–512Mi memory.
-- **Health probes**: Liveness and readiness probes use `httpGet` on port 8080, path `/healthz`. The endpoint returns connection state from the `DiscordSocketClient`, providing application-level health monitoring rather than just process-level checks.
+Production uses the hardened deploy script or serialized GitHub Actions workflow. The image includes a pinned
+Steward executable but no private profile. Private profile and binding resources are validated before apply. A failed
+rollout restores the prior deployment and private resources. Recreate strategy prevents concurrent writers on the
+Azure Files-backed file journals.

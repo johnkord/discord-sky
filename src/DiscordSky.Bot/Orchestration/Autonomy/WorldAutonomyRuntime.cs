@@ -23,7 +23,8 @@ public sealed record WorldAutonomyOpportunity(
     string? SourceChannelName = null,
     ulong? SourceAuthorId = null,
     string? SourceAuthorDisplayName = null,
-    VisualRequestIntent VisualIntent = VisualRequestIntent.None);
+    VisualRequestIntent VisualIntent = VisualRequestIntent.None,
+    string? SourceMessageText = null);
 
 public sealed record WorldAutonomyRunResult(
     string? RunId,
@@ -53,6 +54,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
     private readonly IRecallTelemetrySink _telemetry;
     private readonly LlmProviderGuard _providerGuard;
     private readonly TimeProvider _timeProvider;
+    private readonly WorldAutonomyContinuityObserver? _continuityObserver;
 
     public WorldAutonomyOrchestrator(
         WorldAutonomyConfiguration configuration,
@@ -65,7 +67,8 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         WorldAutonomyVisualTool? visualTool = null,
         IRecallTelemetrySink? telemetry = null,
         LlmProviderGuard? providerGuard = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        WorldAutonomyContinuityObserver? continuityObserver = null)
     {
         _configuration = configuration;
         _llmOptions = llmOptions;
@@ -80,6 +83,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         _providerGuard = providerGuard ?? new LlmProviderGuard(
             Microsoft.Extensions.Logging.Abstractions.NullLogger<LlmProviderGuard>.Instance,
             _timeProvider);
+        _continuityObserver = continuityObserver;
     }
 
     public async Task<WorldAutonomyRunResult> RunAsync(
@@ -146,6 +150,19 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
             opportunity.SourceAuthorDisplayName);
         var startedAt = _timeProvider.GetUtcNow();
         await _ledger.StartRunAsync(context.ToRunStart(startedAt), cancellationToken).ConfigureAwait(false);
+        if (_continuityObserver is not null &&
+            opportunity.SourceAuthorId.HasValue &&
+            !string.IsNullOrWhiteSpace(opportunity.SourceAuthorDisplayName))
+        {
+            await _continuityObserver.ObserveAsync(
+                opportunity.IsDirectAddress ? "direct_full" : "ambient_full",
+                opportunity.SourceAuthorId.Value,
+                opportunity.SourceAuthorDisplayName,
+                opportunity.SourceMessageText ?? string.Empty,
+                ulong.TryParse(opportunity.SourceMessageId, out var continuityMessageId) ? continuityMessageId : 0,
+                context.RunId,
+                cancellationToken).ConfigureAwait(false);
+        }
         var usageAccumulator = new LlmRunUsageAccumulator();
         WorldAutonomyRunState? runState = null;
 

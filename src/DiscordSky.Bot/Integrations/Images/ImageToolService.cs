@@ -41,6 +41,8 @@ public sealed record ImageGenerationContext(
 /// </summary>
 public sealed class ImageToolService
 {
+    internal const int MaxLoggedPromptChars = 3_000;
+
     /// <summary>
     /// Appended to every image prompt. Mandating a 1990s cartoon look anchors the character's appearance,
     /// nails the aesthetic, and is a safety lever (a cartoon is far lower-risk than a photoreal image).
@@ -110,10 +112,10 @@ public sealed class ImageToolService
         }
 
         var estCost = ImageCost.Estimate(requestOptions.Model, requestOptions.Quality);
+        var finalPrompt = imagePrompt.Trim() + " " + StyleSuffix;
 
         try
         {
-            var finalPrompt = imagePrompt.Trim() + " " + StyleSuffix;
             var result = await _generator.GenerateAsync(finalPrompt, requestOptions, cancellationToken);
 
             if (!result.Success || result.Bytes is null || result.Bytes.Length == 0)
@@ -121,11 +123,30 @@ public sealed class ImageToolService
                 var outcome = result.Error == ImageResult.ErrorModerationBlocked
                     ? ImageGenerationRecord.OutcomeModerationBlocked
                     : ImageGenerationRecord.OutcomeError;
-                Record(channelName, userId, requestOptions, tier, context, 0.0, startedAt, outcome, result.Error);
+                Record(
+                    channelName,
+                    userId,
+                    requestOptions,
+                    tier,
+                    context,
+                    0.0,
+                    startedAt,
+                    outcome,
+                    result.Error,
+                    finalPrompt);
                 return ImageGenerationOutcome.Refused(ImageRefusals.ForError(result.Error));
             }
 
-            Record(channelName, userId, requestOptions, tier, context, estCost, startedAt, ImageGenerationRecord.OutcomeOk);
+            Record(
+                channelName,
+                userId,
+                requestOptions,
+                tier,
+                context,
+                estCost,
+                startedAt,
+                ImageGenerationRecord.OutcomeOk,
+                finalPrompt: finalPrompt);
             _logger.LogInformation(
                 "image_generated user={User} model={Model} quality={Quality} est_cost={Cost:F3} latency_ms={Latency}",
                 userId, requestOptions.Model, requestOptions.Quality, estCost,
@@ -136,13 +157,13 @@ public sealed class ImageToolService
         catch (OperationCanceledException)
         {
             Record(channelName, userId, requestOptions, tier, context, 0.0, startedAt,
-                ImageGenerationRecord.OutcomeCancelled, "operation_cancelled");
+                ImageGenerationRecord.OutcomeCancelled, "operation_cancelled", finalPrompt);
             throw;
         }
         catch (Exception ex)
         {
             Record(channelName, userId, requestOptions, tier, context, 0.0, startedAt,
-                ImageGenerationRecord.OutcomeError, ex.GetType().Name);
+                ImageGenerationRecord.OutcomeError, ex.GetType().Name, finalPrompt);
             throw;
         }
         finally
@@ -174,7 +195,8 @@ public sealed class ImageToolService
         double estCost,
         DateTimeOffset startedAt,
         string outcome,
-        string? reason = null)
+        string? reason = null,
+        string? finalPrompt = null)
     {
         _log.Record(new ImageGenerationRecord(
             Timestamp: DateTimeOffset.UtcNow,
@@ -197,7 +219,17 @@ public sealed class ImageToolService
             Reason: reason,
             GuildId: context.GuildId,
             EvidenceMessageIds: context.EvidenceMessageIds,
-            PromptDigest: context.PromptDigest));
+            PromptDigest: context.PromptDigest,
+            FinalPrompt: BoundPrompt(finalPrompt)));
+    }
+
+    internal static string? BoundPrompt(string? prompt)
+    {
+        var normalized = prompt?.ReplaceLineEndings(" ").Trim();
+        if (string.IsNullOrWhiteSpace(normalized)) return null;
+        return normalized.Length <= MaxLoggedPromptChars
+            ? normalized
+            : normalized[..MaxLoggedPromptChars];
     }
 
     private static string BudgetReason(BudgetRefusalReason reason) => reason switch

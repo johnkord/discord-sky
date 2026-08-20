@@ -147,6 +147,21 @@ public sealed record TelemetryEvent(
     , [property: JsonPropertyName("memory_current_bytes")] long? MemoryCurrentBytes = null
     , [property: JsonPropertyName("memory_limit_bytes")] long? MemoryLimitBytes = null
     , [property: JsonPropertyName("utilization")] double? Utilization = null
+    , [property: JsonPropertyName("process_rss_bytes")] long? ProcessRssBytes = null
+    , [property: JsonPropertyName("child_process_rss_bytes")] long? ChildProcessRssBytes = null
+    , [property: JsonPropertyName("child_process_count")] int? ChildProcessCount = null
+    , [property: JsonPropertyName("managed_heap_bytes")] long? ManagedHeapBytes = null
+    , [property: JsonPropertyName("gc_heap_size_bytes")] long? GcHeapSizeBytes = null
+    , [property: JsonPropertyName("gc_fragmented_bytes")] long? GcFragmentedBytes = null
+    , [property: JsonPropertyName("gc_gen0_count")] int? GcGen0Count = null
+    , [property: JsonPropertyName("gc_gen1_count")] int? GcGen1Count = null
+    , [property: JsonPropertyName("gc_gen2_count")] int? GcGen2Count = null
+    , [property: JsonPropertyName("thread_count")] int? ThreadCount = null
+    , [property: JsonPropertyName("user_memory_cache_count")] int? UserMemoryCacheCount = null
+    , [property: JsonPropertyName("media_semantic_cache_count")] int? MediaSemanticCacheCount = null
+    , [property: JsonPropertyName("sent_message_registry_count")] int? SentMessageRegistryCount = null
+    , [property: JsonPropertyName("memory_ids")] IReadOnlyList<string>? MemoryIds = null
+    , [property: JsonPropertyName("rank_present")] bool? RankPresent = null
     , [property: JsonPropertyName("estimated_cost_usd")] double? EstimatedCostUsd = null
     , [property: JsonPropertyName("hourly_cost_usd")] double? HourlyCostUsd = null
     , [property: JsonPropertyName("daily_cost_usd")] double? DailyCostUsd = null
@@ -196,6 +211,7 @@ public static class TelemetryEventTypes
     public const string WorldAutonomyConversation = "world_autonomy_conversation";
     public const string WorldAutonomyBudget = "world_autonomy_budget";
     public const string LlmProviderGuard = "llm_provider_guard";
+    public const string WorldAutonomyContinuity = "world_autonomy_continuity";
 }
 
 /// <summary>Writes one content-free deployment boundary after the durable telemetry sink has started.</summary>

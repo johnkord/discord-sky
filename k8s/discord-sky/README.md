@@ -34,14 +34,12 @@ This directory contains the Kubernetes resources required to run the Discord Sky
    kubectl rollout restart deploy/discord-sky-bot -n discord-sky
    ```
 
-2. Deploy the stack:
-   ```bash
-   kubectl apply -k .
-   ```
-3. Update the deployment with a new image tag (substitute the actual login server stored in your private ops note):
-   ```bash
-   kubectl set image deployment/discord-sky-bot bot=<ACR_LOGIN_SERVER>/discordskybot:<tag> -n discord-sky
-   ```
+2. For production, commit the validated source and use `bash scripts/deploy.sh` or the serialized GitHub Actions
+   workflow. The script renders this Kustomize tree, validates private autonomy resources, builds/probes the combined
+   Sky plus Steward image, applies the resources, waits for health, and restores the prior revision on failure.
+
+3. Use raw `kubectl apply -k` only for client-side validation or deliberate dark/local experiments. Do not use
+   `kubectl set image` as the normal production path; it bypasses combined-runtime and private-binding checks.
 
 ## Unrestricted Steward Child
 
@@ -50,7 +48,7 @@ image that can run one isolated child per guild, publish the sibling Steward pro
 `--steward-profile` for every exact-guild profile:
 
 ```bash
-scripts/deploy.sh ... \
+bash scripts/deploy.sh ... \
    --include-steward \
    --steward-project ../discord-steward/src/DiscordSteward/DiscordSteward.csproj \
    --steward-profile config/world-autonomy/guild-111111111111111111.json \

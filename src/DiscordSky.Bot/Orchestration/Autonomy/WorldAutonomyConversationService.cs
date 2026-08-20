@@ -38,6 +38,7 @@ public sealed class WorldAutonomyConversationService
     private readonly BotOptions _botOptions;
     private readonly ILogger<WorldAutonomyConversationService> _logger;
     private readonly TimeProvider _timeProvider;
+    private readonly WorldAutonomyContinuityObserver? _continuityObserver;
 
     public WorldAutonomyConversationService(
         IChatClient chatClient,
@@ -48,7 +49,8 @@ public sealed class WorldAutonomyConversationService
         IRecallTelemetrySink telemetry,
         IOptions<BotOptions> botOptions,
         ILogger<WorldAutonomyConversationService> logger,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        WorldAutonomyContinuityObserver? continuityObserver = null)
     {
         _chatClient = chatClient;
         _llmOptions = llmOptions;
@@ -59,6 +61,7 @@ public sealed class WorldAutonomyConversationService
         _botOptions = botOptions.Value;
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _continuityObserver = continuityObserver;
     }
 
     public async Task<WorldAutonomyConversationResult?> RespondAsync(
@@ -66,6 +69,17 @@ public sealed class WorldAutonomyConversationService
         CancellationToken cancellationToken)
     {
         var operationId = Guid.NewGuid().ToString("N");
+        if (_continuityObserver is not null)
+        {
+            await _continuityObserver.ObserveAsync(
+                request.IsDirectAddress ? "direct_conversation" : "ambient_conversation",
+                request.AuthorId,
+                request.AuthorDisplayName,
+                request.MessageText,
+                request.TriggerMessageId,
+                operationId,
+                cancellationToken).ConfigureAwait(false);
+        }
         var provider = _llmOptions.CurrentValue.GetActiveProvider();
         var profile = provider.GetProfile(LlmWorkload.Ambient, request.PersonaName);
         var options = new ChatOptions

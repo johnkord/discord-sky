@@ -60,6 +60,8 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
     private SemaphoreSlim GetUserLock(ulong userId) =>
         _userLocks.GetOrAdd(userId, _ => new SemaphoreSlim(1, 1));
 
+    internal int CachedUserCount => _cache.Count;
+
     public async Task<IReadOnlyList<UserMemory>> GetMemoriesAsync(ulong userId, CancellationToken ct = default)
     {
         var userLock = GetUserLock(userId);

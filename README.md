@@ -1,130 +1,197 @@
-# Discord Sky Bot
+# Discord Sky
 
-Discord Sky is a mischievous Discord companion inspired by the "Discord Sky – Mischief-Made Muse" vision. The bot keeps creative communities buzzing with playful prompts, collaborative quests, and friendly heckles that spark activity without crossing the spam line.
+Discord Sky is a private Discord companion whose default character is Dr. Robotnik from Adventures of Sonic the
+Hedgehog. It reads the room, replies or reacts selectively, remembers useful callbacks, generates images, and can
+run an unrestricted Discord Steward child for explicitly bound guilds.
 
-## Highlights
-- **Sky Persona Prompt (`!sky(persona) [topic]`)** – Ask the bot to speak in the voice of any character you name. Personas are optional; if you leave them out, the bot falls back to the configured default ("Weird Al" unless you change `Bot:DefaultPersona`). Put the persona inside parentheses so it can include spaces; the optional remainder nudges the topic; otherwise the persona just riffs with the chat.
-- **Conversation-Aware Replies** – The bot blends in recent Discord chatter so every response feels grounded in the thread.
-- **Guardrails with Glitter** – Configurable chaos level, quiet hours, rate limits, and ban-word filters keep the fun safe.
-- **OpenAI-Powered Brain** – A unified orchestrator blends Discord history and OpenAI models to craft every reply.
+The production design separates ordinary conversation from administrative autonomy. Robotnik retains authority,
+while host-owned routing and persistent budgets decide when the expensive tool-enabled agent is warranted.
 
-## Prerequisites
-- [.NET SDK 8.0](https://dotnet.microsoft.com/download) or newer
-- A Discord bot token with the **Message Content Intent** enabled
-- An OpenAI (or Azure OpenAI) API key with access to chat models
+## Current Capabilities
 
-## Getting Started
-1. **Install dependencies**
+- Direct commands, mentions, and replies with deterministic reply targeting.
+- Ambient `Conversation`, `Reaction`, `Silence`, and `FullAutonomy` routes selected by a utility-model judge.
+- One-call, no-tools conversation for ordinary Robotnik lines.
+- Full Sol/xhigh autonomy with deferred native Steward tools for bound guilds.
+- Per-user factual, experiential, running-bit, meta, and suppression memories.
+- GPT Image generation with one shared budget and provider guard.
+- Persistent Empire State mood, ranks, and bounded war-room log.
+- In-character emoji reactions using server-approved Unicode and custom emotes.
+- Scam, AutoMod, new-account, and raid protections.
+- Durable telemetry, transcripts, reactions, image records, route budgets, and autonomy journals on a PVC.
+
+## Architecture At A Glance
+
+```text
+Discord message
+  -> local command/safety ownership
+  -> bound autonomy guild?
+       direct -> full autonomy -> direct conversation fallback -> no-model decree
+       ambient -> coalesced episode -> audience judge
+                    -> FullAutonomy | Conversation | Reaction | Silence
+  -> ordinary persona pipeline for non-autonomy surfaces
+  -> registered Discord delivery + transcript/reception telemetry
+```
+
+All active-provider chat calls and OpenAI images share one persistent `LlmProviderGuard`. It enforces quota/auth
+circuit behavior, conservative in-flight reservations, and hourly/daily estimated spend ceilings. World-autonomy
+route budgets are separate so scarce full-agent attention can degrade gracefully to conversation.
+
+See [docs/runtime_architecture.md](docs/runtime_architecture.md) and
+[docs/autonomy_routing_cost_controls_2026-08-03.md](docs/autonomy_routing_cost_controls_2026-08-03.md).
+
+## Requirements
+
+- .NET SDK 8.0 for Discord Sky.
+- .NET SDK 10.0 when building the pinned Discord Steward child locally.
+- A Discord bot token with Message Content Intent enabled.
+- An API key for the configured `LLM:ActiveProvider`.
+- Docker, Azure CLI, and kubectl for the AKS deployment path.
+
+## Local Setup
+
+1. Restore dependencies:
+
    ```bash
    dotnet restore
    ```
-2. **Configure credentials**
-   - Copy `src/DiscordSky.Bot/appsettings.json` to `appsettings.Development.json` (ignored by git).
-   - Populate the `Bot:Token` with your Discord bot token.
-   - Fill `OpenAI:ApiKey` (and override `Endpoint`/`ChatModel` if you are using Azure OpenAI).
-   - Adjust the `Chaos` section to fit your server's vibe (annoyance level, quiet hours, ban words, prompt budgets).
-   - (Optional) Fill `Bot:AllowedChannelNames` with the channel names the bot may respond in. Leave empty to allow all.
-  
-  
-  
-3. **Run the bot**
-   ```bash
-   dotnet run --project src/DiscordSky.Bot
+
+2. Put development credentials in `src/DiscordSky.Bot/appsettings.Development.json`, which is ignored by git.
+   Do not modify or commit production secrets.
+
+   ```json
+   {
+     "Bot": {
+       "Token": "..."
+     },
+     "LLM": {
+       "ActiveProvider": "OpenAI",
+       "Providers": {
+         "OpenAI": {
+           "ApiKey": "..."
+         }
+       }
+     }
+   }
    ```
-4. **Invite to your server** and try `!sky(bard) Tell the tavern what you saw in the forest.` in a channel where the bot has permission to read and post messages.
 
-## Usage
-```
-!sky(persona) [topic]
-```
+3. Run the bot:
 
-- `persona` *(optional)*: the character or archetype you want the bot to embody (e.g., `bard`, `grizzled captain`, `hyper-AI`). If omitted, the bot uses the configured default persona (`Bot:DefaultPersona` in settings, "Weird Al" out of the box).
-- `topic` *(optional)*: what you want the persona to address. Leave it blank to let the persona respond naturally to the recent chat. Attachments are summarized and passed along automatically.
+   ```bash
+   DOTNET_ENVIRONMENT=Development dotnet run --project src/DiscordSky.Bot/DiscordSky.Bot.csproj
+   ```
 
-Examples: 
-- `!sky(noir detective) Give me a recap of this thread.`
-- `!sky(chaotic bard)`
-- `!sky Tell us a tour story from the road.`
+The default command prefix is `!sky`. Locally handled commands include:
 
-### Ambient Replies (Passive Mode)
-The bot can occasionally interject on normal chat messages without being explicitly invoked. This is controlled by `Chaos:AmbientReplyChance` (a probability between 0.0 and 1.0). Default is `0.25` (25% chance). Set to `0` to disable.
+- `!sky <topic>`
+- `!sky(persona) <topic>`
+- `!sky what-do-you-know`
+- `!sky forget <topic>`
+- `!sky forget-me`
+- `!sky(image) <request>`
+- owner/moderator Empire and safety commands documented in source and operational runbooks
 
-When triggered, the bot behaves exactly like a bare prefix command (e.g. `!sky`) — using the default persona and no explicit topic, informed by recent channel history.
+## Model Routing
 
-Tuning suggestions:
-- Small busy servers: 0.10–0.20
-- Quiet community: 0.25–0.35
-- Disable for announcement-only channels by listing allowed channel names or setting chance to 0.
+Model names and reasoning effort are configuration, not hard-coded behavior. Production uses typed workload
+profiles for `Main`, `Ambient`, `Utility`, `ColdOpen`, `ColdOpenCritic`, `ImageRewrite`, `MemoryExtraction`, and
+`MemoryConsolidation`.
 
-Example JSON snippet:
-```json
-"Chaos": {
-   "AnnoyanceLevel": 0.5,
-   "MaxScriptLines": 5,
-   "MaxPromptsPerHour": 20,
-   "AmbientReplyChance": 0.25
-}
-```
+The active provider may be OpenAI or another configured compatible provider. Per-request `ChatOptions.ModelId`
+selects the workload model through one shared telemetry and guard boundary.
 
-### Memory Commands
-The bot remembers things about regulars across sessions (topic preferences, running bits, shared context). Memory behaviour is user-controllable:
+## Memory
 
-- `!sky what-do-you-know` — show everything the bot currently remembers about you, grouped by **Facts / Shared moments / Running bits / Preferences**, plus any topics you've asked it to stay quiet about.
-- `!sky forget <topic>` — tell the bot to stop bringing up a topic (e.g. `!sky forget cats`, `!sky forget my job`). Related existing memories get suppressed automatically; new ones won't be saved if they overlap.
-- `!sky forget-me` — nuke everything the bot knows about you.
+Conversation windows are extracted into typed per-user memories. Suppressed, superseded, meta, and
+instruction-shaped entries are filtered before ambient use. The extraction opportunity gate supports `Off`,
+`Shadow`, and `Live` modes plus bounded exploration.
 
-### Memory Recall (LLM-invoked tool)
-Instead of injecting all stored notes into every reply (which made the bot bring up unrelated callbacks), the bot now decides for itself when to fetch memory. Each turn the user prompt carries a one-line `notes_available_about: <name> (user_id=...)` hint, and the model can call the `recall_about_user` tool to retrieve stored notes when the conversation calls for it. Replies always end with `send_discord_message`. See [docs/recall_tool_design.md](docs/recall_tool_design.md) for the full design.
+The dominant world-autonomy routes do not yet receive memory text. Production computes a shadow-only, bounded
+continuity candidate and records selected memory IDs and a digest for relevance review. It does not change
+Robotnik's prompt.
 
-The `MemoryRelevance` config section controls recall-loop bounds and ranking:
+## World Autonomy And Steward
 
-| Key | Default | Notes |
-|---|---|---|
-| `RecallTopK` | `10` | Maximum notes returned per recall call (truncated by recency or query-rank). |
-| `MaxRecallsPerReply` | `3` | Hard cap on recall round-trips per direct/command reply. |
-| `MaxRecallsPerAmbientReply` | `1` | Tighter cap for low-stakes ambient replies. |
-| `SuppressionOverlapThreshold` | `0.3` | Token overlap above which a `Suppressed` memory blocks an admissible one. |
+World autonomy is dark unless an exact guild binding exists in private runtime configuration. Each enabled guild
+gets one isolated Steward child with its own profile and durable paths. All native tools remain callable through
+that child, while the model initially receives deferred hosted tool-search schemas rather than every schema at once.
 
-Legacy keys (`Mode`, `HardFloor`, `AdmissionThreshold`, etc.) are unread but kept temporarily for option-binding compatibility. They will be removed in a follow-up.
+Private profiles and guild IDs never enter public image layers or committed manifests. The hardened deployment
+validates exact bindings, probes the bundled Steward executable, and restores prior resources if rollout fails.
+
+See [k8s/discord-sky/README.md](k8s/discord-sky/README.md).
+
+## Observability And Privacy
+
+Durable production evidence lives under the configured PVC paths:
+
+- telemetry: metadata, routing, usage, cost, resources, and selected bounded owner-private context;
+- transcripts: full model prompt/reply or deterministic host fallback;
+- reactions: add/remove reception events for Sky-authored messages;
+- images: model, cost, evidence IDs, digest, and bounded final provider prompt;
+- memories, Empire State, provider guard, route budgets, and autonomy journals.
+
+Treat the whole evidence tree as private. Never print or commit tokens. Use the repository skills for read-only
+production work:
+
+- `.github/skills/discord-sky-ops/SKILL.md`
+- `.github/skills/discord-sky-investigation/SKILL.md`
+- `.github/skills/discord-sky-eval/SKILL.md`
 
 ## Testing
-Run the smoke tests to validate configuration helpers and safety rails:
+
 ```bash
-dotnet test
+dotnet test tests/DiscordSky.Tests/DiscordSky.Tests.csproj
+dotnet build src/DiscordSky.Bot/DiscordSky.Bot.csproj -c Release
 ```
 
-## AKS Deployment
-Use the helper script in `scripts/deploy.sh` to build, publish, and roll out a new container to your AKS cluster.
+The existing AngleSharp `NU1902` advisory is a known repository warning and should not be confused with a change
+introduced by unrelated work.
 
-1. Ensure the `discord-sky-secrets` Secret exists in the `discord-sky` namespace. It is managed out-of-band via `kubectl create secret` / `kubectl patch secret`; see [k8s/discord-sky/README.md](k8s/discord-sky/README.md). Deploys never touch it.
-2. Log in with `az login` and make sure you have `az`, `docker`, `kubectl`, and `dotnet` on your PATH.
-3. Run the script, substituting values from your private ops note:
-   ```bash
-   ./scripts/deploy.sh \
-     --subscription-id <AZURE_SUBSCRIPTION_ID> \
-     --aks-resource-group <AKS_RESOURCE_GROUP> \
-     --aks-cluster <AKS_CLUSTER_NAME> \
-     --acr-name <ACR_NAME> \
-     --image-tag <TAG>
-   ```
+## Production Deployment
 
-Flags such as `--acr-resource-group`, `--image-name`, `--project`, and `--skip-build` are available for advanced scenarios. The script rebuilds the bot, pushes an image to ACR, applies the manifests via Kustomize, and waits for the rollout to complete.
+Production deploys are commit-derived and use the hardened script or serialized GitHub Actions workflow. Do not
+apply the public Kustomize tree or set the image directly as a normal deployment path; doing so can bypass
+combined-runtime and private-binding validation.
 
-## Project Layout
-```
-src/DiscordSky.Bot/        # Discord bot runtime and creative orchestrator
-   ├── Bot/                 # Discord client wiring and command handling
-   ├── Configuration/       # Options and safeguards (chaos budgets, tokens, OpenAI)
-   ├── Integrations/        # Typed clients for OpenAI
-   ├── Models/              # Request/response contracts and orchestrator payloads
-   └── Orchestration/       # Context aggregation, safety filtering, prompt repository
+From a clean committed tree, use values from the private environment inventory:
 
-tests/DiscordSky.Tests/    # xUnit smoke tests for core services
+```bash
+bash scripts/deploy.sh \
+  --aks-resource-group <AKS_RESOURCE_GROUP> \
+  --aks-cluster <AKS_CLUSTER_NAME> \
+  --acr-name <ACR_NAME> \
+  --image-name discordskybot \
+  --image-tag <COMMIT_DERIVED_TAG> \
+  --include-steward \
+  --steward-project ../discord-steward/src/DiscordSteward/DiscordSteward.csproj \
+  --preserve-steward-profiles
 ```
 
-## Next Steps
-- Persist heckle reminders and quest progress to durable storage for real scheduling.
-- Experiment with lightweight knowledge summaries generated from pinned messages or custom JSON feeds.
-- Add leaderboard tracking and custom role assignment for Mischief Quests.
+The production workflow pins the Steward revision and generates a combined image tag. It validates manifests,
+private binding/profile correspondence, the in-image Steward probe, and rollout health before reporting success.
 
-Happy chaos crafting! ✨
+After deployment, verify:
+
+- exact revision and image;
+- one Ready pod with zero restarts;
+- `/healthz` reports Discord Connected and every configured Steward child healthy;
+- startup auth/model checks succeeded;
+- effective route, budget, and provider-guard configuration;
+- no unexpected `llm_call`, `llm_provider_guard`, or runtime-resource failures.
+
+## Repository Layout
+
+```text
+src/DiscordSky.Bot/
+  Bot/                 Discord gateway ownership and delivery
+  Configuration/       Typed options and policy
+  Integrations/        Images, links, reactions, members, safety
+  Memory/              Stores, filtering, scoring, logging, reception
+  Models/              Runtime contracts
+  Orchestration/       Creative, autonomy, Empire, impulse, context
+
+tests/DiscordSky.Tests/ Focused and integration-style xUnit coverage
+k8s/discord-sky/       Public AKS manifests and deployment documentation
+scripts/               Hardened deployment and operational helpers
+```

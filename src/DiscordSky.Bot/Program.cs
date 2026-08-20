@@ -58,6 +58,7 @@ builder.Services.AddSingleton<WorldAutonomyRouter>();
 builder.Services.AddSingleton<WorldAutonomyAudienceGate>();
 builder.Services.AddSingleton<WorldAutonomyAmbientAdmissionCoordinator>();
 builder.Services.AddSingleton<WorldAutonomyBudget>();
+builder.Services.AddSingleton<WorldAutonomyContinuityObserver>();
 builder.Services.AddSingleton<WorldAutonomyConversationService>();
 builder.Services.AddHostedService<WorldAutonomyStewardProbeService>();
 builder.Services.AddHostedService<WorldAutonomyStewardHealthService>();

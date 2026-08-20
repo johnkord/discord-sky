@@ -1,3 +1,4 @@
+using DiscordSky.Bot.Bot;
 using DiscordSky.Bot.Memory.Logging;
 using DiscordSky.Bot.Orchestration.Autonomy;
 
@@ -67,5 +68,36 @@ public sealed class WorldAutonomyRunTelemetryTests
         Assert.Null(evt.Channel);
         Assert.Null(evt.Note);
         Assert.Null(evt.Room);
+    }
+
+    [Theory]
+    [InlineData(false, "WorldAutonomyHostFallback")]
+    [InlineData(true, "WorldAutonomyFinalText")]
+    public void FallbackTranscript_PreservesReasonTargetAndInvocationTruth(
+        bool modelInvoked,
+        string expectedKind)
+    {
+        var timestamp = new DateTimeOffset(2026, 8, 20, 6, 0, 0, TimeSpan.Zero);
+
+        var entry = DiscordBotService.CreateWorldAutonomyFallbackTranscript(
+            timestamp,
+            userId: 42,
+            userDisplayName: "member",
+            channelId: 84,
+            channelName: "room",
+            persona: "Robotnik",
+            prompt: "petition",
+            reply: "decree",
+            triggerMessageId: 126,
+            operationId: "run-1",
+            outcome: "hourly_cost_budget_exhausted",
+            modelInvoked);
+
+        Assert.Equal(expectedKind, entry.InvocationKind);
+        Assert.Equal("hourly_cost_budget_exhausted", entry.Outcome);
+        Assert.Equal((ulong)126, entry.TriggerMessageId);
+        Assert.Equal((ulong)126, entry.ReplyTargetMessageId);
+        Assert.Equal("run-1", entry.EpisodeId);
+        Assert.Equal(modelInvoked, entry.ModelInvoked);
     }
 }

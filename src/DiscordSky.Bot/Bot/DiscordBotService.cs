@@ -41,6 +41,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly MemoryTransitionVerifier _memoryTransitionVerifier;
     private readonly MemoryOpportunityClassifier _memoryOpportunityClassifier;
     private readonly IReactionSink _reactionSink;
+    private readonly ITranscriptSink _transcripts;
     private readonly int _reactionExcerptLength;
     private readonly ReactionJudge? _reactionJudge;
     private readonly IReactionCapabilityRegistry? _reactionCapabilities;
@@ -141,7 +142,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         WorldAutonomyAudienceGate? worldAutonomyAudienceGate = null,
         WorldAutonomyAmbientAdmissionCoordinator? worldAutonomyAmbientAdmission = null,
         WorldAutonomyBudget? worldAutonomyBudget = null,
-        WorldAutonomyConversationService? worldAutonomyConversation = null)
+        WorldAutonomyConversationService? worldAutonomyConversation = null,
+        ITranscriptSink? transcripts = null)
     {
         _client = client;
         _options = options.Value;
@@ -158,6 +160,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _memoryTransitionVerifier = memoryTransitionVerifier ?? new MemoryTransitionVerifier();
         _memoryOpportunityClassifier = memoryOpportunityClassifier ?? new MemoryOpportunityClassifier();
         _reactionSink = reactionSink ?? new NoOpReactionSink();
+        _transcripts = transcripts ?? new NoOpTranscriptSink();
         _reactionExcerptLength = reactionOptions?.Value.ReplyExcerptLength ?? 200;
         _reactionJudge = reactionJudge;
         _reactionCapabilities = reactionCapabilities;
@@ -233,27 +236,25 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         return Task.CompletedTask;
     }
 
-    private Task OnReactionAddedAsync(
+    private async Task OnReactionAddedAsync(
         Cacheable<IUserMessage, ulong> message,
         Cacheable<IMessageChannel, ulong> channel,
         SocketReaction reaction)
     {
-        RecordReaction(message, channel, reaction, "add");
-        return Task.CompletedTask;
+        await RecordReactionAsync(message, channel, reaction, "add");
     }
 
-    private Task OnReactionRemovedAsync(
+    private async Task OnReactionRemovedAsync(
         Cacheable<IUserMessage, ulong> message,
         Cacheable<IMessageChannel, ulong> channel,
         SocketReaction reaction)
     {
-        RecordReaction(message, channel, reaction, "remove");
-        return Task.CompletedTask;
+        await RecordReactionAsync(message, channel, reaction, "remove");
     }
 
     // Reception signal (fun_assessment_2026-06-25 P1): record reactions on the bot's OWN messages only.
     // Bot-message detection is O(1) via the persona cache, which already indexes every message we send.
-    private void RecordReaction(
+    private async Task RecordReactionAsync(
         Cacheable<IUserMessage, ulong> message,
         Cacheable<IMessageChannel, ulong> channel,
         SocketReaction reaction,
@@ -261,9 +262,32 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     {
         try
         {
-            if (!_sentMessages.TryGet(reaction.MessageId, out var cached)) return; // not our message
             if (_client.CurrentUser is not null && reaction.UserId == _client.CurrentUser.Id) return; // self-react
 
+            IUserMessage? resolvedMessage = message.HasValue ? message.Value : null;
+            if (!_sentMessages.TryGet(reaction.MessageId, out var cached))
+            {
+                resolvedMessage ??= await message.GetOrDownloadAsync();
+                if (resolvedMessage is null || _client.CurrentUser is null ||
+                    resolvedMessage.Author.Id != _client.CurrentUser.Id)
+                {
+                    return;
+                }
+
+                var source = RecoveredReactionSource(resolvedMessage.Type);
+                _sentMessages.Register(
+                    reaction.MessageId,
+                    GetDefaultPersona(),
+                    source,
+                    replyTargetMessageId: resolvedMessage.Reference?.MessageId.IsSpecified == true
+                        ? resolvedMessage.Reference.MessageId.Value
+                        : null);
+                _sentMessages.TryGet(reaction.MessageId, out cached!);
+                _logger.LogInformation(
+                    "Recovered reaction ownership for bot message {MessageId} source={Source}.",
+                    reaction.MessageId,
+                    source);
+            }
             // Empire State appraisal: a laugh on one of his lines lifts his mood, a pan sours it. Add only.
             if (action == "add" && _empireState is not null)
             {
@@ -273,13 +297,14 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             }
 
             string? excerpt = null;
-            if (message.HasValue && !string.IsNullOrWhiteSpace(message.Value.Content))
+            if (resolvedMessage is not null && !string.IsNullOrWhiteSpace(resolvedMessage.Content))
             {
-                var content = message.Value.Content;
+                var content = resolvedMessage.Content;
                 excerpt = content.Length > _reactionExcerptLength ? content[.._reactionExcerptLength] : content;
             }
 
-            var guildId = (channel.HasValue ? channel.Value as SocketGuildChannel : null)?.Guild.Id;
+            var resolvedChannel = channel.HasValue ? channel.Value : await channel.GetOrDownloadAsync();
+            var guildId = (resolvedChannel as SocketGuildChannel)?.Guild.Id;
 
             _reactionSink.Record(new ReactionEvent(
                 Timestamp: DateTimeOffset.UtcNow,
@@ -301,6 +326,11 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             _logger.LogDebug(ex, "Failed to record reaction on message {MessageId}", reaction.MessageId);
         }
     }
+
+    internal static string RecoveredReactionSource(MessageType messageType) => messageType is
+        MessageType.Default or MessageType.Reply
+            ? "post_restart"
+            : "discord_system";
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
@@ -548,6 +578,19 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                         source: "world_autonomy_budget_fallback",
                         triggerMessageId: message.Id,
                         replyTargetMessageId: message.Id);
+                    _transcripts.Record(CreateWorldAutonomyFallbackTranscript(
+                        DateTimeOffset.UtcNow,
+                        message.Author.Id,
+                        GetDisplayName(message.Author),
+                        message.Channel.Id,
+                        message.Channel.Name,
+                        _options.DefaultPersona,
+                        content,
+                        fallback,
+                        message.Id,
+                        operationId: null,
+                        outcome: string.Concat("direct_full_", directBudget.Reason, "_conversation_unavailable"),
+                        modelInvoked: false));
                     _worldAutonomyRouter?.RecordDeliveredSpeech(
                         autonomyChannel.Guild.Id,
                         message.Channel.Id);
@@ -2436,6 +2479,19 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 source: "world_autonomy",
                 triggerMessageId: message.Id,
                 replyTargetMessageId: message.Id);
+            _transcripts.Record(CreateWorldAutonomyFallbackTranscript(
+                DateTimeOffset.UtcNow,
+                message.Author.Id,
+                GetDisplayName(message.Author),
+                message.Channel.Id,
+                guildChannel.Name,
+                _options.DefaultPersona,
+                content,
+                result.FinalText.Trim(),
+                message.Id,
+                result.RunId,
+                result.FailureReason ?? result.Status,
+                modelInvoked: result.Status == WorldAutonomyRunStatuses.Succeeded));
             _worldAutonomyRouter.RecordDeliveredSpeech(guildChannel.Guild.Id, message.Channel.Id);
         }
 
@@ -2447,6 +2503,37 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             result.SpokeInChannel);
         return true;
     }
+
+    internal static TranscriptEntry CreateWorldAutonomyFallbackTranscript(
+        DateTimeOffset timestamp,
+        ulong userId,
+        string userDisplayName,
+        ulong channelId,
+        string? channelName,
+        string persona,
+        string prompt,
+        string reply,
+        ulong triggerMessageId,
+        string? operationId,
+        string outcome,
+        bool modelInvoked) => new(
+            Timestamp: timestamp,
+            UserId: userId,
+            UserDisplayName: userDisplayName,
+            ChannelId: channelId,
+            ChannelName: channelName,
+            Persona: persona,
+            InvocationKind: modelInvoked
+                ? "WorldAutonomyFinalText"
+                : "WorldAutonomyHostFallback",
+            Prompt: prompt,
+            Reply: reply,
+            TranscriptSchemaVersion: FileBackedTranscriptSink.CurrentSchemaVersion,
+            EpisodeId: operationId,
+            TriggerMessageId: triggerMessageId,
+            ReplyTargetMessageId: triggerMessageId,
+            Outcome: outcome,
+            ModelInvoked: modelInvoked);
 
     /// <summary>
     /// Builds the situation briefing for an autonomy run. The agent used to receive a single bare line with
@@ -2514,7 +2601,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             SourceChannelName: guildChannel.Name,
             SourceAuthorId: message.Author.Id,
             SourceAuthorDisplayName: GetDisplayName(message.Author),
-            VisualIntent: visualIntent);
+            VisualIntent: visualIntent,
+            SourceMessageText: content);
     }
 
     private string? BuildAutonomyAudienceContext(

@@ -186,3 +186,43 @@ Rollback levers are independent:
 - keep cold opens disabled.
 
 No rollout should change more than one quality-sensitive lever after this initial containment release.
+
+## Post-observation update: 2026-08-20
+
+The first 16.055 post-redesign days validated the containment architecture:
+
+- guarded spend averaged $0.336/day, 90.6 to 91.8 percent below the August 2 rate;
+- 682 human messages produced 136 Sky posts, reducing the bot/human ratio from 0.725 to 0.199;
+- 38/136 posts received a current reaction or explicit human reply;
+- 1,178 provider calls succeeded, 70 were intentional supersession cancellations, and 15 were local hourly holds;
+- no admitted provider call failed through quota, authentication, timeout, or server error;
+- all 6 image generations succeeded, and 4 of 5 world-autonomy visual posts received reactions.
+
+The same review exposed three separate follow-up problems. They must not be solved by one threshold change:
+
+1. Only 3 of 45 ambient full-agent runs used Steward tools. Useful action runs scored 0.40, 0.41, and 0.58,
+   while many no-tool runs scored higher. Action selection needs cited episode evidence, not a higher cutoff.
+2. Autonomy produced 127 content-bearing posts but receives none of the 190 stored user memories. A bounded
+   continuity brief needs a relevance review before prompt injection.
+3. The old pod reached 83.8 percent of its memory limit and reset after rollout. Cgroup totals alone cannot
+   distinguish Sky heap, Steward children, fragmentation, or node/system memory.
+
+This release therefore changes one quality-neutral policy and adds measurement:
+
+- promote the memory opportunity gate from Shadow to Live with 5 percent exploration after all 30 would-skip
+  windows produced zero memory operations;
+- compute autonomy continuity briefs in Shadow only, emitting selected memory IDs, rank presence, and a digest,
+  but never injecting the brief into a prompt;
+- add Sky RSS, direct-child RSS/count, managed heap, fragmentation, GC, threads, and bounded cache counts to
+  `runtime_resource` telemetry;
+- recover reactions for bot-authored post-restart and Discord system messages after registry misses;
+- record deterministic no-model autonomy fallbacks with `model_invoked=false` in private transcripts;
+- retain the bounded final image prompt in the owner-private image log.
+
+Explicitly deferred to separate canaries:
+
+- evidence-cited action warrants, because changing the live judge schema can change routing;
+- serious-context permission enforcement, because it requires disagreement review;
+- Empire event grounding, because it changes persistent narrative state;
+- explicit prompt caching, because it remains quality-sensitive despite the large first-call cost opportunity;
+- memory evidence-required apply, until Live opportunity-gate exploration has an observation window.

@@ -23,6 +23,8 @@ public sealed class WorldAutonomyOptions
 
     public WorldAutonomyPromptCacheMode PromptCacheMode { get; init; } = WorldAutonomyPromptCacheMode.Off;
 
+    public bool ContinuityBriefShadowEnabled { get; init; }
+
     public string LedgerPath { get; init; } = "data/world-autonomy/world-autonomy.json";
 
     public WorldAutonomyAmbientGateMode AmbientGateMode { get; init; } = WorldAutonomyAmbientGateMode.Off;

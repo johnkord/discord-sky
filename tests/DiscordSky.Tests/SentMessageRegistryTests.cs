@@ -1,3 +1,5 @@
+using Discord;
+using DiscordSky.Bot.Bot;
 using DiscordSky.Bot.Memory.Reception;
 
 namespace DiscordSky.Tests;
@@ -32,5 +34,17 @@ public class SentMessageRegistryTests
         Assert.Equal("a stern wizard", sent.Persona);
         Assert.Equal("test", sent.Source);
         Assert.Equal(1, registry.Count);
+    }
+
+    [Theory]
+    [InlineData(MessageType.Default, "post_restart")]
+    [InlineData(MessageType.Reply, "post_restart")]
+    [InlineData(MessageType.ChannelPinnedMessage, "discord_system")]
+    [InlineData(MessageType.ThreadCreated, "discord_system")]
+    public void RecoveredReactionSource_DistinguishesOrdinaryAndSystemMessages(
+        MessageType messageType,
+        string expected)
+    {
+        Assert.Equal(expected, DiscordBotService.RecoveredReactionSource(messageType));
     }
 }

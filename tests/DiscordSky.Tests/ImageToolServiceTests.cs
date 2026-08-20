@@ -82,6 +82,7 @@ public sealed class ImageToolServiceTests
         Assert.Equal(0.9, record.VisualWorth);
         Assert.Equal(new ulong[] { 100, 123 }, record.EvidenceMessageIds);
         Assert.Equal("digest-1", record.PromptDigest);
+        Assert.Equal(gen.CapturedPrompt, record.FinalPrompt);
     }
 
     [Fact]
@@ -109,7 +110,21 @@ public sealed class ImageToolServiceTests
         var outcome = await service.GenerateAsync(1, "chan", "draw", ImageTier.Commissioned, CancellationToken.None);
 
         Assert.False(outcome.Generated);
-        Assert.Contains(log.Records, r => r.Outcome == ImageGenerationRecord.OutcomeError);
+        var record = Assert.Single(log.Records);
+        Assert.Equal(ImageGenerationRecord.OutcomeError, record.Outcome);
+        Assert.Equal(gen.CapturedPrompt, record.FinalPrompt);
+    }
+
+    [Fact]
+    public void BoundPrompt_NormalizesAndTruncatesPrivateLogContent()
+    {
+        var prompt = string.Concat("subject\n", new string('x', ImageToolService.MaxLoggedPromptChars + 50));
+
+        var bounded = ImageToolService.BoundPrompt(prompt);
+
+        Assert.NotNull(bounded);
+        Assert.Equal(ImageToolService.MaxLoggedPromptChars, bounded.Length);
+        Assert.DoesNotContain('\n', bounded);
     }
 
     [Fact]
