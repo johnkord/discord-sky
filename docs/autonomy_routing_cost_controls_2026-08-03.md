@@ -101,9 +101,11 @@ Cost estimates use model-specific input, cached-input, cache-write, and output r
 cache-write usage, all uncached input is conservatively priced at the cache-write rate. Unknown model names use the
 expensive rate and reservation rather than being treated as mini models.
 
-Reservations cap concurrent exposure before exact token usage exists: Sol and unknown chat models reserve $0.75,
-Luna and mini models reserve $0.02, and GPT Image reserves the maximum configured per-image estimate of $0.21.
-Abandoned streaming enumerations release their reservation without recording a successful call.
+Reservations cap concurrent exposure before exact token usage exists: Sol reserves $0.20, unknown chat models
+reserve $0.75, Luna and mini models reserve $0.02, and GPT Image reserves the maximum configured per-image estimate
+of $0.21. Sol's reservation was reduced after production showed a $0.75 reservation effectively stopped new calls
+at $0.25 of a $1 hourly budget while the observed maximum call cost was $0.08. Abandoned streaming enumerations
+release their reservation without recording a successful call.
 
 A local state-write failure after a successful provider response is fail-soft: it is logged but never discards the
 response or causes an implicit model retry.

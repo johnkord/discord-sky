@@ -69,7 +69,7 @@ public sealed class LlmProviderGuardTests
             var options = new LlmProviderGuardOptions
             {
                 StatePath = path,
-                HourlyUsdLimit = 0.80,
+                HourlyUsdLimit = 0.25,
                 DailyUsdLimit = 1.0,
             };
             var guard = new LlmProviderGuard(
@@ -152,7 +152,7 @@ public sealed class LlmProviderGuardTests
     }
 
     [Fact]
-    public void ExpensiveCallReservation_BoundsConcurrentExposure()
+    public void SolReservation_AdmitsObservedSpendWhileUnknownModelsRemainExpensive()
     {
         var guard = new LlmProviderGuard(
             NullLogger<LlmProviderGuard>.Instance,
@@ -164,11 +164,27 @@ public sealed class LlmProviderGuardTests
             });
 
         Assert.True(guard.TryBeginCall("gpt-5.6-sol", true, out var lease, out _));
-        Assert.Equal(0.75, lease.ReservedUsd);
+        Assert.Equal(0.20, lease.ReservedUsd);
+        guard.RecordFixedCostSuccess(lease, 0.33);
+
+        Assert.True(guard.TryBeginCall("gpt-5.6-sol", true, out var nextSol, out _));
+        guard.RecordCallFailure(nextSol, new InvalidOperationException("test cleanup"));
+
         Assert.False(guard.TryBeginCall("unknown-expensive-model", true, out _, out var blocked));
         Assert.Equal("hourly_cost_budget_exhausted", blocked.Reason);
+    }
 
-        guard.RecordCallFailure(lease, new InvalidOperationException("local cancellation"));
+    [Theory]
+    [InlineData("hourly_cost_budget_exhausted", "hourly spending decree")]
+    [InlineData("daily_cost_budget_exhausted", "daily spending decree")]
+    [InlineData("credit_balance_exhausted", "until funding resumes")]
+    [InlineData("authentication_failed", "failed authentication")]
+    [InlineData("provider_circuit_open", "temporarily unavailable")]
+    public void ProviderUnavailableDecree_DescribesTheActualHold(string reason, string expected)
+    {
+        var decree = WorldAutonomyOrchestrator.BuildProviderUnavailableDecree(reason);
+
+        Assert.Contains(expected, decree, StringComparison.Ordinal);
     }
 
     private static ChatResponse Response(

@@ -364,7 +364,9 @@ public sealed class LlmProviderGuard
             ? 0.02
             : model.StartsWith("gpt-image-", StringComparison.OrdinalIgnoreCase)
                 ? 0.21
-                : 0.75;
+                : model.StartsWith("gpt-5.6-sol", StringComparison.OrdinalIgnoreCase)
+                    ? 0.20
+                    : 0.75;
 
     private static void ValidateOptions(LlmProviderGuardOptions options)
     {

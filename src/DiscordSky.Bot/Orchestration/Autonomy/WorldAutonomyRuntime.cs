@@ -122,7 +122,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
                 RunId: null,
                 opportunity.GuildId,
                 "provider_circuit_open",
-                opportunity.IsDirectAddress ? BuildProviderUnavailableDecree() : null,
+                opportunity.IsDirectAddress ? BuildProviderUnavailableDecree(circuit.Reason) : null,
                 circuit.Reason);
         }
 
@@ -289,7 +289,9 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
             var completedAt = _timeProvider.GetUtcNow();
             var failureReason = exception is LlmProviderBlockedException blocked
                 ? blocked.Reason
-                : exception.GetType().Name;
+                : circuitOpened
+                    ? _providerGuard.Snapshot().Reason ?? exception.GetType().Name
+                    : exception.GetType().Name;
             await _ledger.CompleteRunAsync(
                 context.RunId,
                 WorldAutonomyRunStatuses.Failed,
@@ -304,7 +306,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
                 WorldAutonomyRunStatuses.Failed,
                 FinalText: opportunity.IsDirectAddress &&
                     (circuitOpened || exception is LlmProviderBlockedException)
-                        ? BuildProviderUnavailableDecree()
+                        ? BuildProviderUnavailableDecree(failureReason)
                         : null,
                 FailureReason: failureReason);
         }
@@ -340,9 +342,24 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
             runState?.ActivitySnapshot,
             usageAccumulator.Snapshot()));
 
-    private static string BuildProviderUnavailableDecree() =>
-        "The Imperial model treasury has sealed its vaults while the accountants scream. " +
-        "Your petition remains beneath my boot until funding resumes.";
+    internal static string BuildProviderUnavailableDecree(string? reason) => reason switch
+    {
+        "hourly_cost_budget_exhausted" =>
+            "The Imperial model audience has reached its hourly spending decree. " +
+            "Your petition remains beneath my boot until the hour turns.",
+        "daily_cost_budget_exhausted" =>
+            "The Imperial model audience has reached its daily spending decree. " +
+            "Your petition remains beneath my boot until tomorrow's ledger opens.",
+        "credit_balance_exhausted" =>
+            "The Imperial model treasury has sealed its vaults while the accountants scream. " +
+            "Your petition remains beneath my boot until funding resumes.",
+        "authentication_failed" =>
+            "The Imperial model seal has failed authentication. " +
+            "Your petition remains beneath my boot until the credentials are restored.",
+        _ =>
+            "The Imperial model court is temporarily unavailable. " +
+            "Your petition remains beneath my boot until service resumes.",
+    };
 
     private static string FirstNonEmpty(params string?[] values) => values
         .First(value => !string.IsNullOrWhiteSpace(value))!;
