@@ -26,6 +26,7 @@ public sealed class AutoModActionResponder : IHostedService
 {
     private readonly DiscordSocketClient _client;
     private readonly AutoModOptions _options;
+    private readonly BotOptions _botOptions;
     private readonly IRecallTelemetrySink _telemetry;
     private readonly ILogger<AutoModActionResponder> _logger;
     private readonly IRandomProvider _random;
@@ -34,12 +35,14 @@ public sealed class AutoModActionResponder : IHostedService
     public AutoModActionResponder(
         DiscordSocketClient client,
         IOptions<AutoModOptions> options,
+        IOptions<BotOptions> botOptions,
         IRecallTelemetrySink telemetry,
         ILogger<AutoModActionResponder> logger,
         IRandomProvider? random = null)
     {
         _client = client;
         _options = options.Value;
+        _botOptions = botOptions.Value;
         _telemetry = telemetry;
         _logger = logger;
         _random = random ?? DefaultRandomProvider.Instance;
@@ -91,7 +94,8 @@ public sealed class AutoModActionResponder : IHostedService
                 ruleName ?? data.Rule.Id.ToString(), mine, data.TriggerType, action.Type, data.User.Id, channelName,
                 Trim(data.MatchedKeyword, 40));
 
-            if (_options.TauntOnBlock && mine && action.Type == AutoModActionType.BlockMessage)
+            if (!_botOptions.IsGuildDisabled(guild.Id, guild.Name) &&
+                _options.TauntOnBlock && mine && action.Type == AutoModActionType.BlockMessage)
             {
                 await MaybeTauntAsync(guild, data);
             }

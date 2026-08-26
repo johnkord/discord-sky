@@ -32,6 +32,7 @@ public sealed class ColdOpenService : IHostedService, IDisposable
 
     private readonly DiscordSocketClient _client;
     private readonly IOptionsMonitor<ColdOpenOptions> _options;
+    private readonly BotOptions _botOptions;
     private readonly ChannelPulseTracker _pulse;
     private readonly ColdOpenComposer _composer;
     private readonly IRecallTelemetrySink _telemetry;
@@ -63,10 +64,12 @@ public sealed class ColdOpenService : IHostedService, IDisposable
         SentMessageRegistry? sentMessages = null,
         IColdOpenShadowSink? providerShadow = null,
         ContextAggregator? contextAggregator = null,
-        IProactiveEpisodeLedger? noveltyLedger = null)
+        IProactiveEpisodeLedger? noveltyLedger = null,
+        IOptions<BotOptions>? botOptions = null)
     {
         _client = client;
         _options = options;
+        _botOptions = botOptions?.Value ?? new BotOptions();
         _pulse = pulse;
         _composer = composer;
         _telemetry = telemetry;
@@ -150,6 +153,11 @@ public sealed class ColdOpenService : IHostedService, IDisposable
         {
             var channel = ResolveChannel(target);
             if (channel is null) continue;
+            if (_botOptions.IsGuildDisabled(channel.Guild.Id, channel.Guild.Name))
+            {
+                _logger.LogDebug("cold_open skipped: guild {GuildId} is disabled.", channel.Guild.Id);
+                continue;
+            }
 
             var now = DateTimeOffset.UtcNow;
             var budget = GetBudget(channel.Id, now, opts);

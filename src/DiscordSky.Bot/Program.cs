@@ -40,8 +40,13 @@ builder.Services.Configure<ImageOptions>(builder.Configuration.GetSection(ImageO
 builder.Services.Configure<ScamGuardOptions>(builder.Configuration.GetSection(ScamGuardOptions.SectionName));
 builder.Services.Configure<EmpireStateOptions>(builder.Configuration.GetSection(EmpireStateOptions.SectionName));
 builder.Services.Configure<WorldAutonomyOptions>(builder.Configuration.GetSection(WorldAutonomyOptions.SectionName));
-builder.Services.AddSingleton(sp => WorldAutonomyConfiguration.FromOptions(
-	sp.GetRequiredService<IOptions<WorldAutonomyOptions>>().Value));
+builder.Services.AddSingleton(sp =>
+{
+	var configuration = WorldAutonomyConfiguration.FromOptions(
+		sp.GetRequiredService<IOptions<WorldAutonomyOptions>>().Value);
+	configuration.ValidateDisabledGuilds(sp.GetRequiredService<IOptions<BotOptions>>().Value);
+	return configuration;
+});
 builder.Services.AddSingleton<FileBackedWorldAutonomyLedger>();
 builder.Services.AddSingleton<IWorldAutonomyLedger>(sp => sp.GetRequiredService<FileBackedWorldAutonomyLedger>());
 builder.Services.AddSingleton<StewardMcpSupervisor>();

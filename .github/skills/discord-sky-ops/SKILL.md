@@ -489,6 +489,12 @@ touched by `deploy.sh`).
 # Read the live config (model, limits, memory paths, telemetry retention, etc.).
 kubectl get configmap discord-sky-config -n discord-sky -o yaml
 
+# Verify bot-level guild disable policy without exposing private ID values.
+kubectl get configmap discord-sky-config -n discord-sky -o json \
+  | jq -r '.data | to_entries[] | select(.key|startswith("Bot__DisabledGuildNames__")) | .value'
+kubectl get configmap discord-sky-runtime-bindings -n discord-sky -o json \
+  | jq -r '[.data|keys[]|select(startswith("Bot__DisabledGuildIds__"))]|length'
+
 # Confirm which secret KEYS exist WITHOUT printing their values.
 kubectl get secret discord-sky-secrets -n discord-sky -o jsonpath='{.data}' | jq 'keys'
 ```

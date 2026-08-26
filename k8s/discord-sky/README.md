@@ -105,8 +105,14 @@ kubectl create configmap discord-sky-runtime-bindings \
 ```
 
 The public Deployment mounts this ConfigMap optionally, and `scripts/deploy.sh` validates its key allow-list and
-ID pairs before rollout. Keep behavior policy such as `ColdOpen__Enabled` and `ColdOpen__ShadowMode` in the public
-policy ConfigMap; the private binding ConfigMap cannot override those settings. Migrate or restore targets in
+ID pairs before rollout. The same private ConfigMap may contain rename-proof guild disable IDs:
+
+```text
+Bot__DisabledGuildIds__0=<exact-guild-id>
+```
+
+Keep readable disable names and behavior policy such as `ColdOpen__Enabled` in the public policy ConfigMap. Private
+IDs reinforce identity across renames without publishing guild snowflakes. Migrate or restore cold-open targets in
 shadow mode and review opportunities before enabling live posting.
 
 See [the autonomy validation runbook](../../docs/world_autonomy_validation_runbook.md) for the required

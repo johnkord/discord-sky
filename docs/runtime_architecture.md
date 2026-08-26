@@ -47,6 +47,11 @@ paid LLM call. Provider health comes from startup validation, `llm_call`, and `l
 Every Discord message enters `DiscordBotService`. Ownership is decided before creative generation so two Robotnik
 paths do not answer the same trigger.
 
+The bot-level disabled-guild policy is evaluated before pulse tracking, safety posting, autonomy, local commands,
+creative generation, reactions, images, or memory extraction. Exact IDs are supported through private runtime
+bindings; readable names are a public fallback. AutoMod telemetry and native rules may continue as passive safety,
+but in-character taunts and member greetings are suppressed.
+
 High-level order:
 
 1. Ignore self messages and record channel pulse/activity.

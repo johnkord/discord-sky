@@ -50,6 +50,9 @@ data:
   WorldAutonomy__AmbientPostSpeechWindowMinutes: "10"
   Bot__Status: "SnooPING AS usual"
   Bot__CommandPrefix: "!sky"
+  # Robotnik is fully silent in disabled guilds: no replies, reactions, images, memory extraction, scam posts,
+  # or member greetings. Native Discord AutoMod rules remain as passive safety, but their Robotnik taunts stop.
+  Bot__DisabledGuildNames__0: "Flavorful Feral's Funhouse"
   Bot__RespondToDirectMention: "true"
   Bot__HistoryMessageLimit: "20"
   Bot__MemoryDataPath: "/app/data/user_memories"

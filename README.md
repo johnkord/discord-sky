@@ -33,6 +33,10 @@ Discord message
   -> registered Discord delivery + transcript/reception telemetry
 ```
 
+`Bot:DisabledGuildIds` and `Bot:DisabledGuildNames` are checked before all message behavior. A disabled guild gets
+no replies, reactions, images, memory extraction, scam/new-account posts, or member greetings. Native Discord
+AutoMod rules may remain as passive safety, but Robotnik block taunts are suppressed.
+
 All active-provider chat calls and OpenAI images share one persistent `LlmProviderGuard`. It enforces quota/auth
 circuit behavior, conservative in-flight reservations, and hourly/daily estimated spend ceilings. World-autonomy
 route budgets are separate so scarce full-agent attention can degrade gracefully to conversation.

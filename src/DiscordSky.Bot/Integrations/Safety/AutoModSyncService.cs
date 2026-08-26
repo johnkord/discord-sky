@@ -17,6 +17,7 @@ public sealed class AutoModSyncService : IHostedService, IDisposable
 {
     private readonly DiscordSocketClient _client;
     private readonly AutoModOptions _options;
+    private readonly BotOptions _botOptions;
     private readonly LearnedScamStore? _learned;
     private readonly ILogger<AutoModSyncService> _logger;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -25,11 +26,13 @@ public sealed class AutoModSyncService : IHostedService, IDisposable
     public AutoModSyncService(
         DiscordSocketClient client,
         IOptions<AutoModOptions> options,
+        IOptions<BotOptions> botOptions,
         ILogger<AutoModSyncService> logger,
         LearnedScamStore? learned = null)
     {
         _client = client;
         _options = options.Value;
+        _botOptions = botOptions.Value;
         _logger = logger;
         _learned = learned;
     }
@@ -98,6 +101,11 @@ public sealed class AutoModSyncService : IHostedService, IDisposable
 
     private async Task ReconcileGuildAsync(SocketGuild guild)
     {
+        if (_botOptions.IsGuildDisabled(guild.Id, guild.Name))
+        {
+            return;
+        }
+
         if (_options.GuildAllowList.Count > 0
             && !_options.GuildAllowList.Any(g => string.Equals(g, guild.Name, StringComparison.OrdinalIgnoreCase)))
         {

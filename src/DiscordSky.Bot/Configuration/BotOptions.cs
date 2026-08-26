@@ -7,6 +7,8 @@ public sealed class BotOptions
     public string Token { get; init; } = string.Empty;
     public string Status { get; init; } = "SnooPING AS usual";
     public List<string> AllowedChannelNames { get; init; } = new();
+    public List<ulong> DisabledGuildIds { get; init; } = new();
+    public List<string> DisabledGuildNames { get; init; } = new();
     public string CommandPrefix { get; init; } = "!sky";
 
     /// <summary>
@@ -111,4 +113,9 @@ public sealed class BotOptions
 
         return AllowedChannelNames.Any(allowed => string.Equals(allowed, channelName, StringComparison.OrdinalIgnoreCase));
     }
+
+    public bool IsGuildDisabled(ulong guildId, string? guildName) =>
+        DisabledGuildIds.Contains(guildId) ||
+        (!string.IsNullOrWhiteSpace(guildName) && DisabledGuildNames.Any(
+            disabled => string.Equals(disabled, guildName, StringComparison.OrdinalIgnoreCase)));
 }

@@ -198,6 +198,13 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        if (_options.DisabledGuildIds.Count > 0 || _options.DisabledGuildNames.Count > 0)
+        {
+            _logger.LogInformation(
+                "Guild disable policy active: {IdCount} exact ID(s), {NameCount} name fallback(s).",
+                _options.DisabledGuildIds.Count,
+                _options.DisabledGuildNames.Count);
+        }
         _logger.LogInformation(
             "Coordination modes: episode={EpisodeMode} deictic_abstention={Deictic} memory_evidence_required={EvidenceRequired} memory_gate={MemoryGate} reaction_tool_constrained={ReactionTool} reaction_capability_cooldown={ReactionCooldown}.",
             _episodeOptions.Mode,
@@ -452,6 +459,15 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             return;
         }
 
+        var messageGuildChannel = message.Channel as SocketGuildChannel;
+        if (messageGuildChannel is not null &&
+            _options.IsGuildDisabled(messageGuildChannel.Guild.Id, messageGuildChannel.Guild.Name))
+        {
+            _logger.LogDebug("Guild {GuildId} is disabled; ignoring message {MessageId}.",
+                messageGuildChannel.Guild.Id, message.Id);
+            return;
+        }
+
         // Scam guard runs above the IsBot gate on purpose: bot and webhook accounts are the primary Discord raid
         // vector, and the earlier placement (below this gate) meant automated spam was never scanned. We still
         // skip our own messages and any trusted bots, and the persona flow below still ignores bots entirely.
@@ -494,7 +510,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         var payload = hasPrefix ? content[_options.CommandPrefix.Length..].TrimStart() : string.Empty;
         var mentionsBotDirectly = _client.CurrentUser is not null
             && message.MentionedUsers.Any(u => u.Id == _client.CurrentUser.Id);
-        var autonomyGuildChannel = message.Channel as SocketGuildChannel;
+        var autonomyGuildChannel = messageGuildChannel;
         var autonomyEnabled = _worldAutonomyRouter is not null
             && autonomyGuildChannel is not null
             && _worldAutonomyRouter.IsEnabled(autonomyGuildChannel.Guild.Id);

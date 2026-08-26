@@ -1,3 +1,4 @@
+using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Orchestration.Autonomy;
 
 namespace DiscordSky.Tests;
@@ -41,6 +42,27 @@ public sealed class WorldAutonomyConfigurationTests
         Assert.Equal("/app/steward/profiles/funhouse.json", binding.ProfilePath);
         Assert.Equal("gpt-5.5", binding.Model);
         Assert.False(configuration.TryGetBinding(667956000757776387, out _));
+    }
+
+    [Fact]
+    public void Configuration_RejectsExactDisabledGuildBindingConflict()
+    {
+        var configuration = WorldAutonomyConfiguration.FromOptions(new WorldAutonomyOptions
+        {
+            StewardCommand = "dotnet",
+            EnabledGuilds = new Dictionary<string, WorldAutonomyGuildOptions>
+            {
+                ["667956000757776386"] = new() { ProfilePath = "profile.json" }
+            }
+        });
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            configuration.ValidateDisabledGuilds(new BotOptions
+            {
+                DisabledGuildIds = [667956000757776386]
+            }));
+
+        Assert.Contains("both disabled and bound", exception.Message, StringComparison.Ordinal);
     }
 
     [Theory]

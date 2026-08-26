@@ -335,7 +335,8 @@ RUNTIME_BINDINGS_JSON=$(kubectl get configmap discord-sky-runtime-bindings -n di
 if ! jq -e '
     (.data // {}) | to_entries |
     all(.[];
-      (.key | test("^ColdOpen__Channels__[0-9]+__(GuildId|ChannelId|Guild|Channel)$")) and
+      ((.key | test("^ColdOpen__Channels__[0-9]+__(GuildId|ChannelId|Guild|Channel)$")) or
+       (.key | test("^Bot__DisabledGuildIds__[0-9]+$"))) and
       (.value | type == "string" and length > 0))
   ' <<< "$RUNTIME_BINDINGS_JSON" >/dev/null; then
   echo "The private runtime bindings ConfigMap contains an invalid key or blank value." >&2
@@ -369,6 +370,20 @@ for target_index in "${RUNTIME_COLD_OPEN_INDICES[@]}"; do
   fi
 done
 echo "Verified ${#RUNTIME_COLD_OPEN_INDICES[@]} private cold-open runtime target(s)"
+
+if ! jq -e '
+    [(.data // {}) | to_entries[] |
+      select(.key | test("^Bot__DisabledGuildIds__[0-9]+$")) | .value] as $ids |
+    all($ids[]; test("^[1-9][0-9]*$")) and
+    (($ids | unique | length) == ($ids | length))
+  ' <<< "$RUNTIME_BINDINGS_JSON" >/dev/null; then
+  echo "Private disabled-guild bindings must contain unique non-zero numeric IDs." >&2
+  exit 1
+fi
+RUNTIME_DISABLED_GUILD_COUNT=$(jq -r '
+  [(.data // {}) | keys[] | select(test("^Bot__DisabledGuildIds__[0-9]+$"))] | length
+  ' <<< "$RUNTIME_BINDINGS_JSON")
+echo "Verified $RUNTIME_DISABLED_GUILD_COUNT private disabled-guild binding(s)"
 
 TEMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TEMP_DIR"' EXIT

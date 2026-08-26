@@ -20,6 +20,7 @@ public sealed class MemberJoinService : IHostedService
 {
     private readonly DiscordSocketClient _client;
     private readonly MemberEventsOptions _options;
+    private readonly BotOptions _botOptions;
     private readonly JoinRaidTracker _tracker;
     private readonly IRecallTelemetrySink _telemetry;
     private readonly ILogger<MemberJoinService> _logger;
@@ -28,6 +29,7 @@ public sealed class MemberJoinService : IHostedService
     public MemberJoinService(
         DiscordSocketClient client,
         IOptions<MemberEventsOptions> options,
+        IOptions<BotOptions> botOptions,
         JoinRaidTracker tracker,
         IRecallTelemetrySink telemetry,
         ILogger<MemberJoinService> logger,
@@ -35,6 +37,7 @@ public sealed class MemberJoinService : IHostedService
     {
         _client = client;
         _options = options.Value;
+        _botOptions = botOptions.Value;
         _tracker = tracker;
         _telemetry = telemetry;
         _logger = logger;
@@ -73,6 +76,10 @@ public sealed class MemberJoinService : IHostedService
         try
         {
             var guild = member.Guild;
+            if (_botOptions.IsGuildDisabled(guild.Id, guild.Name))
+            {
+                return;
+            }
             if (_options.GuildAllowList.Count > 0
                 && !_options.GuildAllowList.Any(g => string.Equals(g, guild.Name, StringComparison.OrdinalIgnoreCase)))
             {

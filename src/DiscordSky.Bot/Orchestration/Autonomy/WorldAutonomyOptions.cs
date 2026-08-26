@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Globalization;
+using DiscordSky.Bot.Configuration;
 
 namespace DiscordSky.Bot.Orchestration.Autonomy;
 
@@ -198,6 +199,17 @@ public sealed class WorldAutonomyConfiguration
 
     public bool TryGetBinding(ulong guildId, out WorldAutonomyGuildBinding binding) =>
         EnabledGuilds.TryGetValue(guildId, out binding!);
+
+    public void ValidateDisabledGuilds(BotOptions botOptions)
+    {
+        ArgumentNullException.ThrowIfNull(botOptions);
+        var conflict = EnabledGuilds.Keys.FirstOrDefault(botOptions.DisabledGuildIds.Contains);
+        if (conflict != 0)
+        {
+            throw new InvalidOperationException(
+                $"Guild '{conflict}' cannot be both disabled and bound to world autonomy.");
+        }
+    }
 
     public static WorldAutonomyConfiguration FromOptions(WorldAutonomyOptions options)
     {
