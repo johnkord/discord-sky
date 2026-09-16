@@ -297,10 +297,13 @@ builder.Services.AddSingleton<IImageGenerator>(sp =>
 		return new NoOpImageGenerator();
 	}
 
-	var openAiClient = string.IsNullOrWhiteSpace(provider.Endpoint)
-		? new OpenAIClient(provider.ApiKey)
-		: new OpenAIClient(new System.ClientModel.ApiKeyCredential(provider.ApiKey),
-			new OpenAIClientOptions { Endpoint = new Uri(provider.Endpoint) });
+	var clientOptions = new OpenAIClientOptions
+	{
+		RetryPolicy = new System.ClientModel.Primitives.ClientRetryPolicy(0),
+		NetworkTimeout = TimeSpan.FromMinutes(Math.Clamp(imageOptions.RequestTimeoutMinutes, 1, 10)),
+	};
+	if (!string.IsNullOrWhiteSpace(provider.Endpoint)) clientOptions.Endpoint = new Uri(provider.Endpoint);
+	var openAiClient = new OpenAIClient(new System.ClientModel.ApiKeyCredential(provider.ApiKey), clientOptions);
 
 	logger.LogInformation("Image generation ENABLED (provider={Provider}, model={Model}).",
 		imageOptions.ProviderName, imageOptions.Model);
@@ -311,6 +314,9 @@ builder.Services.AddSingleton<IImageGenerator>(sp =>
 });
 // Shared generation core used by both the !sky(image) command and the model-decided generate_image tool.
 builder.Services.AddSingleton<ImageToolService>();
+builder.Services.AddHttpClient(DiscordImageReferenceResolver.HttpClientName)
+	.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddSingleton<IImageReferenceResolver, DiscordImageReferenceResolver>();
 // LLM auth self-test: surfaces silent 401 incidents as pod crashes instead of healthy-but-broken state.
 // See docs/recall_feature_review_2026-05-26.md §7.2.
 builder.Services.AddHttpClient();

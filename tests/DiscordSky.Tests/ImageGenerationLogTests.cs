@@ -83,6 +83,17 @@ public sealed class ImageGenerationLogTests : IDisposable
     }
 
     [Fact]
+    public void MonthlyBudget_IncludesChargedErrorsAndCancellations()
+    {
+        var log = Build();
+        var now = DateTimeOffset.UtcNow;
+        log.Record(Record(now, ImageGenerationRecord.OutcomeOk, 0.25));
+        log.Record(Record(now, ImageGenerationRecord.OutcomeError, 0.35));
+        log.Record(Record(now, ImageGenerationRecord.OutcomeCancelled, 0.40));
+        Assert.Equal(1.0, log.SumCostInUtcMonth(now), 6);
+    }
+
+    [Fact]
     public void AmbientVisualQueries_CountOnlyMatchingSuccessfulGuildSource()
     {
         var log = Build();

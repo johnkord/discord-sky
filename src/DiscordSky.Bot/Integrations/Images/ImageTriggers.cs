@@ -24,11 +24,19 @@ public static class ImageIntentDetector
         @"\b(?:bitmap|image|photo|photograph|picture)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    private static readonly Regex EditPattern = new(
+        @"\b(?:edit|modify|revise|rework|recolor|crop|resize|upscale|retouch)\b" +
+        @"|\b(?:change|replace|remove|add|make|turn|put|swap|keep)\s+(?:the|a|an|its|it|this|that|my|your|their|her|his|them)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    public static bool LooksLikeEditRequest(string? text) => !string.IsNullOrWhiteSpace(text) && EditPattern.IsMatch(text);
+
     public static bool LooksLikeImageRequest(string? text) =>
         Classify(text) != VisualRequestIntent.None;
 
-    public static VisualRequestIntent Classify(string? text)
+    public static VisualRequestIntent Classify(string? text, bool hasImageContext = false)
     {
+        if (hasImageContext && LooksLikeEditRequest(text)) return VisualRequestIntent.BitmapRequired;
         if (string.IsNullOrWhiteSpace(text) || !Pattern.IsMatch(text))
         {
             return VisualRequestIntent.None;

@@ -20,6 +20,7 @@ public sealed class HostedToolSearchSerializationTests
         using var listener = new HttpListener();
         listener.Prefixes.Add(prefix);
         listener.Start();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var capturedRequest = CaptureRequestAsync(listener);
         var openAi = new OpenAIClient(
             new System.ClientModel.ApiKeyCredential("not-a-real-key"),
@@ -40,14 +41,15 @@ public sealed class HostedToolSearchSerializationTests
         {
             await chatClient.GetResponseAsync(
                 [new ChatMessage(ChatRole.User, "Find a channel tool.")],
-                new ChatOptions { Tools = [deferredWrite, toolSearch] });
+                new ChatOptions { Tools = [deferredWrite, toolSearch] },
+                timeout.Token);
         }
-        catch
+            catch (System.ClientModel.ClientResultException exception) when (exception.Status == 400)
         {
             // The local listener deliberately responds with a provider error after capturing the request.
         }
 
-        using var document = JsonDocument.Parse(await capturedRequest);
+        using var document = JsonDocument.Parse(await capturedRequest.WaitAsync(timeout.Token));
         var serialized = document.RootElement.GetRawText();
         Assert.Contains("tool_search", serialized, StringComparison.Ordinal);
         Assert.Contains("defer_loading", serialized, StringComparison.Ordinal);

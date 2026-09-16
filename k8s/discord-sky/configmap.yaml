@@ -215,21 +215,28 @@ data:
   Reactions__ProvenBitsPoolSize: "10"
   Reactions__ProvenBitsLookbackDays: "30"
   Reactions__ProvenBitsRefreshHours: "6"
-  # Image generation (docs/image_generation_design.md). OFF by default: enabling spends real money and
-  # requires the OpenAI org to pass API Organization Verification first, plus an OpenAI image API key in
-  # the Secret (LLM__Providers__OpenAI__ApiKey is reused). The log lives inside the PVC mount so the
-  # durable daily cap and monthly guard survive pod rotation (a crash loop must not blow the budget).
+  # Image generation and edits share the provider spend guard. Reference bytes and image concurrency
+  # are bounded for the 512 MiB pod. See docs/image_generation_2_5.md for controls and accounting.
   Image__Enabled: "true"
-  Image__Model: "gpt-image-2"
+  Image__Model: "gpt-image-2.5-flare"
+  Image__EditModel: "gpt-image-2.5-sunburst"
+  Image__EditingEnabled: "true"
   Image__Size: "1024x1024"
   Image__Quality: "medium"
   Image__OutputFormat: "jpeg"
   Image__Moderation: "auto"
+  Image__Background: "opaque"
+  Image__OutputCompression: "85"
+  Image__PartialImages: "1"
+  Image__MaxReferenceImages: "4"
+  Image__MaxReferenceBytes: "8388608"
+  Image__MaxTotalReferenceBytes: "16777216"
+  Image__RequestTimeoutMinutes: "5"
   Image__PerUserPerHour: "20"
   Image__GlobalPerDay: "250"
-  Image__MaxConcurrent: "20"
+  Image__MaxConcurrent: "1"
   Image__MonthlyUsdGuard: "200"
-  Image__AllowHighQuality: "false"
+  Image__AllowHighQuality: "true"
   Image__AmbientVisualEnabled: "true"
   Image__AmbientVisualWorthThreshold: "0.72"
   Image__AmbientVisualMinLead: "0.05"

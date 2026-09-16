@@ -26,8 +26,10 @@ public sealed class ImageGeneratorHelpersTests
 
     [Theory]
     [InlineData("gpt-image-1")]
+    [InlineData("gpt-image-1.5")]
     [InlineData("gpt-image-1-mini")]
     [InlineData("gpt-image-2-mini")]
+    [InlineData("gpt-image-2.5-mini")]
     [InlineData("dall-e-3")]
     [InlineData("")]
     public void FromConfig_RejectsModelsBelowQualityFloor(string model)
@@ -42,6 +44,8 @@ public sealed class ImageGeneratorHelpersTests
     [Theory]
     [InlineData("gpt-image-2")]
     [InlineData("gpt-image-2-2026-01-01")]
+    [InlineData("gpt-image-2.5-flare")]
+    [InlineData("gpt-image-2.5-sunburst")]
     [InlineData("gpt-image-3")]
     public void FromConfig_AcceptsV2OrNewerNonMiniModels(string model)
     {

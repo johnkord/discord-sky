@@ -128,6 +128,21 @@ public sealed class CreativeOrchestrator
                     "minLength": 1,
                     "description": "A concise persona-authored visual treatment: composition, comic framing, and key details in 2-3 tight sentences. Do not repeat or infer server name, channel name, member count, activity, or bot timing. Do not specify the art style."
                 },
+                "image_options": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "Use attached/replied-to images as actual references with auto or edit; generate forces a fresh picture. Defaults: Flare for new images, Sunburst for edits, medium quality. Select higher quality only if the user requests it. A mask.png attachment edits transparent areas of the first PNG source. Omit unspecified fields.",
+                    "properties": {
+                        "action": { "type": "string", "enum": ["auto", "generate", "edit"] },
+                        "model": { "type": "string", "enum": ["flare", "sunburst"] },
+                        "quality": { "type": "string", "enum": ["low", "medium", "high", "xhigh", "max", "auto"] },
+                        "size": { "type": "string", "description": "auto or WIDTHxHEIGHT, multiples of 16, max edge 3840, 655360-8294400 total pixels, aspect up to 3:1." },
+                        "output_format": { "type": "string", "enum": ["png", "jpeg", "webp"] },
+                        "background": { "type": "string", "enum": ["auto", "opaque", "transparent"] },
+                        "output_compression": { "type": "integer", "minimum": 0, "maximum": 100 },
+                        "moderation": { "type": "string", "enum": ["auto", "low"] }
+                    }
+                },
                 "source_message_ids": {
                     "type": "array",
                     "items": {
@@ -354,7 +369,8 @@ public sealed class CreativeOrchestrator
             ToolOffered: offerImageTool,
             ToolSelected: false,
             VisualWorth: request.VisualWorth,
-            GuildId: request.GuildId);
+            GuildId: request.GuildId,
+            ChannelId: request.ChannelId);
         var tools = offerImageTool
             ? new List<AITool> { SendDiscordMessageTool, RecallAboutUserTool, GenerateImageTool }
             : new List<AITool> { SendDiscordMessageTool, RecallAboutUserTool };
@@ -455,7 +471,8 @@ public sealed class CreativeOrchestrator
                                 ToolSelected = true,
                                 EvidenceMessageIds = imageProjection.EvidenceMessageIds,
                                 PromptDigest = imageProjection.PromptDigest,
-                            });
+                            },
+                            ParseImageSettings(imageCall));
                         if (outcome.Generated)
                         {
                             pendingImageBytes = outcome.Bytes;
@@ -658,6 +675,13 @@ public sealed class CreativeOrchestrator
             return ExtractStringValue(val).Trim();
         }
         return string.Empty;
+    }
+
+    internal static ImageRenderSettings? ParseImageSettings(FunctionCallContent call)
+    {
+        if (call.Arguments is null || !call.Arguments.TryGetValue("image_options", out var value) || value is null) return null;
+        var element = value is JsonElement json ? json : JsonSerializer.SerializeToElement(value);
+        return element.Deserialize<ImageRenderSettings>(ImageCommandParser.JsonOptions);
     }
 
     internal static IReadOnlyList<ulong> ParseImageSourceMessageIds(FunctionCallContent call)

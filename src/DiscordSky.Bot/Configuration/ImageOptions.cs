@@ -21,10 +21,28 @@ public sealed class ImageOptions
     /// <summary>GPT Image model. Runtime policy requires <c>gpt-image-2</c> or a newer non-mini generation.</summary>
     public string Model { get; set; } = "gpt-image-2";
 
-    /// <summary>Square or portrait/landscape, "WxH". gpt-image supports 1024x1024, 1536x1024, 1024x1536.</summary>
+    public string EditModel { get; set; } = "gpt-image-2.5-sunburst";
+
+    public string Background { get; set; } = "opaque";
+
+    public int? OutputCompression { get; set; }
+
+    public int PartialImages { get; set; }
+
+    public bool EditingEnabled { get; set; } = true;
+
+    public int MaxReferenceImages { get; set; } = 4;
+
+    public int MaxReferenceBytes { get; set; } = 8 * 1024 * 1024;
+
+    public int MaxTotalReferenceBytes { get; set; } = 16 * 1024 * 1024;
+
+    public int RequestTimeoutMinutes { get; set; } = 5;
+
+    /// <summary>Auto or WIDTHxHEIGHT. Dimensions must satisfy the GPT Image pixel and aspect-ratio limits.</summary>
     public string Size { get; set; } = "1024x1024";
 
-    /// <summary>low | medium | high | auto. Medium is the minimum production default for visible quality.</summary>
+    /// <summary>low | medium | high | xhigh | max | auto. xhigh and max require GPT Image 2.5 or newer.</summary>
     public string Quality { get; set; } = "medium";
 
     /// <summary>png | jpeg | webp. jpeg is faster and cheaper to ship to Discord.</summary>
@@ -45,7 +63,7 @@ public sealed class ImageOptions
     /// <summary>Hard monthly USD guard summed from the on-disk log. &lt;= 0 disables.</summary>
     public double MonthlyUsdGuard { get; set; } = 20.0;
 
-    /// <summary>When false, a requested <c>high</c> quality is clamped to <c>medium</c>.</summary>
+    /// <summary>When false, high, xhigh, max, and auto quality requests are capped at medium.</summary>
     public bool AllowHighQuality { get; set; } = false;
 
     /// <summary>Whether the ambient impulse judge may select an image instead of prose.</summary>

@@ -41,6 +41,15 @@ This directory contains the Kubernetes resources required to run the Discord Sky
 3. Use raw `kubectl apply -k` only for client-side validation or deliberate dark/local experiments. Do not use
    `kubectl set image` as the normal production path; it bypasses combined-runtime and private-binding checks.
 
+## Images
+
+Image generation uses Flare for new pictures and Sunburst for edits, with one in-flight render, bounded reference
+downloads, and one preview by default. The existing provider hourly/daily limits remain unchanged. Inspect private
+image records for request IDs, `cost_basis`, token usage, reference counts, and structured failures before retrying.
+Both image model IDs must be accessible to the configured OpenAI account. A successful `/healthz` does not prove
+image API billing or generation works. The current controls and guarded live smoke procedure are in
+[../../docs/image_generation_2_5.md](../../docs/image_generation_2_5.md).
+
 ## Unrestricted Steward Child
 
 World autonomy is disabled until the deployment configuration contains an exact guild binding. To build an

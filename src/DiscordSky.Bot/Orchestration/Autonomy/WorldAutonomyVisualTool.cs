@@ -14,6 +14,10 @@ namespace DiscordSky.Bot.Orchestration.Autonomy;
 
 public interface IWorldAutonomyVisualTransport
 {
+    Task<IWorldAutonomyVisualProgress?> BeginAsync(
+        ulong guildId, ulong channelId, ulong? replyTargetMessageId, CancellationToken cancellationToken) =>
+        Task.FromResult<IWorldAutonomyVisualProgress?>(null);
+
     Task<WorldAutonomyDeliveredMessage> SendAsync(
         ulong guildId,
         ulong channelId,
@@ -27,6 +31,19 @@ public interface IWorldAutonomyVisualTransport
 public sealed class DiscordWorldAutonomyVisualTransport(DiscordSocketClient client)
     : IWorldAutonomyVisualTransport
 {
+    public async Task<IWorldAutonomyVisualProgress?> BeginAsync(
+        ulong guildId, ulong channelId, ulong? replyTargetMessageId, CancellationToken cancellationToken)
+    {
+        if (client.GetChannel(channelId) is not ISocketMessageChannel channel ||
+            channel is not SocketGuildChannel guildChannel || guildChannel.Guild.Id != guildId)
+            throw new InvalidOperationException("The image channel is unavailable.");
+        var placeholder = await channel.SendMessageAsync(
+            "Stand back. The Royal Egg Art Foundry is firing up...",
+            messageReference: replyTargetMessageId.HasValue ? new MessageReference(replyTargetMessageId.Value) : null,
+            options: new RequestOptions { CancelToken = cancellationToken }).ConfigureAwait(false);
+        return new DiscordWorldAutonomyVisualProgress(placeholder, channelId);
+    }
+
     public async Task<WorldAutonomyDeliveredMessage> SendAsync(
         ulong guildId,
         ulong channelId,
@@ -112,7 +129,7 @@ public sealed class WorldAutonomyVisualTool
         return AIFunctionFactory.Create(
             bound.CreateAsync,
             name: ToolName,
-            description: $"Choose and deliver exactly one visual medium for this petition. generated_bitmap runs the image foundry and posts an attachment; text_art posts exact ASCII/text art through Robotnik's registered voice. The tool itself delivers successful output, so do not repeat it with {(terminalDeliveryEnabled ? WorldAutonomySpeechTool.TerminalToolName : WorldAutonomySpeechTool.ToolName)}.");
+            description: $"Choose and deliver exactly one visual medium for this petition. generated_bitmap creates or edits an image; text_art posts exact ASCII/text art through Robotnik's registered voice. Current-message and same-channel reply attachments are supplied as reference pixels automatically; a mask.png attachment edits transparent areas of the first PNG reference. image_options.action is auto (use available references), edit (references required), or generate (fresh image). New images default to Flare; edits to Sunburst. Only select high/xhigh/max quality when the user asks; otherwise leave quality at medium. The tool itself delivers successful output, so do not repeat it with {(terminalDeliveryEnabled ? WorldAutonomySpeechTool.TerminalToolName : WorldAutonomySpeechTool.ToolName)}.");
     }
 
     public void RecordNotSelected(
@@ -141,6 +158,7 @@ public sealed class WorldAutonomyVisualTool
         string? textArt,
         string? caption,
         string? replyToMessageId,
+        ImageRenderSettings? settings,
         CancellationToken cancellationToken)
     {
         var normalizedMedium = medium.Trim().ToLowerInvariant();
@@ -197,13 +215,29 @@ public sealed class WorldAutonomyVisualTool
                 null);
         }
 
+        var channelId = opportunity.SourceChannelId!.Value;
+        var replyTarget = ParseMessageId(replyToMessageId)
+            ?? (opportunity.IsDirectAddress ? ParseMessageId(opportunity.SourceMessageId) : null);
+        var finalCaption = string.IsNullOrWhiteSpace(caption) ? "Behold." : caption.Trim();
+        IWorldAutonomyVisualProgress? progress = null;
+        try
+        {
+            progress = await _visualTransport.BeginAsync(opportunity.GuildId, channelId, replyTarget, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _logger.LogWarning("Image progress message unavailable: {ErrorType}", exception.GetType().Name);
+        }
+        await using var progressLifetime = progress;
         var outcome = await _imageToolService.GenerateAsync(
             opportunity.SourceAuthorId!.Value,
             opportunity.SourceChannelName,
             visualPrompt!,
             ImageTier.Commissioned,
             cancellationToken,
-            ImageContext(opportunity, context, toolSelected: true)).ConfigureAwait(false);
+            ImageContext(opportunity, context, toolSelected: true),
+            settings,
+            progress is null ? null : progress.PreviewAsync).ConfigureAwait(false);
         if (!outcome.Generated || outcome.Bytes is null || outcome.FileName is null)
         {
             EmitVisual(opportunity, context, GeneratedBitmap, "refused", null);
@@ -216,18 +250,10 @@ public sealed class WorldAutonomyVisualTool
                 outcome.RefusalText ?? ImageRefusals.GenericRefusal);
         }
 
-        var channelId = opportunity.SourceChannelId!.Value;
-        var replyTarget = ParseMessageId(replyToMessageId)
-            ?? (opportunity.IsDirectAddress ? ParseMessageId(opportunity.SourceMessageId) : null);
-        var finalCaption = string.IsNullOrWhiteSpace(caption) ? "Behold." : caption.Trim();
-        var delivered = await _visualTransport.SendAsync(
-            opportunity.GuildId,
-            channelId,
-            outcome.Bytes,
-            outcome.FileName,
-            finalCaption,
-            replyTarget,
-            cancellationToken).ConfigureAwait(false);
+        var delivered = progress is null
+            ? await _visualTransport.SendAsync(opportunity.GuildId, channelId, outcome.Bytes,
+                outcome.FileName, finalCaption, replyTarget, cancellationToken).ConfigureAwait(false)
+            : await progress.CompleteAsync(outcome.Bytes, outcome.FileName, finalCaption, cancellationToken).ConfigureAwait(false);
         _sentMessages.Register(
             delivered.MessageId,
             _botOptions.DefaultPersona,
@@ -290,7 +316,8 @@ public sealed class WorldAutonomyVisualTool
             OpportunityId: context.RunId,
             ToolOffered: true,
             ToolSelected: toolSelected,
-            GuildId: opportunity.GuildId);
+            GuildId: opportunity.GuildId,
+            ChannelId: opportunity.SourceChannelId);
 
     private void EmitVisual(
         WorldAutonomyOpportunity opportunity,
@@ -345,6 +372,8 @@ public sealed class WorldAutonomyVisualTool
             string? caption = null,
             [Description("Optional Discord message ID to reply to. Direct petitions default to their trigger message.")]
             string? reply_to_message_id = null,
+            [Description("Optional image settings: action auto/generate/edit; model flare/sunburst; quality low/medium/high/xhigh/max/auto; size auto or WIDTHxHEIGHT (multiples of 16, max edge 3840, 655360-8294400 pixels, aspect up to 3:1); output_format png/jpeg/webp; background opaque/transparent/auto; output_compression 0-100 (jpeg/webp); partial_images 0-3. Transparent needs png/webp. Leave unspecified settings out.")]
+            ImageRenderSettings? image_options = null,
             CancellationToken cancellationToken = default) =>
             owner.CreateAsync(
                 opportunity,
@@ -355,6 +384,7 @@ public sealed class WorldAutonomyVisualTool
                 text_art,
                 caption,
                 reply_to_message_id,
+                image_options,
                 cancellationToken);
     }
 }

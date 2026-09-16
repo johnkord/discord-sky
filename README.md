@@ -14,7 +14,7 @@ while host-owned routing and persistent budgets decide when the expensive tool-e
 - One-call, no-tools conversation for ordinary Robotnik lines.
 - Full Sol/xhigh autonomy with deferred native Steward tools for bound guilds.
 - Per-user factual, experiential, running-bit, meta, and suppression memories.
-- GPT Image generation with one shared budget and provider guard.
+- GPT Image 2.5 generation, reference edits, transparent outputs, and progressive previews behind shared budgets.
 - Persistent Empire State mood, ranks, and bounded war-room log.
 - In-character emoji reactions using server-approved Unicode and custom emotes.
 - Scam, AutoMod, new-account, and raid protections.
@@ -94,6 +94,12 @@ The default command prefix is `!sky`. Locally handled commands include:
 - `!sky forget-me`
 - `!sky(image) <request>`
 - owner/moderator Empire and safety commands documented in source and operational runbooks
+
+Image defaults are Flare for new pictures and Sunburst for edits, at medium quality. Reply to a delivered image
+with `change the background to green`, or attach reference images to a new request. Explicit controls include
+`!sky(image) a mechanical crown sticker --transparent --quality high` and
+`!sky(image) change the background --edit --format png`. See
+[docs/image_generation_2_5.md](docs/image_generation_2_5.md) for sizes, masks, previews, cost accounting, and limits.
 
 ## Model Routing
 

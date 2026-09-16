@@ -32,7 +32,8 @@ internal static class ImageModelPolicy
         var versionAndSuffix = model.AsSpan(Prefix.Length);
         var separator = versionAndSuffix.IndexOf('-');
         var version = separator >= 0 ? versionAndSuffix[..separator] : versionAndSuffix;
-        return int.TryParse(version, out var major) && major >= 2;
+        return (int.TryParse(version, out var major) && major >= 2) ||
+            (Version.TryParse(version.ToString(), out var release) && release.Major >= 2);
     }
 
     public static void EnsureApproved(string? model)
@@ -46,26 +47,38 @@ internal static class ImageModelPolicy
 }
 
 /// <summary>Per-request image parameters, resolved from <see cref="ImageOptions"/> at call time.</summary>
-public sealed record ImageRequestOptions(string Model, string Size, string Quality, string OutputFormat, string Moderation)
+public sealed record ImageRequestOptions(
+    string Model,
+    string Size,
+    string Quality,
+    string OutputFormat,
+    string Moderation,
+    string Background = "opaque",
+    int? OutputCompression = null,
+    int PartialImages = 0)
 {
-    public static ImageRequestOptions FromConfig(ImageOptions o, ImageTier tier = ImageTier.Commissioned)
-    {
-        ImageModelPolicy.EnsureApproved(o.Model);
-        var model = o.Model;
-        var quality = o.Quality;
-
-        // The high-quality tier is gated: clamp to medium unless explicitly allowed.
-        if (!o.AllowHighQuality && string.Equals(quality, "high", StringComparison.OrdinalIgnoreCase))
-        {
-            quality = "medium";
-        }
-        return new ImageRequestOptions(model, o.Size, quality, o.OutputFormat, o.Moderation);
-    }
+    public static ImageRequestOptions FromConfig(
+        ImageOptions options,
+        ImageTier tier = ImageTier.Commissioned,
+        ImageRenderSettings? requested = null,
+        bool editing = false) => ImageRenderPolicy.Resolve(options, requested, editing);
 }
 
 /// <summary>Outcome of one generation. <see cref="Success"/> false carries a short machine code in <see cref="Error"/>.</summary>
 public sealed record ImageResult(bool Success, byte[]? Bytes, string FileExtension, string? RevisedPrompt, string? Error)
 {
+    public ImageUsage? Usage { get; init; }
+    public double? CostUsd { get; init; }
+    public string? CostBasis { get; init; }
+    public string? RequestId { get; init; }
+    public int? HttpStatus { get; init; }
+    public string? ProviderErrorCode { get; init; }
+    public string? ModerationStage { get; init; }
+    public IReadOnlyList<string>? ModerationCategories { get; init; }
+    public int PreviewCount { get; init; }
+    public string? ActualSize { get; init; }
+    public string? ActualQuality { get; init; }
+
     public static ImageResult Ok(byte[] bytes, string extension, string? revisedPrompt) =>
         new(true, bytes, extension, revisedPrompt, null);
 
@@ -78,6 +91,9 @@ public sealed record ImageResult(bool Success, byte[]? Bytes, string FileExtensi
     public const string ErrorEmpty = "empty_result";
     public const string ErrorDisabled = "disabled";
     public const string ErrorGeneric = "error";
+    public const string ErrorInvalidRequest = "invalid_request";
+    public const string ErrorCancelled = "cancelled";
+    public const string ErrorTooLarge = "image_too_large";
 }
 
 /// <summary>The image-generation seam. Tests use <see cref="NoOpImageGenerator"/> or a stub.</summary>
@@ -87,6 +103,11 @@ public interface IImageGenerator
     bool IsEnabled { get; }
 
     Task<ImageResult> GenerateAsync(string prompt, ImageRequestOptions options, CancellationToken cancellationToken);
+
+    Task<ImageResult> RenderAsync(ImageRenderRequest request, CancellationToken cancellationToken) =>
+        request.References is { Count: > 0 }
+            ? Task.FromResult(ImageResult.Fail(ImageResult.ErrorInvalidRequest))
+            : GenerateAsync(request.Prompt, request.Options, cancellationToken);
 }
 
 /// <summary>Disabled generator: used in tests and whenever <c>Image:Enabled</c> is false or no key is configured.</summary>
@@ -99,17 +120,9 @@ public sealed class NoOpImageGenerator : IImageGenerator
 }
 
 /// <summary>
-/// OpenAI-backed generator over the Image API (<c>OpenAI.Images.ImageClient</c>). Built against OpenAI SDK 2.8.0.
-///
-/// <para>Two SDK gotchas this code is written around, both verified against the 2.8.0 assembly:</para>
-/// <list type="bullet">
-/// <item><description><see cref="GeneratedImageQuality"/>.High serializes to <c>"hd"</c> (the DALL-E value), so quality
-/// is constructed from the config string instead, yielding the gpt-image values low/medium/high/auto.</description></item>
-/// <item><description><c>response_format</c> is not a valid parameter for gpt-image models (they always return base64),
-/// so <see cref="ImageGenerationOptions.ResponseFormat"/> is intentionally left unset and we read <see cref="GeneratedImage.ImageBytes"/>.</description></item>
-/// </list>
+/// OpenAI Image API generation and edits using the SDK's JSON, multipart, and SSE protocol methods.
 /// </summary>
-public sealed class OpenAIImageGenerator : IImageGenerator
+public sealed partial class OpenAIImageGenerator : IImageGenerator
 {
     private readonly OpenAIClient _openAiClient;
     private readonly ILogger<OpenAIImageGenerator> _logger;
@@ -127,79 +140,8 @@ public sealed class OpenAIImageGenerator : IImageGenerator
 
     public bool IsEnabled => true;
 
-    public async Task<ImageResult> GenerateAsync(string prompt, ImageRequestOptions options, CancellationToken cancellationToken)
-    {
-        if (!_providerGuard.TryBeginCall(
-                options.Model,
-                ownsCircuitLease: true,
-                out var lease,
-                out var guard))
-        {
-            _logger.LogInformation("Image generation held by provider guard: {Reason}.", guard.Reason);
-            return ImageResult.Fail(ImageResult.ErrorRateLimited);
-        }
-
-        try
-        {
-            var generationOptions = new ImageGenerationOptions
-            {
-                Quality = new GeneratedImageQuality(options.Quality.ToLowerInvariant()),
-                Size = ParseSize(options.Size),
-                OutputFileFormat = new GeneratedImageFileFormat(NormalizeFormat(options.OutputFormat)),
-                ModerationLevel = new GeneratedImageModerationLevel(options.Moderation.ToLowerInvariant()),
-                // ResponseFormat intentionally unset: gpt-image models reject response_format and return base64 by default.
-            };
-
-            // The model is bound per call so the spontaneous (fast) and commissioned (quality) tiers can use
-            // different GPT Image models from one generator. GetImageClient is a cheap wrapper.
-            var client = _openAiClient.GetImageClient(options.Model);
-            ClientResult<GeneratedImage> result = await client.GenerateImageAsync(prompt, generationOptions, cancellationToken);
-            _providerGuard.RecordFixedCostSuccess(
-                lease,
-                ImageCost.Estimate(options.Model, options.Quality));
-            var image = result.Value;
-            var bytes = image.ImageBytes?.ToArray();
-            if (bytes is null || bytes.Length == 0)
-            {
-                return ImageResult.Fail(ImageResult.ErrorEmpty);
-            }
-            return ImageResult.Ok(bytes, ExtensionFor(options.OutputFormat), image.RevisedPrompt);
-        }
-        catch (OperationCanceledException)
-        {
-            _providerGuard.RecordCallFailure(lease, new OperationCanceledException());
-            throw;
-        }
-        catch (ClientResultException ex)
-        {
-            _providerGuard.RecordCallFailure(lease, ex);
-            var code = Classify(ex);
-            // The API error message is safe to log (it describes the request problem, not user content) and
-            // is the fastest way to diagnose org-verification (403) or bad-parameter failures.
-            _logger.LogWarning("Image generation API error: status={Status} code={Code} message={Message}", ex.Status, code, ex.Message);
-            return ImageResult.Fail(code);
-        }
-        catch (Exception ex)
-        {
-            _providerGuard.RecordCallFailure(lease, ex);
-            _logger.LogWarning(ex, "Image generation failed unexpectedly.");
-            return ImageResult.Fail(ImageResult.ErrorGeneric);
-        }
-    }
-
-    private static string Classify(ClientResultException ex)
-    {
-        var message = ex.Message ?? string.Empty;
-        var looksModeration = message.Contains("moderation", StringComparison.OrdinalIgnoreCase)
-            || message.Contains("safety", StringComparison.OrdinalIgnoreCase)
-            || message.Contains("content policy", StringComparison.OrdinalIgnoreCase)
-            || message.Contains("content_policy", StringComparison.OrdinalIgnoreCase);
-
-        if (ex.Status == 400 && looksModeration) return ImageResult.ErrorModerationBlocked;
-        if (ex.Status == 429) return ImageResult.ErrorRateLimited;
-        if (ex.Status >= 500) return ImageResult.ErrorServer;
-        return ImageResult.ErrorGeneric;
-    }
+    public Task<ImageResult> GenerateAsync(string prompt, ImageRequestOptions options, CancellationToken cancellationToken) =>
+        RenderAsync(new ImageRenderRequest(prompt, options), cancellationToken);
 
     internal static GeneratedImageSize ParseSize(string size)
     {
@@ -230,15 +172,15 @@ public sealed class OpenAIImageGenerator : IImageGenerator
 }
 
 /// <summary>
-/// Rough per-image cost estimate (USD) used for telemetry and the monthly guard. Figures track the
-/// pricing table in docs/image_generation_design.md section 5; they are deliberately approximate (real
-/// cost is token-based) but good enough to bound spend.
+/// Legacy fallback estimates. GPT Image 2.5 uses returned usage or a labeled reservation estimate.
 /// </summary>
 internal static class ImageCost
 {
     public static double Estimate(string model, string quality)
     {
         ImageModelPolicy.EnsureApproved(model);
+        if (model.StartsWith("gpt-image-2.5", StringComparison.OrdinalIgnoreCase))
+            return ImageUsageCost.Reservation(new ImageRenderRequest("", new(model, "1024x1024", quality, "jpeg", "auto")));
         var q = (quality ?? string.Empty).ToLowerInvariant();
         return q switch { "low" => 0.006, "medium" => 0.05, "high" => 0.21, _ => 0.05 };
     }

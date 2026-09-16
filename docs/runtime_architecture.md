@@ -9,7 +9,7 @@ world autonomy, durable state, and the operational signals required to explain p
 | --- | --- |
 | Runtime | .NET 8, `Microsoft.NET.Sdk.Web` |
 | Discord | Discord.Net 3.20.1 |
-| AI abstraction | Microsoft.Extensions.AI 10.8.3 |
+| AI abstraction | Microsoft.Extensions.AI and OpenAI adapter 10.10.0; OpenAI SDK 2.13.0 |
 | Agent framework | Microsoft Agent Framework OpenAI adapter 1.15.0 |
 | MCP | ModelContextProtocol 1.4.1 |
 | World-autonomy child | Discord Steward, .NET 10, pinned and bundled at deploy time |
@@ -173,11 +173,15 @@ Explicit commands, model-selected image tools, ambient visual choice, and world-
 - daily, per-user, monthly, and concurrency budgets;
 - mandatory 1990s cartoon style suffix;
 - approved-model policy;
-- provider call and fixed-cost accounting;
+- reference loading, validated output settings, and generation/edit model routing;
+- streamed previews and usage-based image cost estimates;
 - durable outcome records.
 
 The private image log stores model/quality/latency/cost, source/tier, trigger and evidence IDs, prompt digest, and a
-bounded final prompt actually sent to the provider. Image bytes are not persisted by Sky.
+bounded final prompt actually sent to the provider. It also records action, reference IDs, mask presence, preview
+count, token usage, cost basis, provider request ID, and structured error/moderation details. Image bytes are not
+persisted by Sky. Flare handles fresh images; Sunburst handles reference edits. Commands and autonomous visuals
+update one Discord message through preview and final delivery. See [image_generation_2_5.md](image_generation_2_5.md).
 
 ## 9. Provider Guard And Cost
 
@@ -190,8 +194,10 @@ bounded final prompt actually sent to the provider. Image bytes are not persiste
 - pre-provider blocking and durable guard telemetry.
 
 Known Sol, mini/Luna, image, and unknown models use separate reservations. On success, the reservation is released
-and replaced with measured token cost or fixed image cost. Corrupt persisted state fails closed through the current
-UTC day. Persistence failure after a successful provider response is fail-soft so it never causes a paid retry.
+and replaced with a usage-based cost estimate. Image reservations depend on quality, dimensions, reference count,
+and previews; missing usage or interrupted dispatched renders retain that estimate. Corrupt persisted state fails
+closed through the current UTC day. Persistence failure after a successful provider response is fail-soft so it
+never causes a paid retry.
 
 ## 10. Delivery And Reception
 

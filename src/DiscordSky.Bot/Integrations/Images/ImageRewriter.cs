@@ -12,7 +12,7 @@ using Microsoft.Extensions.Options;
 namespace DiscordSky.Bot.Integrations.Images;
 
 /// <summary>The result of the in-character rewrite step: either a refusal, or a vetted image prompt plus a caption.</summary>
-public sealed record ImageRewrite(bool Refuse, string? RefusalText, string? ImagePrompt, string Caption)
+public sealed record ImageRewrite(bool Refuse, string? RefusalText, string? ImagePrompt, string Caption, ImageRenderSettings? Settings = null)
 {
     public static ImageRewrite Refusal(string? text) => new(true, text, null, string.Empty);
     public static ImageRewrite Draw(string imagePrompt, string caption) => new(false, null, imagePrompt, caption);
@@ -61,7 +61,15 @@ public sealed class ImageRewriter
             var options = new ChatOptions
             {
                 ModelId = profile.Model,
-                Instructions = BuildSystemPrompt(persona, requesterDisplayName, userRequest, memories),
+                Instructions = BuildSystemPrompt(persona, requesterDisplayName, userRequest, memories) +
+                    "\nFor revisions, preserve the requested changes and refer to the supplied image; do not invent its unseen details. " +
+                    "The image backend receives attached images and same-channel reply images as actual pixels. " +
+                    "You may include an image_options object in your JSON, with only settings the user asked for: " +
+                    "action (auto/generate/edit), model (flare/sunburst), quality (low/medium/high/xhigh/max/auto), " +
+                    "size (auto or WIDTHxHEIGHT), output_format (png/jpeg/webp), background (transparent/opaque/auto), " +
+                    "output_compression (0-100 for jpeg/webp), partial_images (0-3). " +
+                    "Default quality is medium; never choose high/xhigh/max unless the user requests it. " +
+                    "Do not include null-valued options. Transparent backgrounds require png or webp.",
                 MaxOutputTokens = profile.WithReasoningHeadroom(2500),
             };
             profile.ApplyReasoning(options);
@@ -107,7 +115,9 @@ public sealed class ImageRewriter
 
             // The mandatory style suffix is applied downstream in ImageToolService, so both the command
             // path and the model-tool path get it. Here we keep just the persona-vetted subject and caption.
-            return ImageRewrite.Draw(imagePrompt!.Trim(), (caption ?? string.Empty).Trim());
+            var settings = root.TryGetProperty("image_options", out var imageOptions) && imageOptions.ValueKind == JsonValueKind.Object
+                ? imageOptions.Deserialize<ImageRenderSettings>(ImageCommandParser.JsonOptions) : null;
+            return ImageRewrite.Draw(imagePrompt!.Trim(), (caption ?? string.Empty).Trim()) with { Settings = settings };
         }
         catch (JsonException)
         {
@@ -231,6 +241,8 @@ public static class ImageRefusals
         ImageResult.ErrorRateLimited => "Bah! The Foundry's furnace has gone cold from overuse. Try again in a moment, minion.",
         ImageResult.ErrorServer => "INCOMPETENCE! My art machine has malfunctioned, like everything Grounder touches. Try again later.",
         ImageResult.ErrorEmpty => "The canvas came back BLANK. Someone will be demoted to sanitation duty for this. Try again.",
+        ImageResult.ErrorInvalidRequest => "The Foundry rejected those image specifications. Change the prompt or reference images before another attempt.",
+        ImageResult.ErrorTooLarge => "My masterpiece exceeds the Foundry's 8 MiB delivery limit. Request JPEG or WebP, or a smaller canvas.",
         _ => "Something in my magnificent apparatus has misfired. Even perfection has off days. Try again.",
     };
 }

@@ -89,7 +89,7 @@ public sealed class ImageBudget
         }
 
         // 3. Monthly USD guard (read from disk).
-        if (_options.MonthlyUsdGuard > 0 && _log.SumSuccessCostInUtcMonth(now) >= _options.MonthlyUsdGuard)
+            if (_options.MonthlyUsdGuard > 0 && _log.SumCostInUtcMonth(now) >= _options.MonthlyUsdGuard)
         {
             return BudgetLease.Denied(BudgetRefusalReason.MonthlyGuard);
         }

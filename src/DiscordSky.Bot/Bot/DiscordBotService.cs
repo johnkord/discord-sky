@@ -514,7 +514,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         var autonomyEnabled = _worldAutonomyRouter is not null
             && autonomyGuildChannel is not null
             && _worldAutonomyRouter.IsEnabled(autonomyGuildChannel.Guild.Id);
-        var visualIntent = ImageIntentDetector.Classify(content);
+        var visualIntent = ClassifyVisualIntent(message, content);
         var isLocallyHandledImage = _imageToolService?.IsEnabled == true
             && visualIntent != VisualRequestIntent.None
             && (mentionsBotDirectly || MentionsBotName(content))
@@ -645,6 +645,12 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
         var context = new SocketCommandContext(_client, message);
 
+        if (hasPrefix && payload.StartsWith("(image)", StringComparison.OrdinalIgnoreCase))
+        {
+            await HandleImageAsync(context, message, payload["(image)".Length..].Trim());
+            return;
+        }
+
         if (repliedToBot ?? await IsReplyToBotAsync(message))
         {
             _logger.LogDebug("Direct reply detected: {UserId} replied to a bot message.", message.Author.Id);
@@ -675,15 +681,6 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 return;
             }
 
-            // Image command (docs/image_generation_design.md). Intercept before persona parsing so the
-            // "(image)" prefix is not mistaken for a "(persona)" selector.
-            if (payload.StartsWith("(image)", StringComparison.OrdinalIgnoreCase))
-            {
-                var imageRequest = payload["(image)".Length..].Trim();
-                await HandleImageAsync(context, message, imageRequest);
-                return;
-            }
-
             if (payload.StartsWith("scam-report", StringComparison.OrdinalIgnoreCase)
                 || payload.StartsWith("scamreport", StringComparison.OrdinalIgnoreCase)
                 || payload.StartsWith("scam report", StringComparison.OrdinalIgnoreCase))
@@ -706,7 +703,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
         // Natural-language image request when the bot is addressed by mention or name (not a reply): route
         // to the image pipeline so images are not stranded behind a command nobody types. See ops_analysis P2.
-        if (_imageToolService?.IsEnabled == true && ImageIntentDetector.LooksLikeImageRequest(content))
+        if (_imageToolService?.IsEnabled == true && ClassifyVisualIntent(message, content) != VisualRequestIntent.None)
         {
             var addressedBotId = _client.CurrentUser?.Id;
             var addressed = (addressedBotId.HasValue && message.MentionedUsers.Any(u => u.Id == addressedBotId.Value))
@@ -1893,7 +1890,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
         // Natural-language image request in a reply ("draw me as a knight") routes straight to the image
         // pipeline, so it does not depend on the model choosing the tool. See docs/ops_analysis_2026-06-29.md P2.
-        if (_imageToolService?.IsEnabled == true && ImageIntentDetector.LooksLikeImageRequest(message.Content))
+        if (_imageToolService?.IsEnabled == true && ClassifyVisualIntent(message, message.Content) != VisualRequestIntent.None)
         {
             await HandleImageAsync(context, message, message.Content.Trim());
             return;
@@ -2587,7 +2584,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             .Append(content.Length == 0 ? "(no text)" : content);
 
         prompt.Append("\n\n").Append(WorldAutonomyPrompt.BuildOpportunityDirective(isDirectAddress));
-        var visualIntent = ImageIntentDetector.Classify(content);
+        var visualIntent = ClassifyVisualIntent(message, content);
         if (visualIntent == VisualRequestIntent.BitmapRequired)
         {
             prompt.Append("\n\nThe petition explicitly asks for an image, picture, photo, or bitmap. " +
@@ -2600,6 +2597,13 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 "Select exactly one medium through create_visual: generated_bitmap for the image foundry, or " +
                 "text_art for an ASCII proclamation. Choose whichever better serves your idea.");
         }
+            if (HasImageAttachments(message) || (message.ReferencedMessage is { } referenced && HasImageAttachments(referenced)))
+            {
+                prompt.Append("\n\nImage attachments on this message and its same-channel reply are available to create_visual as actual reference pixels. " +
+                "Use image_options.action=edit for revisions, auto to use those references, or generate for a fresh image. " +
+                "Honor requested transparency, format, dimensions, compression, and preview count via image_options. " +
+                "Default to medium quality; request higher image quality only when the user asks. Editing defaults to Sunburst; new images to Flare.");
+            }
 
         return new WorldAutonomyOpportunity(
             guildChannel.Guild.Id,
@@ -3589,6 +3593,13 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         await _client.DisposeAsync();
     }
 
+    private static bool HasImageAttachments(IMessage message) => message.Attachments.Any(attachment =>
+        DiscordImageReferenceResolver.IsImageAttachment(attachment.Filename, attachment.ContentType));
+
+    private static VisualRequestIntent ClassifyVisualIntent(SocketUserMessage message, string text) =>
+        ImageIntentDetector.Classify(text, HasImageAttachments(message) ||
+            (message.ReferencedMessage is { } reference && HasImageAttachments(reference)));
+
     // Image command handler (docs/image_generation_design.md). Rewrite-in-character, then hand the vetted
     // prompt to the shared ImageToolService (budget + style suffix + generate + log), then send the file.
     // Refuses in character on every non-drawing outcome.
@@ -3596,6 +3607,14 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     {
         var persona = GetDefaultPersona();
         var reference = new MessageReference(message.Id);
+        ParsedImageCommand parsed;
+        try { parsed = ImageCommandParser.Parse(request); }
+        catch (ArgumentException exception)
+        {
+            await SendChunkedAsync(context.Channel, exception.Message, reference, persona);
+            return;
+        }
+        request = parsed.Prompt;
 
         if (string.IsNullOrWhiteSpace(request))
         {
@@ -3663,7 +3682,10 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 _logger.LogDebug(ex, "Failed to post image placeholder; continuing.");
             }
 
-            var outcome = await _imageToolService.GenerateAsync(
+            ImageGenerationOutcome outcome;
+            try
+            {
+                outcome = await _imageToolService.GenerateAsync(
                 context.User.Id,
                 context.Channel.Name,
                 rewrite.ImagePrompt!,
@@ -3676,7 +3698,24 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                     OpportunityId: Guid.NewGuid().ToString("N"),
                     ToolOffered: false,
                     ToolSelected: false,
-                    GuildId: (context.Guild as SocketGuild)?.Id));
+                    GuildId: (context.Guild as SocketGuild)?.Id,
+                    ChannelId: context.Channel.Id),
+                ImageCommandParser.Merge(parsed.Settings, rewrite.Settings),
+                placeholder is null ? null : async (preview, cancellationToken) =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await TryEditPlaceholderAsync(placeholder, placeholder.Content, persona,
+                        preview.Bytes, $"preview.{preview.FileExtension}", registerDelivery: false,
+                        cancellationToken: cancellationToken);
+                });
+            }
+            catch (OperationCanceledException)
+            {
+                using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                await TryEditPlaceholderAsync(placeholder, "The Foundry was interrupted before its work was complete.", persona,
+                    cancellationToken: cleanup.Token);
+                throw;
+            }
 
             if (!outcome.Generated || outcome.Bytes is null || outcome.FileName is null)
             {
@@ -3707,7 +3746,9 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     /// </summary>
     private async Task<bool> TryEditPlaceholderAsync(
         IUserMessage? placeholder, string content, string persona,
-        byte[]? imageBytes = null, string? fileName = null)
+        byte[]? imageBytes = null, string? fileName = null,
+        bool registerDelivery = true,
+        CancellationToken cancellationToken = default)
     {
         if (placeholder is null || content.Length > DiscordMaxMessageLength)
         {
@@ -3723,14 +3764,18 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 {
                     m.Content = content;
                     m.Attachments = new[] { new FileAttachment(stream, fileName!) };
-                });
+                }, new RequestOptions { CancelToken = cancellationToken });
             }
             else
             {
-                await placeholder.ModifyAsync(m => m.Content = content);
+                await placeholder.ModifyAsync(m =>
+                {
+                    m.Content = content;
+                    m.Attachments = Array.Empty<FileAttachment>();
+                }, new RequestOptions { CancelToken = cancellationToken });
             }
 
-            _sentMessages.Register(placeholder.Id, persona, "image");
+            if (registerDelivery) _sentMessages.Register(placeholder.Id, persona, "image");
             return true;
         }
         catch (Exception ex)

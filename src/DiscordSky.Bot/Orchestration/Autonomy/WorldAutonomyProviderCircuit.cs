@@ -82,8 +82,11 @@ public sealed class LlmProviderGuard
         string model,
         bool ownsCircuitLease,
         out LlmProviderCallLease lease,
-        out LlmProviderGuardSnapshot snapshot)
+        out LlmProviderGuardSnapshot snapshot,
+        double? reservationUsd = null)
     {
+        if (reservationUsd.HasValue && (!double.IsFinite(reservationUsd.Value) || reservationUsd <= 0))
+            throw new ArgumentOutOfRangeException(nameof(reservationUsd));
         lock (_gate)
         {
             ResetSpendWindows(_timeProvider.GetUtcNow());
@@ -101,7 +104,7 @@ public sealed class LlmProviderGuard
                 return true;
             }
 
-            var reservation = ReservationFor(model);
+            var reservation = reservationUsd ?? ReservationFor(model);
             if (_spend.HourlyCostUsd + _hourlyReservations + reservation > _options.HourlyUsdLimit)
             {
                 return BlockBudgetUnsafe(

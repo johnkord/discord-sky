@@ -111,6 +111,46 @@ public sealed class WorldAutonomyVisualToolTests
         Assert.Empty(fixture.ImageLog.Records);
     }
 
+    [Fact]
+    public async Task Progress_FinalizesOneRegisteredMessageWithRequestedSettings()
+    {
+        var fixture = new Fixture(VisualRequestIntent.BitmapRequired);
+        var progress = new RecordingProgress();
+        fixture.VisualTransport.Progress = progress;
+        await fixture.Bind().InvokeAsync(new AIFunctionArguments
+        {
+            ["medium"] = "generated_bitmap",
+            ["visual_prompt"] = "an imperial seal",
+            ["image_options"] = new Dictionary<string, object>
+            { ["model"] = "flare", ["background"] = "transparent", ["quality"] = "xhigh", ["partial_images"] = 1 },
+        }, CancellationToken.None);
+        Assert.Equal(1, progress.Previews);
+        Assert.Equal(1, progress.Completions);
+        Assert.True(progress.Disposed);
+        Assert.Empty(fixture.VisualTransport.Calls);
+        Assert.True(fixture.Registry.TryGet(7001, out _));
+        Assert.True(fixture.Run.VisualDelivered);
+        Assert.Equal("gpt-image-2.5-flare", fixture.Generator.LastOptions!.Model);
+        Assert.Equal("xhigh", fixture.Generator.LastOptions.Quality);
+        Assert.Equal("png", fixture.Generator.LastOptions.OutputFormat);
+    }
+
+    [Fact]
+    public async Task Progress_RefusalCleansUpWithoutRegisteringDelivery()
+    {
+        var fixture = new Fixture(VisualRequestIntent.BitmapRequired);
+        var progress = new RecordingProgress();
+        fixture.VisualTransport.Progress = progress;
+        fixture.Generator.Result = ImageResult.Fail(ImageResult.ErrorModerationBlocked);
+        var raw = await fixture.Bind().InvokeAsync(new AIFunctionArguments
+        { ["medium"] = "generated_bitmap", ["visual_prompt"] = "an imperial seal" }, CancellationToken.None);
+        Assert.Equal("refused", Assert.IsType<System.Text.Json.JsonElement>(raw).GetProperty("outcome").GetString());
+        Assert.Equal(0, progress.Completions);
+        Assert.True(progress.Disposed);
+        Assert.False(fixture.Registry.TryGet(7001, out _));
+        Assert.False(fixture.Run.VisualDelivered);
+    }
+
     private sealed class Fixture
     {
         internal RecordingVisualTransport VisualTransport { get; } = new();
@@ -119,6 +159,7 @@ public sealed class WorldAutonomyVisualToolTests
         internal RecordingTranscriptSink Transcripts { get; } = new();
         internal RecordingTelemetrySink Telemetry { get; } = new();
         internal RecordingImageLog ImageLog { get; } = new();
+        internal StubImageGenerator Generator { get; } = new();
         internal WorldAutonomyRunState Run { get; }
 
         private readonly WorldAutonomyVisualTool _tool;
@@ -145,6 +186,7 @@ public sealed class WorldAutonomyVisualToolTests
             var options = new ImageOptions
             {
                 Model = "gpt-image-2",
+                AllowHighQuality = true,
                 PerUserPerHour = 0,
                 GlobalPerDay = 0,
                 MonthlyUsdGuard = 0,
@@ -152,7 +194,7 @@ public sealed class WorldAutonomyVisualToolTests
             };
             var imageService = new ImageToolService(
                 new ImageBudget(Options.Create(options), ImageLog),
-                new StubImageGenerator(),
+                Generator,
                 ImageLog,
                 Options.Create(options),
                 NullLogger<ImageToolService>.Instance);
@@ -180,17 +222,32 @@ public sealed class WorldAutonomyVisualToolTests
     private sealed class StubImageGenerator : DiscordSky.Bot.Integrations.Images.IImageGenerator
     {
         public bool IsEnabled => true;
+        public ImageResult Result { get; set; } = ImageResult.Ok([1, 2, 3], "jpg", null);
+        public ImageRequestOptions? LastOptions { get; private set; }
+
+        public async Task<ImageResult> RenderAsync(ImageRenderRequest request, CancellationToken cancellationToken)
+        {
+            LastOptions = request.Options;
+            if (request.Options.PartialImages > 0 && request.OnPreview is not null)
+                await request.OnPreview(new ImagePreview([4, 5, 6], "png", 0), cancellationToken);
+            return Result;
+        }
 
         public Task<ImageResult> GenerateAsync(
             string prompt,
             ImageRequestOptions options,
             CancellationToken cancellationToken) =>
-            Task.FromResult(ImageResult.Ok([1, 2, 3], "jpg", null));
+            Task.FromResult(Result);
     }
 
     private sealed class RecordingVisualTransport : IWorldAutonomyVisualTransport
     {
         internal List<VisualCall> Calls { get; } = [];
+        internal RecordingProgress? Progress { get; set; }
+
+        public Task<IWorldAutonomyVisualProgress?> BeginAsync(
+            ulong guildId, ulong channelId, ulong? replyTargetMessageId, CancellationToken cancellationToken) =>
+            Task.FromResult<IWorldAutonomyVisualProgress?>(Progress);
 
         public Task<WorldAutonomyDeliveredMessage> SendAsync(
             ulong guildId,
@@ -204,6 +261,18 @@ public sealed class WorldAutonomyVisualToolTests
             Calls.Add(new VisualCall(imageBytes, caption, replyTargetMessageId));
             return Task.FromResult(new WorldAutonomyDeliveredMessage(7001, channelId));
         }
+    }
+
+    private sealed class RecordingProgress : IWorldAutonomyVisualProgress
+    {
+        internal int Previews { get; private set; }
+        internal int Completions { get; private set; }
+        internal bool Disposed { get; private set; }
+        public Task PreviewAsync(ImagePreview preview, CancellationToken cancellationToken)
+        { Previews++; return Task.CompletedTask; }
+        public Task<WorldAutonomyDeliveredMessage> CompleteAsync(byte[] bytes, string fileName, string caption, CancellationToken cancellationToken)
+        { Completions++; return Task.FromResult(new WorldAutonomyDeliveredMessage(7001, 6001)); }
+        public ValueTask DisposeAsync() { Disposed = true; return ValueTask.CompletedTask; }
     }
 
     private sealed record VisualCall(byte[] Bytes, string Caption, ulong? ReplyTargetMessageId);

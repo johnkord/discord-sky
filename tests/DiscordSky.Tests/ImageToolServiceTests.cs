@@ -12,9 +12,16 @@ public sealed class ImageToolServiceTests
         public bool Enabled = true;
         public string? CapturedPrompt;
         public string? CapturedModel;
+        public ImageRenderRequest? CapturedRequest;
         public ImageResult Next = ImageResult.Ok(new byte[] { 1, 2, 3 }, "jpg", null);
 
         public bool IsEnabled => Enabled;
+
+        public Task<ImageResult> RenderAsync(ImageRenderRequest request, CancellationToken cancellationToken)
+        {
+            CapturedRequest = request;
+            return GenerateAsync(request.Prompt, request.Options, cancellationToken);
+        }
 
         public Task<ImageResult> GenerateAsync(string prompt, ImageRequestOptions options, CancellationToken cancellationToken)
         {
@@ -33,11 +40,85 @@ public sealed class ImageToolServiceTests
         public double SumSuccessCostInUtcMonth(DateTimeOffset now) => 0.0;
     }
 
-    private static ImageToolService Build(StubGenerator gen, IImageGenerationLog log, ImageOptions? options = null)
+    private static ImageToolService Build(StubGenerator gen, IImageGenerationLog log, ImageOptions? options = null, IImageReferenceResolver? references = null)
     {
         var opts = options ?? new ImageOptions { PerUserPerHour = 0, GlobalPerDay = 0, MonthlyUsdGuard = 0, MaxConcurrent = 4 };
         var budget = new ImageBudget(Options.Create(opts), log);
-        return new ImageToolService(budget, gen, log, Options.Create(opts), NullLogger<ImageToolService>.Instance);
+        return new ImageToolService(budget, gen, log, Options.Create(opts), NullLogger<ImageToolService>.Instance, references);
+    }
+
+    [Fact]
+    public async Task ReferenceEdit_UsesSunburstPixelsAndReportedCost()
+    {
+        var gen = new StubGenerator { Next = ImageResult.Ok([1, 2, 3], "png", null) with
+            { CostUsd = 0.1234, CostBasis = "token_usage", Usage = new ImageUsage(100, 200, 300), RequestId = "req-test" } };
+        var log = new FakeLog();
+        var source = new ImageReference([1, 2], "source.png", "image/png", 50);
+        var resolver = new StubReferences(new ImageReferenceSet([source], source with { FileName = "mask.png" }));
+        var service = Build(gen, log, new ImageOptions { AllowHighQuality = true }, resolver);
+        var outcome = await service.GenerateAsync(1, "channel", "make the sky green", ImageTier.Commissioned, CancellationToken.None,
+            new ImageGenerationContext("image_command", "command", 51, GuildId: 42, ChannelId: 43),
+            new ImageRenderSettings(Quality: "xhigh", Background: "transparent", Action: "edit"));
+
+        Assert.True(outcome.Generated);
+        Assert.Equal("gpt-image-2.5-sunburst", gen.CapturedModel);
+        Assert.Same(source, Assert.Single(gen.CapturedRequest!.References!));
+        Assert.NotNull(gen.CapturedRequest.Mask);
+        Assert.Equal("png", gen.CapturedRequest.Options.OutputFormat);
+        Assert.Equal("xhigh", gen.CapturedRequest.Options.Quality);
+        var record = Assert.Single(log.Records);
+        Assert.Equal(0.1234, record.EstCostUsd, 6);
+        Assert.Equal("edit", record.Action);
+        Assert.Equal(new ulong[] { 50 }, record.ReferenceMessageIds);
+        Assert.True(record.HasMask);
+        Assert.Equal("req-test", record.RequestId);
+        Assert.Equal((ulong)43, resolver.Context!.ChannelId);
+    }
+
+    [Fact]
+    public async Task ExplicitFreshImage_DoesNotLoadReferences()
+    {
+        var gen = new StubGenerator();
+        var resolver = new StubReferences(new ImageReferenceSet([new ImageReference([1], "reference.png", "image/png")]));
+        var service = Build(gen, new FakeLog(), references: resolver);
+        await service.GenerateAsync(1, "channel", "a tower", ImageTier.Commissioned, CancellationToken.None,
+            settings: new ImageRenderSettings(Action: "generate"));
+        Assert.Null(resolver.Context);
+        Assert.Null(gen.CapturedRequest!.References);
+    }
+
+    [Fact]
+    public async Task MissingEditReference_RefusesBeforeProviderCall()
+    {
+        var gen = new StubGenerator();
+        var outcome = await Build(gen, new FakeLog()).GenerateAsync(1, "channel", "change the sky", ImageTier.Commissioned,
+            CancellationToken.None, settings: new ImageRenderSettings(Action: "edit"));
+        Assert.False(outcome.Generated);
+        Assert.Null(gen.CapturedRequest);
+        Assert.Contains("requires", outcome.RefusalText);
+    }
+
+    [Fact]
+    public async Task ChargedFailure_PreservesSpendInDurableLog()
+    {
+        var gen = new StubGenerator { Next = ImageResult.Fail(ImageResult.ErrorEmpty) with
+            { CostUsd = 0.25, CostBasis = "reservation_estimate", PreviewCount = 1 } };
+        var log = new FakeLog();
+        var outcome = await Build(gen, log).GenerateAsync(1, "channel", "a tower", ImageTier.Commissioned, CancellationToken.None);
+        Assert.False(outcome.Generated);
+        var record = Assert.Single(log.Records);
+        Assert.Equal(0.25, record.EstCostUsd);
+        Assert.Equal(1, record.PreviewCount);
+    }
+
+    private sealed class StubReferences(ImageReferenceSet references) : IImageReferenceResolver
+    {
+        public ImageGenerationContext? Context { get; private set; }
+        public Task<ImageReferenceSet> ResolveAsync(ImageGenerationContext context, CancellationToken cancellationToken)
+        {
+            Context = context;
+            return Task.FromResult(references);
+        }
     }
 
     [Fact]

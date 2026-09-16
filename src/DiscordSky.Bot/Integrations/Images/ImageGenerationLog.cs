@@ -33,7 +33,22 @@ public sealed record ImageGenerationRecord(
     [property: JsonPropertyName("guild_id")] ulong? GuildId = null,
     [property: JsonPropertyName("evidence_message_ids")] IReadOnlyList<ulong>? EvidenceMessageIds = null,
     [property: JsonPropertyName("prompt_digest")] string? PromptDigest = null,
-    [property: JsonPropertyName("final_prompt")] string? FinalPrompt = null)
+    [property: JsonPropertyName("final_prompt")] string? FinalPrompt = null,
+    [property: JsonPropertyName("action")] string? Action = null,
+    [property: JsonPropertyName("reference_message_ids")] IReadOnlyList<ulong>? ReferenceMessageIds = null,
+    [property: JsonPropertyName("reference_count")] int? ReferenceCount = null,
+    [property: JsonPropertyName("has_mask")] bool? HasMask = null,
+    [property: JsonPropertyName("output_format")] string? OutputFormat = null,
+    [property: JsonPropertyName("background")] string? Background = null,
+    [property: JsonPropertyName("output_compression")] int? OutputCompression = null,
+    [property: JsonPropertyName("preview_count")] int? PreviewCount = null,
+    [property: JsonPropertyName("usage")] ImageUsage? Usage = null,
+    [property: JsonPropertyName("cost_basis")] string? CostBasis = null,
+    [property: JsonPropertyName("request_id")] string? RequestId = null,
+    [property: JsonPropertyName("http_status")] int? HttpStatus = null,
+    [property: JsonPropertyName("provider_error_code")] string? ProviderErrorCode = null,
+    [property: JsonPropertyName("moderation_stage")] string? ModerationStage = null,
+    [property: JsonPropertyName("moderation_categories")] IReadOnlyList<string>? ModerationCategories = null)
 {
     public const string OutcomeOk = "ok";
     public const string OutcomeRefused = "refused";
@@ -60,6 +75,8 @@ public interface IImageGenerationLog
 
     /// <summary>Sum of estimated cost of successful generations in the UTC month containing <paramref name="now"/>.</summary>
     double SumSuccessCostInUtcMonth(DateTimeOffset now);
+
+    double SumCostInUtcMonth(DateTimeOffset now) => SumSuccessCostInUtcMonth(now);
 
     int CountSuccessfulAmbientVisualsOnUtcDay(DateOnly utcDay, ulong guildId) => 0;
 
@@ -132,7 +149,11 @@ public sealed class FileBackedImageGenerationLog : IImageGenerationLog, IHostedS
         return count;
     }
 
-    public double SumSuccessCostInUtcMonth(DateTimeOffset now)
+    public double SumSuccessCostInUtcMonth(DateTimeOffset now) => SumCostInUtcMonth(now, true);
+
+    public double SumCostInUtcMonth(DateTimeOffset now) => SumCostInUtcMonth(now, false);
+
+    private double SumCostInUtcMonth(DateTimeOffset now, bool successesOnly)
     {
         if (!Directory.Exists(_options.BaseDirectory)) return 0.0;
         var monthPrefix = $"{FilePrefix}{now.UtcDateTime:yyyy-MM}";
@@ -141,7 +162,7 @@ public sealed class FileBackedImageGenerationLog : IImageGenerationLog, IHostedS
         {
             foreach (var record in ReadRecords(file))
             {
-                if (record.Outcome == ImageGenerationRecord.OutcomeOk) sum += record.EstCostUsd;
+                if (!successesOnly || record.Outcome == ImageGenerationRecord.OutcomeOk) sum += Math.Max(0, record.EstCostUsd);
             }
         }
         return sum;
