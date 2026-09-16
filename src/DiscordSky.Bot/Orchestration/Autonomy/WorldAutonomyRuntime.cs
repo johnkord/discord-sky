@@ -206,8 +206,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
                     _configuration.TerminalDeliveryEnabled));
             }
             if (_visualTool is not null
-                && opportunity.SourceChannelId.HasValue
-                && opportunity.VisualIntent != VisualRequestIntent.None)
+                && WorldAutonomyVisualTool.CanBind(opportunity))
             {
                 supplementaryTools.Add(_visualTool.Bind(
                     opportunity,

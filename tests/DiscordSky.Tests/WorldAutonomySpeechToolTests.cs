@@ -1,4 +1,5 @@
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Integrations.Images;
 using DiscordSky.Bot.Memory.Logging;
 using DiscordSky.Bot.Memory.Reception;
 using DiscordSky.Bot.Orchestration.Autonomy;
@@ -131,6 +132,32 @@ public sealed class WorldAutonomySpeechToolTests
         Assert.Single(transport.Calls);
         Assert.True(registry.TryGet(7001, out _));
         Assert.True(run.SpokeInChannel);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Speak_DrawingCannotBypassImageToolButPlainRefusalCan(bool terminal)
+    {
+        var transport = new RecordingTransport(new WorldAutonomyDeliveredMessage(7001, 6001));
+        var registry = new SentMessageRegistry();
+        var transcripts = new RecordingTranscriptSink();
+        var telemetry = new RecordingTelemetrySink();
+        var context = Context();
+        var run = new WorldAutonomyRunState(context, new RecordingLedger(), []);
+        var tool = BuildTool(transport, registry, transcripts, telemetry).Bind(
+            Opportunity(true) with { VisualIntent = VisualRequestIntent.BitmapRequired }, context, run, terminal);
+
+        await Assert.ThrowsAnyAsync<Exception>(() => tool.InvokeAsync(new AIFunctionArguments
+        { ["content"] = "Behold.\n```text\n ___\n/   \\\n|___|\n```" }, CancellationToken.None).AsTask());
+        Assert.Empty(transport.Calls);
+        Assert.Empty(transcripts.Entries);
+        Assert.False(registry.TryGet(7001, out _));
+        Assert.False(run.SpokeInChannel);
+        Assert.Equal("text_art_substitute", Assert.Single(telemetry.Events).Reason);
+
+        await tool.InvokeAsync(new AIFunctionArguments { ["content"] = "The Foundry is unavailable. No drawing this time." });
+        Assert.Single(transport.Calls);
     }
 
     private static WorldAutonomySpeechTool BuildTool(

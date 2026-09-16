@@ -197,6 +197,22 @@ public sealed class WorldAutonomyPromptTests
         Assert.Contains("Optional inspiration", dynamic, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Instructions_RequireOpenAIImagesWithoutRemovingTheChoiceToDecline(bool terminal)
+    {
+        var instructions = WorldAutonomyPrompt.BuildInstructions(Context(), terminal);
+        var cached = WorldAutonomyPrompt.BuildStableCachePrefix(true, terminal);
+        foreach (var prompt in new[] { instructions, cached })
+        {
+            Assert.Contains("use create_visual", prompt);
+            Assert.Contains("Flare for new images and Sunburst for reference edits", prompt);
+            Assert.Contains("code-block drawings are not alternative media", prompt);
+            Assert.Contains("You may decline a drawing in plain text", prompt);
+        }
+    }
+
     private static WorldAutonomyRunContext Context() => new(
         "run-1",
         667956000757776386,

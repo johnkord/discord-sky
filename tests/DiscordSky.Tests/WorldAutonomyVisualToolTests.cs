@@ -11,15 +11,17 @@ namespace DiscordSky.Tests;
 
 public sealed class WorldAutonomyVisualToolTests
 {
-    [Fact]
-    public async Task GeneratedBitmap_DeliversAndRegistersAttachment()
+    [Theory]
+    [InlineData(VisualRequestIntent.None)]
+    [InlineData(VisualRequestIntent.MediumChoice)]
+    [InlineData(VisualRequestIntent.BitmapRequired)]
+    public async Task EveryDrawing_DeliversAndRegistersOpenAIImage(VisualRequestIntent intent)
     {
-        var fixture = new Fixture(VisualRequestIntent.BitmapRequired);
+        var fixture = new Fixture(intent);
         var function = fixture.Bind();
 
         var raw = await function.InvokeAsync(new AIFunctionArguments
         {
-            ["medium"] = "generated_bitmap",
             ["visual_prompt"] = "Robotnik presiding over a ridiculous department",
             ["caption"] = "Behold my administrative masterpiece.",
         }, CancellationToken.None);
@@ -27,6 +29,8 @@ public sealed class WorldAutonomyVisualToolTests
         var result = Assert.IsType<System.Text.Json.JsonElement>(raw);
         Assert.Equal("delivered", result.GetProperty("outcome").GetString());
         Assert.Equal("generated_bitmap", result.GetProperty("medium").GetString());
+        Assert.Equal("gpt-image-2.5-flare", fixture.Generator.LastOptions!.Model);
+        Assert.Empty(fixture.SpeechTransport.Calls);
         var call = Assert.Single(fixture.VisualTransport.Calls);
         Assert.Equal(new byte[] { 1, 2, 3 }, call.Bytes);
         Assert.Equal((ulong)5001, call.ReplyTargetMessageId);
@@ -45,36 +49,23 @@ public sealed class WorldAutonomyVisualToolTests
     }
 
     [Fact]
-    public async Task TextArt_DeliversThroughRegisteredSpeechPath()
+    public void ImageTool_RemovesTextArtAndMediumFromSchema()
     {
         var fixture = new Fixture(VisualRequestIntent.MediumChoice);
         var function = fixture.Bind();
-
-        var raw = await function.InvokeAsync(new AIFunctionArguments
-        {
-            ["medium"] = "text_art",
-            ["text_art"] = "[ EGGMAN ASCII MURAL ]",
-        }, CancellationToken.None);
-
-        var result = Assert.IsType<System.Text.Json.JsonElement>(raw);
-        Assert.Equal("text_art", result.GetProperty("medium").GetString());
-        Assert.Empty(fixture.VisualTransport.Calls);
-        Assert.Equal("[ EGGMAN ASCII MURAL ]", Assert.Single(fixture.SpeechTransport.Calls).Content);
-        Assert.True(fixture.Registry.TryGet(7002, out var sent));
-        Assert.Equal("world_autonomy", sent.Source);
-        Assert.True(fixture.Run.VisualDelivered);
-        Assert.Contains(fixture.ImageLog.Records, record =>
-            record.Outcome == ImageGenerationRecord.OutcomeNotSelected);
-        Assert.Contains(fixture.Telemetry.Events, metric =>
-            metric.EventType == TelemetryEventTypes.WorldAutonomyVisual
-            && metric.Kind == "text_art"
-            && metric.Outcome == "delivered");
+        var properties = function.JsonSchema.GetProperty("properties");
+        Assert.True(properties.TryGetProperty("visual_prompt", out _));
+        Assert.False(properties.TryGetProperty("medium", out _));
+        Assert.False(properties.TryGetProperty("text_art", out _));
     }
 
-    [Fact]
-    public async Task InvalidExplicitTextArt_DoesNotConsumeRequiredBitmapChoice()
+    [Theory]
+    [InlineData(VisualRequestIntent.None)]
+    [InlineData(VisualRequestIntent.MediumChoice)]
+    [InlineData(VisualRequestIntent.BitmapRequired)]
+    public async Task LegacyTextArt_DoesNotDeliverOrConsumeImageAttempt(VisualRequestIntent intent)
     {
-        var fixture = new Fixture(VisualRequestIntent.BitmapRequired);
+        var fixture = new Fixture(intent);
         var function = fixture.Bind();
 
         await Assert.ThrowsAnyAsync<Exception>(() => function.InvokeAsync(new AIFunctionArguments
@@ -84,13 +75,24 @@ public sealed class WorldAutonomyVisualToolTests
         }, CancellationToken.None).AsTask());
 
         Assert.False(fixture.Run.VisualMediumSelected);
+        Assert.Empty(fixture.SpeechTransport.Calls);
+        Assert.Empty(fixture.VisualTransport.Calls);
         await function.InvokeAsync(new AIFunctionArguments
         {
-            ["medium"] = "generated_bitmap",
             ["visual_prompt"] = "the required bitmap",
         }, CancellationToken.None);
         Assert.True(fixture.Run.VisualMediumSelected);
         Assert.Single(fixture.VisualTransport.Calls);
+    }
+
+    [Fact]
+    public void ImageToolAvailability_DoesNotDependOnIntentDetection()
+    {
+        var opportunity = new WorldAutonomyOpportunity(4001, "discord_message", "an unrecognized drawing request",
+            SourceChannelId: 6001, SourceAuthorId: 8001);
+        Assert.True(WorldAutonomyVisualTool.CanBind(opportunity));
+        Assert.False(WorldAutonomyVisualTool.CanBind(opportunity with { SourceAuthorId = null }));
+        Assert.False(WorldAutonomyVisualTool.CanBind(opportunity with { SourceChannelId = null }));
     }
 
     [Fact]
@@ -149,6 +151,7 @@ public sealed class WorldAutonomyVisualToolTests
         Assert.True(progress.Disposed);
         Assert.False(fixture.Registry.TryGet(7001, out _));
         Assert.False(fixture.Run.VisualDelivered);
+        Assert.Empty(fixture.SpeechTransport.Calls);
     }
 
     private sealed class Fixture
@@ -185,7 +188,7 @@ public sealed class WorldAutonomyVisualToolTests
             Run = new WorldAutonomyRunState(_context, new NoOpLedger(), []);
             var options = new ImageOptions
             {
-                Model = "gpt-image-2",
+                Model = "gpt-image-2.5-flare",
                 AllowHighQuality = true,
                 PerUserPerHour = 0,
                 GlobalPerDay = 0,

@@ -11,17 +11,11 @@ namespace DiscordSky.Bot.Integrations.Images;
 /// </summary>
 public static class ImageIntentDetector
 {
-    // Each branch requires the verb to be followed by a plausible target, which keeps idioms like
-    // "the match was a draw" or "draw money from the bank" from matching.
     private static readonly Regex Pattern = new(
-        @"\b(?:draw|sketch|paint|render|illustrate)\s+(?:me|us|him|her|it|them|this|that|the|a|an|my|your|our|their|some|something)\b" +
+        @"\b(?:draw|sketch|paint|render|illustrate)\s+(?!(?:money|cash|cards|lots|blood|breath|conclusions?|attention|from)\b|(?:a|the|my|your)\s+(?:breath|conclusion|attention)\b)(?:[\p{L}\p{N}]|<@)" +
         @"|\b(?:make|generate|create|send|give|show) (?:me |us )?(?:a |an )?(?:picture|image|photo|photograph|drawing|portrait|poster|painting)\b" +
         @"|\b(?:picture|photo|photograph|portrait|poster|painting|drawing|image)\s+of\b" +
         @"|\bshow (?:me|us)\s+(?:a|an|your|the)\b",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-    private static readonly Regex ExplicitBitmapPattern = new(
-        @"\b(?:bitmap|image|photo|photograph|picture)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex EditPattern = new(
@@ -42,9 +36,7 @@ public static class ImageIntentDetector
             return VisualRequestIntent.None;
         }
 
-        return ExplicitBitmapPattern.IsMatch(text)
-            ? VisualRequestIntent.BitmapRequired
-            : VisualRequestIntent.MediumChoice;
+        return VisualRequestIntent.BitmapRequired;
     }
 }
 

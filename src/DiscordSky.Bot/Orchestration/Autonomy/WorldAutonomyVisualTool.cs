@@ -79,12 +79,10 @@ public sealed class WorldAutonomyVisualTool
 {
     public const string ToolName = "create_visual";
     private const string GeneratedBitmap = "generated_bitmap";
-    private const string TextArt = "text_art";
     private const int DiscordMaxCaptionLength = 2000;
 
     private readonly ImageToolService _imageToolService;
     private readonly IWorldAutonomyVisualTransport _visualTransport;
-    private readonly WorldAutonomySpeechTool _speechTool;
     private readonly SentMessageRegistry _sentMessages;
     private readonly ITranscriptSink _transcripts;
     private readonly IRecallTelemetrySink _telemetry;
@@ -105,7 +103,6 @@ public sealed class WorldAutonomyVisualTool
     {
         _imageToolService = imageToolService;
         _visualTransport = visualTransport;
-        _speechTool = speechTool;
         _sentMessages = sentMessages;
         _transcripts = transcripts;
         _telemetry = telemetry;
@@ -120,7 +117,7 @@ public sealed class WorldAutonomyVisualTool
         WorldAutonomyRunState run,
         bool terminalDeliveryEnabled = false)
     {
-        if (!opportunity.SourceChannelId.HasValue || !opportunity.SourceAuthorId.HasValue)
+        if (!CanBind(opportunity))
         {
             throw new InvalidOperationException("Robotnik visual creation requires a source Discord channel and author.");
         }
@@ -129,8 +126,11 @@ public sealed class WorldAutonomyVisualTool
         return AIFunctionFactory.Create(
             bound.CreateAsync,
             name: ToolName,
-            description: $"Choose and deliver exactly one visual medium for this petition. generated_bitmap creates or edits an image; text_art posts exact ASCII/text art through Robotnik's registered voice. Current-message and same-channel reply attachments are supplied as reference pixels automatically; a mask.png attachment edits transparent areas of the first PNG reference. image_options.action is auto (use available references), edit (references required), or generate (fresh image). New images default to Flare; edits to Sunburst. Only select high/xhigh/max quality when the user asks; otherwise leave quality at medium. The tool itself delivers successful output, so do not repeat it with {(terminalDeliveryEnabled ? WorldAutonomySpeechTool.TerminalToolName : WorldAutonomySpeechTool.ToolName)}.");
+            description: $"Create or edit and deliver exactly one OpenAI image. Use this whenever you choose to draw, sketch, illustrate, or depict something, including your own visual ideas. ASCII and text art are not drawing alternatives. Current-message and same-channel reply attachments are supplied as reference pixels automatically; a mask.png attachment edits transparent areas of the first PNG reference. image_options.action is auto (use available references), edit (references required), or generate (fresh image). New images default to Flare; edits to Sunburst. Only select high/xhigh/max quality when the user asks; otherwise leave quality at medium. The tool itself delivers successful output, so do not repeat it with {(terminalDeliveryEnabled ? WorldAutonomySpeechTool.TerminalToolName : WorldAutonomySpeechTool.ToolName)}. If the tool refuses or fails, acknowledge that in character without substituting text art or claiming an image exists.");
     }
+
+    internal static bool CanBind(WorldAutonomyOpportunity opportunity) =>
+        opportunity.SourceChannelId.HasValue && opportunity.SourceAuthorId.HasValue;
 
     public void RecordNotSelected(
         WorldAutonomyOpportunity opportunity,
@@ -153,67 +153,26 @@ public sealed class WorldAutonomyVisualTool
         WorldAutonomyOpportunity opportunity,
         WorldAutonomyRunContext context,
         WorldAutonomyRunState run,
-        string medium,
-        string? visualPrompt,
-        string? textArt,
+        string visualPrompt,
         string? caption,
         string? replyToMessageId,
         ImageRenderSettings? settings,
         CancellationToken cancellationToken)
     {
-        var normalizedMedium = medium.Trim().ToLowerInvariant();
-        if (normalizedMedium is not (GeneratedBitmap or TextArt))
-        {
-            throw new ArgumentException("medium must be generated_bitmap or text_art.", nameof(medium));
-        }
-        if (opportunity.VisualIntent == VisualRequestIntent.BitmapRequired && normalizedMedium != GeneratedBitmap)
-        {
-            throw new ArgumentException(
-                "This petition explicitly requires generated_bitmap; text_art is not an eligible substitute.",
-                nameof(medium));
-        }
-        if (normalizedMedium == TextArt && string.IsNullOrWhiteSpace(textArt))
-        {
-            throw new ArgumentException("text_art requires non-empty text_art content.", nameof(textArt));
-        }
-        if (normalizedMedium == GeneratedBitmap && string.IsNullOrWhiteSpace(visualPrompt))
+        if (string.IsNullOrWhiteSpace(visualPrompt))
         {
             throw new ArgumentException("generated_bitmap requires a non-empty visual_prompt.", nameof(visualPrompt));
         }
-        if (normalizedMedium == GeneratedBitmap && caption?.Trim().Length > DiscordMaxCaptionLength)
+        if (caption?.Trim().Length > DiscordMaxCaptionLength)
         {
             throw new ArgumentException("generated_bitmap caption cannot exceed 2000 characters.", nameof(caption));
         }
         if (!run.TrySelectVisualMedium())
         {
-            throw new InvalidOperationException("A visual medium was already selected for this run.");
+            throw new InvalidOperationException("An image was already attempted for this run.");
         }
 
-        EmitVisual(opportunity, context, normalizedMedium, "selected", null);
-        if (normalizedMedium == TextArt)
-        {
-            _imageToolService.RecordOpportunity(
-                opportunity.SourceAuthorId!.Value,
-                opportunity.SourceChannelName,
-                ImageTier.Commissioned,
-                ImageContext(opportunity, context, toolSelected: false));
-            var speech = await _speechTool.SendAsync(
-                opportunity,
-                context,
-                run,
-                textArt!,
-                replyToMessageId,
-                cancellationToken).ConfigureAwait(false);
-            run.RecordVisualDelivery();
-            EmitVisual(opportunity, context, TextArt, "delivered", ParseMessageId(speech.MessageIds.FirstOrDefault()));
-            return new WorldAutonomyVisualResult(
-                speech.Outcome,
-                TextArt,
-                speech.ChannelId,
-                speech.MessageIds,
-                speech.ReplyTargetMessageId,
-                null);
-        }
+        EmitVisual(opportunity, context, GeneratedBitmap, "selected", null);
 
         var channelId = opportunity.SourceChannelId!.Value;
         var replyTarget = ParseMessageId(replyToMessageId)
@@ -362,13 +321,9 @@ public sealed class WorldAutonomyVisualTool
         WorldAutonomyRunState run)
     {
         public Task<WorldAutonomyVisualResult> CreateAsync(
-            [Description("Exactly generated_bitmap or text_art. Explicit image/picture/photo petitions require generated_bitmap.")]
-            string medium,
-            [Description("Concrete image-generation prompt for generated_bitmap. Omit for text_art.")]
-            string? visual_prompt = null,
-            [Description("Exact ASCII/text artwork to post for text_art. Omit for generated_bitmap.")]
-            string? text_art = null,
-            [Description("Short in-character caption for generated_bitmap. Omit to use 'Behold.'")]
+            [Description("Concrete image-generation or edit prompt. Every drawing uses an OpenAI image model, never ASCII or text art.")]
+            string visual_prompt,
+            [Description("Short in-character image caption. Omit to use 'Behold.'")]
             string? caption = null,
             [Description("Optional Discord message ID to reply to. Direct petitions default to their trigger message.")]
             string? reply_to_message_id = null,
@@ -379,9 +334,7 @@ public sealed class WorldAutonomyVisualTool
                 opportunity,
                 context,
                 run,
-                medium,
                 visual_prompt,
-                text_art,
                 caption,
                 reply_to_message_id,
                 image_options,

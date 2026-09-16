@@ -2483,6 +2483,14 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                     message.Id);
                 return false;
             }
+            if (ImageReplyPolicy.IsTextArtSubstitute(opportunity.VisualIntent, result.FinalText))
+            {
+                _logger.LogWarning(
+                    "Autonomy run {RunId} returned text art for drawing request {MessageId}; using the image handler instead.",
+                    result.RunId,
+                    message.Id);
+                return false;
+            }
 
             await SendChunkedAsync(
                 message.Channel,
@@ -2585,17 +2593,12 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
         prompt.Append("\n\n").Append(WorldAutonomyPrompt.BuildOpportunityDirective(isDirectAddress));
         var visualIntent = ClassifyVisualIntent(message, content);
-        if (visualIntent == VisualRequestIntent.BitmapRequired)
+        if (visualIntent != VisualRequestIntent.None)
         {
-            prompt.Append("\n\nThe petition explicitly asks for an image, picture, photo, or bitmap. " +
-                "Select generated_bitmap through create_visual. Text art is not a substitute. If rendering is " +
-                "unavailable or refused, say so in character rather than pretending an attachment exists.");
-        }
-        else if (visualIntent == VisualRequestIntent.MediumChoice)
-        {
-            prompt.Append("\n\nThis is a visual request whose medium is deliberately yours to choose. " +
-                "Select exactly one medium through create_visual: generated_bitmap for the image foundry, or " +
-                "text_art for an ASCII proclamation. Choose whichever better serves your idea.");
+            prompt.Append("\n\nThis petition asks for a drawing or image. If you choose to draw, call create_visual " +
+                "with a visual_prompt; it uses the OpenAI image models. Your subject and treatment remain yours to choose. " +
+                "ASCII and text art are not substitutes. If you decline, or rendering is unavailable or refused, " +
+                "say so in plain text rather than pretending an attachment exists.");
         }
             if (HasImageAttachments(message) || (message.ReferencedMessage is { } referenced && HasImageAttachments(referenced)))
             {

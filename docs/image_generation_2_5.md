@@ -41,6 +41,31 @@ Disabled guilds remain disabled. References are limited to Discord attachments o
 its same-channel reply, not arbitrary URLs, other channels, provider file IDs, or hidden conversation state.
 Replying to the delivered image carries edits across restarts without a process-local conversation cache.
 
+## Drawing Contract
+
+Every drawing uses the OpenAI image pipeline. Robotnik still chooses whether to draw and what to depict, but
+ASCII, Unicode art, and code-block drawings are not alternate media. `create_visual` requires a `visual_prompt`;
+there is no `medium` selector or `text_art` input. Flare remains the default for new images and Sunburst for edits.
+A declined request or failed/budget-held render gets a plain-text refusal, not a pretend drawing.
+
+The image tool is available to full-autonomy Discord message runs independently of keyword detection. This lets
+Robotnik choose a real drawing even for an unexpected wording or his own visual idea. Natural-language detection
+also recognizes named subjects directly after drawing verbs, rather than requiring a pronoun or article. All
+recognized visual requests use the image-required classification; the legacy medium-choice value is no longer
+produced. Existing spend, concurrency, and guild gates still control actual renders.
+
+For recognized drawing requests, registered speech and text-only fallback reject fenced blocks and obvious
+multi-line text-art figures before delivery. Prose refusals remain valid, and unrelated code/table discussions
+are unchanged. This output check catches common text-art substitutes; it is not a universal semantic artwork
+classifier. The tool schema and both cached/uncached prompts establish the general image-only rule.
+
+The 2026-09-16 18:37 UTC incident on `b0060ea` was a detector miss, not an OpenAI outage. The request placed a
+named subject immediately after "draw", so no image tool was offered. One successful Sol call produced ordinary
+speech containing ASCII; Discord confirmed a text-only reply with no attachment. Telemetry recorded
+`visual_delivered=false`, no visual-tool event, and no image API attempt or relevant provider hold. The earlier
+text-art tool option was a second permitted bypass, removed by the same correction. Private source evidence was
+captured before deployment; it is not included here.
+
 ## Controls
 
 Natural-language requests can select these options through the rewriter or image tool. Explicit command flags

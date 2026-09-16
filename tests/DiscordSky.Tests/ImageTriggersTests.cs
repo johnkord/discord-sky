@@ -7,6 +7,12 @@ public sealed class ImageTriggersTests
 {
     [Theory]
     [InlineData("draw me as a knight")]
+    [InlineData("can you draw Frieren as a world of warcraft player that's super bored")]
+    [InlineData("draw Robotnik at his easel")]
+    [InlineData("sketch Paris at sunset")]
+    [InlineData("paint Zelda in a garden")]
+    [InlineData("draw <@123> as royalty")]
+    [InlineData("draw 3 castles")]
     [InlineData("hey can you draw us riding into battle")]
     [InlineData("make a picture of my cat")]
     [InlineData("make me an image of the squad")]
@@ -27,6 +33,10 @@ public sealed class ImageTriggersTests
     [Theory]
     [InlineData("the match ended in a draw")]
     [InlineData("i need to draw money from the bank")]
+    [InlineData("draw cash from an ATM")]
+    [InlineData("draw a conclusion from the evidence")]
+    [InlineData("draw your breath slowly")]
+    [InlineData("draw attention to the issue")]
     [InlineData("what's up everyone")]
     [InlineData("lol that was wild")]
     [InlineData("")]
@@ -41,10 +51,12 @@ public sealed class ImageTriggersTests
     [InlineData("generate a photo of the department", VisualRequestIntent.BitmapRequired)]
     [InlineData("give me an image of the department", VisualRequestIntent.BitmapRequired)]
     [InlineData("photograph of this disaster", VisualRequestIntent.BitmapRequired)]
-    [InlineData("draw something about today", VisualRequestIntent.MediumChoice)]
-    [InlineData("paint a portrait of us", VisualRequestIntent.MediumChoice)]
+    [InlineData("draw something about today", VisualRequestIntent.BitmapRequired)]
+    [InlineData("paint a portrait of us", VisualRequestIntent.BitmapRequired)]
+    [InlineData("draw Frieren playing a game", VisualRequestIntent.BitmapRequired)]
+    [InlineData("draw this in ASCII", VisualRequestIntent.BitmapRequired)]
     [InlineData("the match was a draw", VisualRequestIntent.None)]
-    public void Classify_DistinguishesRequiredBitmapFromMediumChoice(
+    public void Classify_AllDrawingRequestsRequireBitmap(
         string text,
         VisualRequestIntent expected)
     {

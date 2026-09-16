@@ -183,6 +183,10 @@ count, token usage, cost basis, provider request ID, and structured error/modera
 persisted by Sky. Flare handles fresh images; Sunburst handles reference edits. Commands and autonomous visuals
 update one Discord message through preview and final delivery. See [image_generation_2_5.md](image_generation_2_5.md).
 
+All drawings use the image pipeline, never ASCII/text art. Full-autonomy message runs expose `create_visual`
+without relying on keyword detection; the tool has no alternative-medium input. Recognized drawing requests also
+reject obvious text-art substitutes in speech and text-only fallbacks, while still allowing plain-text refusals.
+
 ## 9. Provider Guard And Cost
 
 `LlmProviderGuard` is a singleton shared by active-provider chat calls and OpenAI images. It provides:

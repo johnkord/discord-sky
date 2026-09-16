@@ -76,6 +76,26 @@ public sealed class WorldAutonomyConversationServiceTests
         Assert.Equal("empty", Assert.Single(telemetry.Events).Outcome);
     }
 
+    [Fact]
+    public async Task Respond_TextOnlyFallbackCannotSubstituteAsciiForDrawing()
+    {
+        var client = new StubChatClient("```text\n ___\n/   \\\n|___|\n```");
+        var transport = new RecordingTransport();
+        var telemetry = new RecordingTelemetrySink();
+        var service = new WorldAutonomyConversationService(client, OptionsMonitor(), transport,
+            new SentMessageRegistry(), new RecordingTranscriptSink(), telemetry,
+            Options.Create(new BotOptions()), NullLogger<WorldAutonomyConversationService>.Instance);
+
+        var result = await service.RespondAsync(Request(true) with
+        { MessageText = "can you draw Frieren as a world of warcraft player that's super bored" }, CancellationToken.None);
+
+        Assert.Null(result);
+        Assert.Equal(1, client.CallCount);
+        Assert.Empty(transport.Calls);
+        Assert.Equal("text_art_substitute", Assert.Single(telemetry.Events).Reason);
+        Assert.Contains("Never draw with ASCII", client.Options!.Instructions);
+    }
+
     private static WorldAutonomyConversationRequest Request(bool direct) => new(
         GuildId: 4001,
         ChannelId: 6001,

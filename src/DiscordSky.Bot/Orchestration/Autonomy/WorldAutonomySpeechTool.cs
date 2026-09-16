@@ -4,6 +4,7 @@ using Discord;
 using Discord.WebSocket;
 using DiscordSky.Bot.Bot;
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Integrations.Images;
 using DiscordSky.Bot.Memory.Logging;
 using DiscordSky.Bot.Memory.Reception;
 using Microsoft.Extensions.AI;
@@ -105,9 +106,10 @@ public sealed class WorldAutonomySpeechTool
         return AIFunctionFactory.Create(
             bound.SpeakAsync,
             name: terminalDeliveryEnabled ? TerminalToolName : ToolName,
-            description: terminalDeliveryEnabled
+            description: (terminalDeliveryEnabled
                 ? "Deliver Robotnik's final speech in the summoning channel and finish this run. Call it alone, after every intended Discord mutation has completed. It preserves reply, reaction, transcript, and run attribution."
-                : "Speak as Robotnik in the Discord channel that summoned you. This is your normal voice and preserves reply, reaction, transcript, and run attribution. Long text is split safely.");
+                : "Speak as Robotnik in the Discord channel that summoned you. This is your normal voice and preserves reply, reaction, transcript, and run attribution. Long text is split safely.") +
+                " This tool is for speech, not drawings. Use create_visual for all drawings; never substitute ASCII or text art. You may decline to draw in plain text.");
     }
 
     internal async Task<WorldAutonomySpeechResult> SendAsync(
@@ -121,6 +123,18 @@ public sealed class WorldAutonomySpeechTool
         if (string.IsNullOrWhiteSpace(content))
         {
             throw new ArgumentException("Robotnik cannot deliver an empty proclamation.", nameof(content));
+        }
+        if (ImageReplyPolicy.IsTextArtSubstitute(opportunity.VisualIntent, content))
+        {
+            _telemetry.Emit(new TelemetryEvent(
+                Timestamp: _timeProvider.GetUtcNow(),
+                EventType: TelemetryEventTypes.WorldAutonomySpeech,
+                Kind: opportunity.IsDirectAddress ? "direct" : "ambient",
+                Outcome: "refused",
+                MessageId: ParseMessageId(opportunity.SourceMessageId),
+                OperationId: context.RunId,
+                Reason: "text_art_substitute"));
+            throw new ArgumentException(ImageReplyPolicy.TextArtRefusal, nameof(content));
         }
 
         var channelId = opportunity.SourceChannelId!.Value;
