@@ -500,7 +500,7 @@ public sealed class WorldAutonomyAgentFactoryTests
             null,
             null,
             null,
-            "gpt-6-sol",
+            "gpt-6-astra",
             "profile-digest",
             "manifest-digest",
             []);
@@ -511,24 +511,24 @@ public sealed class WorldAutonomyAgentFactoryTests
         using var telemetryClient = new LlmCallTaggingChatClient(
             new TelemetryChatClient(client, "OpenAI", telemetry),
             "world_autonomy",
-            new LlmWorkloadProfile("gpt-6-sol", "ExtraHigh"),
+            new LlmWorkloadProfile("gpt-6-astra", "ExtraHigh"),
             evaluationId: "run-1");
         var agent = new WorldAutonomyAgentFactory().Create(
             telemetryClient,
             new WorldAutonomyRunState(context, ledger, []),
             [],
-            workloadProfile: new LlmWorkloadProfile("gpt-6-sol", "ExtraHigh"));
+            workloadProfile: new LlmWorkloadProfile("gpt-6-astra", "ExtraHigh"));
 
         var session = await agent.CreateSessionAsync();
         _ = await agent.RunAsync("scheme", session);
 
-        Assert.Equal("gpt-6-sol", client.ModelId);
+        Assert.Equal("gpt-6-astra", client.ModelId);
         Assert.Equal(ReasoningEffort.ExtraHigh, client.ReasoningEffort);
         var llmCall = Assert.Single(telemetry.Events);
         Assert.Equal(TelemetryEventTypes.LlmCall, llmCall.EventType);
         Assert.Equal("world_autonomy", llmCall.Workload);
         Assert.Equal("world_autonomy", llmCall.Kind);
-        Assert.Equal("gpt-6-sol", llmCall.Model);
+        Assert.Equal("gpt-6-astra", llmCall.Model);
         Assert.Equal("ExtraHigh", llmCall.ReasoningEffort);
         Assert.Equal("run-1", llmCall.EvaluationId);
     }
@@ -543,7 +543,7 @@ public sealed class WorldAutonomyAgentFactoryTests
             "100",
             "episode-1",
             "trace-1",
-            "gpt-6-sol",
+            "gpt-6-astra",
             "profile-digest",
             "manifest-digest",
             ["01900000-0000-7000-8000-000000000001"],

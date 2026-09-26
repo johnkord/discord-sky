@@ -34,7 +34,7 @@ string GetArg(string name, string fallback)
     return idx >= 0 && idx + 1 < args.Length ? args[idx + 1] : fallback;
 }
 
-var chatModel = GetArg("--chat-model", "gpt-6-sol");
+var chatModel = GetArg("--chat-model", "gpt-6-astra");
 var referencePath = GetArg("--reference", "");
 var maskPath = GetArg("--mask", "");
 var imageModel = GetArg("--model", referencePath.Length == 0 ? "gpt-image-2.5-flare" : "gpt-image-2.5-sunburst");

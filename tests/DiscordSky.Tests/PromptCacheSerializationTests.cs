@@ -17,6 +17,7 @@ public sealed class PromptCacheSerializationTests
     [Theory]
     [InlineData("gpt-5.6")]
     [InlineData("gpt-6-sol")]
+    [InlineData("gpt-6-astra")]
     public async Task ResponsesAdapter_DropsUnsupportedRequestCacheControls(string model)
     {
         var port = ReserveLoopbackPort();
@@ -62,6 +63,7 @@ public sealed class PromptCacheSerializationTests
     [Theory]
     [InlineData("gpt-5.6")]
     [InlineData("gpt-6-sol")]
+    [InlineData("gpt-6-astra")]
     public async Task ResponsesAdapter_RawRepresentationForwardsAllCacheControls(string model)
     {
         var port = ReserveLoopbackPort();

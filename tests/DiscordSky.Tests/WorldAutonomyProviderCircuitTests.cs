@@ -126,6 +126,7 @@ public sealed class LlmProviderGuardTests
     [Theory]
     [InlineData("gpt-5.6-sol", 0.006575)]
     [InlineData("gpt-6-sol", 0.00243)]
+    [InlineData("gpt-6-astra", 0.01215)]
     public void EstimateUpperBoundCost_UsesModelSpecificCachedWriteAndOutputRates(string model, double expected)
     {
         var response = Response(input: 1_000, output: 100, cached: 400, cacheWrite: 300);
@@ -138,6 +139,7 @@ public sealed class LlmProviderGuardTests
     [Theory]
     [InlineData("gpt-5.6-sol", 0.00695)]
     [InlineData("gpt-6-sol", 0.00258)]
+    [InlineData("gpt-6-astra", 0.0129)]
     public void EstimateUpperBoundCost_TreatsUnobservedUncachedInputAsWrites(string model, double expected)
     {
         var response = new ChatResponse(new ChatMessage(ChatRole.Assistant, "done"))
@@ -165,6 +167,39 @@ public sealed class LlmProviderGuardTests
 
         Assert.Equal(0.545, atBoundary, precision: 6);
         Assert.Equal(1.089504, aboveBoundary, precision: 6);
+    }
+
+    [Fact]
+    public void EstimateUpperBoundCost_Gpt6AstraAppliesLongContextRatesAbove272KInput()
+    {
+        var atBoundary = LlmProviderGuard.EstimateUpperBoundCost(
+            "gpt-6-astra", Response(input: 272_000, output: 100));
+        var aboveBoundary = LlmProviderGuard.EstimateUpperBoundCost(
+            "gpt-6-astra", Response(input: 272_001, output: 100));
+
+        Assert.Equal(2.725, atBoundary, precision: 6);
+        Assert.Equal(5.44752, aboveBoundary, precision: 6);
+    }
+
+    [Fact]
+    public void AstraReservation_AccountsForHigherCostWithinExistingBudget()
+    {
+        var guard = new LlmProviderGuard(
+            NullLogger<LlmProviderGuard>.Instance,
+            options: new LlmProviderGuardOptions
+            {
+                HourlyUsdLimit = 1.0,
+                DailyUsdLimit = 3.0,
+                StatePath = Path.Combine(Path.GetTempPath(), $"guard-{Guid.NewGuid():N}.json"),
+            });
+
+        Assert.True(guard.TryBeginCall("gpt-6-astra", true, out var lease, out _));
+        Assert.Equal(0.50, lease.ReservedUsd);
+        Assert.True(guard.TryBeginCall("gpt-6-astra", false, out var secondLease, out _));
+        Assert.False(guard.TryBeginCall("gpt-6-astra", false, out _, out var blocked));
+        Assert.Equal("hourly_cost_budget_exhausted", blocked.Reason);
+        guard.RecordCallFailure(lease, new InvalidOperationException("test cleanup"));
+        guard.RecordCallFailure(secondLease, new InvalidOperationException("test cleanup"));
     }
 
     [Fact]

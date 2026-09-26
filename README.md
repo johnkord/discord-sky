@@ -110,11 +110,12 @@ profiles for `Main`, `Ambient`, `Utility`, `ColdOpen`, `ColdOpenCritic`, `ImageR
 The active provider may be OpenAI or another configured compatible provider. Per-request `ChatOptions.ModelId`
 selects the workload model through one shared telemetry and guard boundary.
 
-The committed production configuration sends all eight OpenAI text workloads to `gpt-6-sol` via the Responses
-API. Creative calls retain xhigh reasoning; utility and memory calls retain `none`. Image generation requires
+The committed production configuration sends all eight OpenAI text workloads to `gpt-6-astra` via the Responses
+API. Creative calls retain xhigh reasoning; utility and memory calls use `low` because Astra does not support
+`none`. Image generation requires
 separate GPT Image models, and the disabled xAI challenger is unchanged. Private per-guild autonomy model
 overrides can supersede the main model. The existing dollar guard and route budgets remain in place; moving
-high-frequency utility and memory calls off cheaper models may exhaust those limits sooner.
+high-frequency utility and memory calls on Astra may exhaust those limits sooner.
 
 ## Memory
 

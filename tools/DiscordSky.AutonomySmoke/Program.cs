@@ -10,7 +10,7 @@ if (string.IsNullOrWhiteSpace(apiKey))
     return 2;
 }
 
-var model = GetArgument(args, "--model", "gpt-6-sol");
+var model = GetArgument(args, "--model", "gpt-6-astra");
 var timeoutSeconds = ParseTimeout(GetArgument(args, "--timeout-seconds", "120"));
 var confirmation = "deploy-validation";
 var approvals = 0;

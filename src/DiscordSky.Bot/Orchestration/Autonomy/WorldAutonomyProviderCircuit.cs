@@ -238,19 +238,22 @@ public sealed class LlmProviderGuard
         }
 
         var isGpt6Sol = model.StartsWith("gpt-6-sol", StringComparison.OrdinalIgnoreCase);
+        var isGpt6Astra = model.StartsWith("gpt-6-astra", StringComparison.OrdinalIgnoreCase);
         var input = Math.Max(0, usage.InputTokenCount ?? 0);
         var cached = Math.Clamp(usage.CachedInputTokenCount ?? 0, 0, input);
         var observedWrite = TelemetryChatClient.GetCacheWriteInputTokens(response);
         var write = Math.Clamp(
-            observedWrite ?? (model.StartsWith("gpt-5.6", StringComparison.OrdinalIgnoreCase) || isGpt6Sol
+            observedWrite ?? (model.StartsWith("gpt-5.6", StringComparison.OrdinalIgnoreCase) || isGpt6Sol || isGpt6Astra
                 ? input - cached
                 : 0),
             0,
             input - cached);
         var ordinary = Math.Max(0, input - cached - write);
         var output = Math.Max(0, usage.OutputTokenCount ?? 0);
-        var rates = isGpt6Sol
-            ? (Input: 2.0, Cached: 0.2, Write: 2.5, Output: 10.0)
+        var rates = isGpt6Astra
+            ? (Input: 10.0, Cached: 1.0, Write: 12.5, Output: 50.0)
+            : isGpt6Sol
+                ? (Input: 2.0, Cached: 0.2, Write: 2.5, Output: 10.0)
             : model.StartsWith("gpt-5.6-sol", StringComparison.OrdinalIgnoreCase)
                 ? (Input: 5.0, Cached: 0.5, Write: 6.25, Output: 30.0)
                 : model.StartsWith("gpt-5.6-luna", StringComparison.OrdinalIgnoreCase)
@@ -258,7 +261,7 @@ public sealed class LlmProviderGuard
                     : model.StartsWith("gpt-5.4-mini", StringComparison.OrdinalIgnoreCase)
                         ? (Input: 0.75, Cached: 0.075, Write: 0.75, Output: 4.5)
                         : (Input: 5.0, Cached: 0.5, Write: 6.25, Output: 30.0);
-        var longContext = isGpt6Sol && input > 272_000;
+        var longContext = (isGpt6Sol || isGpt6Astra) && input > 272_000;
         return ((ordinary * rates.Input + cached * rates.Cached + write * rates.Write) * (longContext ? 2.0 : 1.0)
                 + output * rates.Output * (longContext ? 1.5 : 1.0))
             / 1_000_000.0;
@@ -372,6 +375,8 @@ public sealed class LlmProviderGuard
             ? 0.02
             : model.StartsWith("gpt-image-", StringComparison.OrdinalIgnoreCase)
                 ? 0.21
+                : model.StartsWith("gpt-6-astra", StringComparison.OrdinalIgnoreCase)
+                    ? 0.50
                 : model.StartsWith("gpt-5.6-sol", StringComparison.OrdinalIgnoreCase) ||
                   model.StartsWith("gpt-6-sol", StringComparison.OrdinalIgnoreCase)
                     ? 0.20

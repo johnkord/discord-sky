@@ -7,34 +7,34 @@ public class LlmWorkloadProfileTests
 {
     private static LlmProviderOptions OpenAi(Dictionary<string, string>? overrides = null) => new()
     {
-        ChatModel = "gpt-6-sol",
-        AmbientModel = "gpt-6-sol",
-        UtilityModel = "gpt-6-sol",
-        ColdOpenModel = "gpt-6-sol",
-        ColdOpenCriticModel = "gpt-6-sol",
-        ImageRewriteModel = "gpt-6-sol",
-        MemoryExtractionModel = "gpt-6-sol",
-        MemoryConsolidationModel = "gpt-6-sol",
+        ChatModel = "gpt-6-astra",
+        AmbientModel = "gpt-6-astra",
+        UtilityModel = "gpt-6-astra",
+        ColdOpenModel = "gpt-6-astra",
+        ColdOpenCriticModel = "gpt-6-astra",
+        ImageRewriteModel = "gpt-6-astra",
+        MemoryExtractionModel = "gpt-6-astra",
+        MemoryConsolidationModel = "gpt-6-astra",
         ReasoningEffort = "ExtraHigh",
         AmbientReasoningEffort = "ExtraHigh",
-        UtilityReasoningEffort = "none",
+        UtilityReasoningEffort = "low",
         ColdOpenReasoningEffort = "ExtraHigh",
         ColdOpenCriticReasoningEffort = "ExtraHigh",
         ImageRewriteReasoningEffort = "ExtraHigh",
-        MemoryExtractionReasoningEffort = "none",
-        MemoryConsolidationReasoningEffort = "none",
+        MemoryExtractionReasoningEffort = "low",
+        MemoryConsolidationReasoningEffort = "low",
         IntentModelOverrides = overrides ?? new Dictionary<string, string>(),
     };
 
     [Theory]
-    [InlineData(LlmWorkload.Main, "gpt-6-sol", "ExtraHigh")]
-    [InlineData(LlmWorkload.Ambient, "gpt-6-sol", "ExtraHigh")]
-    [InlineData(LlmWorkload.Utility, "gpt-6-sol", "none")]
-    [InlineData(LlmWorkload.ColdOpen, "gpt-6-sol", "ExtraHigh")]
-    [InlineData(LlmWorkload.ColdOpenCritic, "gpt-6-sol", "ExtraHigh")]
-    [InlineData(LlmWorkload.ImageRewrite, "gpt-6-sol", "ExtraHigh")]
-    [InlineData(LlmWorkload.MemoryExtraction, "gpt-6-sol", "none")]
-    [InlineData(LlmWorkload.MemoryConsolidation, "gpt-6-sol", "none")]
+    [InlineData(LlmWorkload.Main, "gpt-6-astra", "ExtraHigh")]
+    [InlineData(LlmWorkload.Ambient, "gpt-6-astra", "ExtraHigh")]
+    [InlineData(LlmWorkload.Utility, "gpt-6-astra", "low")]
+    [InlineData(LlmWorkload.ColdOpen, "gpt-6-astra", "ExtraHigh")]
+    [InlineData(LlmWorkload.ColdOpenCritic, "gpt-6-astra", "ExtraHigh")]
+    [InlineData(LlmWorkload.ImageRewrite, "gpt-6-astra", "ExtraHigh")]
+    [InlineData(LlmWorkload.MemoryExtraction, "gpt-6-astra", "low")]
+    [InlineData(LlmWorkload.MemoryConsolidation, "gpt-6-astra", "low")]
     public void GetProfile_RoutesOpenAiWorkloads(LlmWorkload workload, string model, string effort)
     {
         var profile = OpenAi().GetProfile(workload, "Robotnik");
@@ -49,14 +49,14 @@ public class LlmWorkloadProfileTests
 
         Assert.Equal("special-robotnik", provider.GetProfile(LlmWorkload.Main, "Robotnik").Model);
         Assert.Equal("special-robotnik", provider.GetProfile(LlmWorkload.Ambient, "Robotnik").Model);
-        Assert.Equal("gpt-6-sol", provider.GetProfile(LlmWorkload.ColdOpen, "Robotnik").Model);
+        Assert.Equal("gpt-6-astra", provider.GetProfile(LlmWorkload.ColdOpen, "Robotnik").Model);
     }
 
     [Fact]
-    public void DefaultAndConfiguredModels_UseGpt6Sol()
+    public void DefaultAndConfiguredModels_UseGpt6Astra()
     {
-        Assert.Equal("gpt-6-sol", new LlmProviderOptions().GetProfile(LlmWorkload.Main).Model);
-        Assert.Equal(["gpt-6-sol"], OpenAi().GetConfiguredModels());
+        Assert.Equal("gpt-6-astra", new LlmProviderOptions().GetProfile(LlmWorkload.Main).Model);
+        Assert.Equal(["gpt-6-astra"], OpenAi().GetConfiguredModels());
     }
 
     [Fact]
