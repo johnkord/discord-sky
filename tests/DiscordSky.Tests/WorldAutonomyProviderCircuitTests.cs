@@ -77,16 +77,16 @@ public sealed class LlmProviderGuardTests
                 clock,
                 options: options);
 
-            Assert.True(guard.TryBeginCall("gpt-5.6-sol", true, out var lease, out _));
-            guard.RecordCallSuccess(lease, Response(input: 10_000, output: 1_000));
-            Assert.False(guard.TryBeginCall("gpt-5.6-sol", true, out _, out var blocked));
+            Assert.True(guard.TryBeginCall("gpt-6-sol", true, out var lease, out _));
+            guard.RecordCallSuccess(lease, Response(input: 20_000, output: 2_000));
+            Assert.False(guard.TryBeginCall("gpt-6-sol", true, out _, out var blocked));
             Assert.Equal("hourly_cost_budget_exhausted", blocked.Reason);
 
             var restored = new LlmProviderGuard(
                 NullLogger<LlmProviderGuard>.Instance,
                 clock,
                 options: options);
-            Assert.False(restored.TryBeginCall("gpt-5.6-sol", true, out _, out _));
+            Assert.False(restored.TryBeginCall("gpt-6-sol", true, out _, out _));
         }
         finally
         {
@@ -112,7 +112,7 @@ public sealed class LlmProviderGuardTests
                     DailyUsdLimit = 3.0,
                 });
 
-            Assert.False(guard.TryBeginCall("gpt-5.6-sol", true, out _, out var blocked));
+            Assert.False(guard.TryBeginCall("gpt-6-sol", true, out _, out var blocked));
             Assert.Equal("hourly_cost_budget_exhausted", blocked.Reason);
             Assert.Contains("hourlyCostUsd", File.ReadAllText(path));
         }
@@ -123,18 +123,22 @@ public sealed class LlmProviderGuardTests
         }
     }
 
-    [Fact]
-    public void EstimateUpperBoundCost_UsesModelSpecificCachedWriteAndOutputRates()
+    [Theory]
+    [InlineData("gpt-5.6-sol", 0.006575)]
+    [InlineData("gpt-6-sol", 0.00243)]
+    public void EstimateUpperBoundCost_UsesModelSpecificCachedWriteAndOutputRates(string model, double expected)
     {
         var response = Response(input: 1_000, output: 100, cached: 400, cacheWrite: 300);
 
-        var cost = LlmProviderGuard.EstimateUpperBoundCost("gpt-5.6-sol", response);
+        var cost = LlmProviderGuard.EstimateUpperBoundCost(model, response);
 
-        Assert.Equal(0.006575, cost, precision: 6);
+        Assert.Equal(expected, cost, precision: 6);
     }
 
-    [Fact]
-    public void EstimateUpperBoundCost_TreatsUnobservedGpt56UncachedInputAsWrites()
+    [Theory]
+    [InlineData("gpt-5.6-sol", 0.00695)]
+    [InlineData("gpt-6-sol", 0.00258)]
+    public void EstimateUpperBoundCost_TreatsUnobservedUncachedInputAsWrites(string model, double expected)
     {
         var response = new ChatResponse(new ChatMessage(ChatRole.Assistant, "done"))
         {
@@ -146,9 +150,21 @@ public sealed class LlmProviderGuardTests
             },
         };
 
-        var cost = LlmProviderGuard.EstimateUpperBoundCost("gpt-5.6-sol", response);
+        var cost = LlmProviderGuard.EstimateUpperBoundCost(model, response);
 
-        Assert.Equal(0.00695, cost, precision: 6);
+        Assert.Equal(expected, cost, precision: 6);
+    }
+
+    [Fact]
+    public void EstimateUpperBoundCost_Gpt6SolAppliesLongContextRatesAbove272KInput()
+    {
+        var atBoundary = LlmProviderGuard.EstimateUpperBoundCost(
+            "gpt-6-sol", Response(input: 272_000, output: 100));
+        var aboveBoundary = LlmProviderGuard.EstimateUpperBoundCost(
+            "gpt-6-sol", Response(input: 272_001, output: 100));
+
+        Assert.Equal(0.545, atBoundary, precision: 6);
+        Assert.Equal(1.089504, aboveBoundary, precision: 6);
     }
 
     [Fact]
@@ -163,11 +179,11 @@ public sealed class LlmProviderGuardTests
                 StatePath = Path.Combine(Path.GetTempPath(), $"guard-{Guid.NewGuid():N}.json"),
             });
 
-        Assert.True(guard.TryBeginCall("gpt-5.6-sol", true, out var lease, out _));
+        Assert.True(guard.TryBeginCall("gpt-6-sol", true, out var lease, out _));
         Assert.Equal(0.20, lease.ReservedUsd);
         guard.RecordFixedCostSuccess(lease, 0.33);
 
-        Assert.True(guard.TryBeginCall("gpt-5.6-sol", true, out var nextSol, out _));
+        Assert.True(guard.TryBeginCall("gpt-6-sol", true, out var nextSol, out _));
         guard.RecordCallFailure(nextSol, new InvalidOperationException("test cleanup"));
 
         Assert.False(guard.TryBeginCall("unknown-expensive-model", true, out _, out var blocked));
@@ -193,7 +209,7 @@ public sealed class LlmProviderGuardTests
         long cached = 0,
         long cacheWrite = 0) => new(new ChatMessage(ChatRole.Assistant, "done"))
         {
-            ModelId = "gpt-5.6-sol",
+            ModelId = "gpt-6-sol",
             Usage = new UsageDetails
             {
                 InputTokenCount = input,

@@ -25,7 +25,7 @@ public sealed class HostedToolSearchSerializationTests
         var openAi = new OpenAIClient(
             new System.ClientModel.ApiKeyCredential("not-a-real-key"),
             new OpenAIClientOptions { Endpoint = new Uri(prefix) });
-        var chatClient = openAi.GetResponsesClient().AsIChatClient("gpt-5.5");
+        var chatClient = openAi.GetResponsesClient().AsIChatClient("gpt-6-sol");
         AIFunction deferredWrite = new ApprovalRequiredAIFunction(AIFunctionFactory.Create(
             (string value) => value,
             name: "update_channel",
@@ -41,7 +41,11 @@ public sealed class HostedToolSearchSerializationTests
         {
             await chatClient.GetResponseAsync(
                 [new ChatMessage(ChatRole.User, "Find a channel tool.")],
-                new ChatOptions { Tools = [deferredWrite, toolSearch] },
+                new ChatOptions
+                {
+                    Reasoning = new ReasoningOptions { Effort = ReasoningEffort.ExtraHigh },
+                    Tools = [deferredWrite, toolSearch],
+                },
                 timeout.Token);
         }
             catch (System.ClientModel.ClientResultException exception) when (exception.Status == 400)
@@ -51,6 +55,8 @@ public sealed class HostedToolSearchSerializationTests
 
         using var document = JsonDocument.Parse(await capturedRequest.WaitAsync(timeout.Token));
         var serialized = document.RootElement.GetRawText();
+        Assert.Equal("gpt-6-sol", document.RootElement.GetProperty("model").GetString());
+        Assert.Equal("xhigh", document.RootElement.GetProperty("reasoning").GetProperty("effort").GetString());
         Assert.Contains("tool_search", serialized, StringComparison.Ordinal);
         Assert.Contains("defer_loading", serialized, StringComparison.Ordinal);
         Assert.Contains("discord_channels", serialized, StringComparison.Ordinal);

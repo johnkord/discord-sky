@@ -14,8 +14,10 @@ namespace DiscordSky.Tests;
 
 public sealed class PromptCacheSerializationTests
 {
-    [Fact]
-    public async Task ResponsesAdapter_DropsUnsupportedGpt56RequestCacheControls()
+    [Theory]
+    [InlineData("gpt-5.6")]
+    [InlineData("gpt-6-sol")]
+    public async Task ResponsesAdapter_DropsUnsupportedRequestCacheControls(string model)
     {
         var port = ReserveLoopbackPort();
         var prefix = $"http://127.0.0.1:{port}/";
@@ -26,7 +28,7 @@ public sealed class PromptCacheSerializationTests
         var openAi = new OpenAIClient(
             new System.ClientModel.ApiKeyCredential("not-a-real-key"),
             new OpenAIClientOptions { Endpoint = new Uri(prefix) });
-        var chatClient = openAi.GetResponsesClient().AsIChatClient("gpt-5.6");
+        var chatClient = openAi.GetResponsesClient().AsIChatClient(model);
         var options = new ChatOptions
         {
             AdditionalProperties = new AdditionalPropertiesDictionary
@@ -57,8 +59,10 @@ public sealed class PromptCacheSerializationTests
         Assert.False(root.TryGetProperty("prompt_cache_options", out _));
     }
 
-    [Fact]
-    public async Task ResponsesAdapter_RawRepresentationForwardsAllGpt56CacheControls()
+    [Theory]
+    [InlineData("gpt-5.6")]
+    [InlineData("gpt-6-sol")]
+    public async Task ResponsesAdapter_RawRepresentationForwardsAllCacheControls(string model)
     {
         var port = ReserveLoopbackPort();
         var prefix = $"http://127.0.0.1:{port}/";
@@ -69,7 +73,7 @@ public sealed class PromptCacheSerializationTests
         var openAi = new OpenAIClient(
             new System.ClientModel.ApiKeyCredential("not-a-real-key"),
             new OpenAIClientOptions { Endpoint = new Uri(prefix) });
-        var chatClient = openAi.GetResponsesClient().AsIChatClient("gpt-5.6");
+        var chatClient = openAi.GetResponsesClient().AsIChatClient(model);
         var context = new WorldAutonomyRunContext(
             "run-cache-probe",
             4001,
@@ -77,7 +81,7 @@ public sealed class PromptCacheSerializationTests
             "1001",
             "episode-1",
             "trace-1",
-            "gpt-5.6",
+            model,
             "profile-digest",
             "manifest-digest",
             ["01900000-0000-7000-8000-000000000001"],

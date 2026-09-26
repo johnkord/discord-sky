@@ -85,8 +85,7 @@ data:
   MemoryExtraction__OpportunityGateMode: "Live"
   MemoryExtraction__ExplorationRate: "0.05"
   MemoryExtraction__ShutdownFlushPolicy: "RunAlways"
-  # GPT-5.6 workload routing. Sol/xhigh handles all creative text work, Luna handles structured memory
-  # maintenance, and gpt-5.4-mini remains the cheap non-reasoning utility judge.
+  # GPT-6 Sol handles all OpenAI text workloads; creative calls use xhigh, utility and memory use none.
   # ConfigMap values override the Secret because configMapRef follows secretRef in the Deployment.
   LLM__ActiveProvider: "OpenAI"
   LLM__Guard__Enabled: "true"
@@ -94,14 +93,14 @@ data:
   LLM__Guard__DailyUsdLimit: "3.0"
   LLM__Guard__ProbeIntervalMinutes: "5"
   LLM__Guard__StatePath: "/app/data/user_memories/llm-provider-guard.json"
-  LLM__Providers__OpenAI__ChatModel: "gpt-5.6-sol"
-  LLM__Providers__OpenAI__AmbientModel: "gpt-5.6-sol"
-  LLM__Providers__OpenAI__UtilityModel: "gpt-5.4-mini"
-  LLM__Providers__OpenAI__ColdOpenModel: "gpt-5.6-sol"
-  LLM__Providers__OpenAI__ColdOpenCriticModel: "gpt-5.6-sol"
-  LLM__Providers__OpenAI__ImageRewriteModel: "gpt-5.6-sol"
-  LLM__Providers__OpenAI__MemoryExtractionModel: "gpt-5.6-luna"
-  LLM__Providers__OpenAI__MemoryConsolidationModel: "gpt-5.6-luna"
+  LLM__Providers__OpenAI__ChatModel: "gpt-6-sol"
+  LLM__Providers__OpenAI__AmbientModel: "gpt-6-sol"
+  LLM__Providers__OpenAI__UtilityModel: "gpt-6-sol"
+  LLM__Providers__OpenAI__ColdOpenModel: "gpt-6-sol"
+  LLM__Providers__OpenAI__ColdOpenCriticModel: "gpt-6-sol"
+  LLM__Providers__OpenAI__ImageRewriteModel: "gpt-6-sol"
+  LLM__Providers__OpenAI__MemoryExtractionModel: "gpt-6-sol"
+  LLM__Providers__OpenAI__MemoryConsolidationModel: "gpt-6-sol"
   LLM__Providers__OpenAI__MaxTokens: "1200"
   LLM__Providers__OpenAI__RequestTimeoutMinutes: "15"
   LLM__Providers__OpenAI__ReasoningEffort: "ExtraHigh"

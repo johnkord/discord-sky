@@ -48,7 +48,7 @@ if (args.Length > 0 && args[0].Equals("memory", StringComparison.OrdinalIgnoreCa
 if (args.Length == 0 || args.Contains("-h") || args.Contains("--help"))
 {
     Console.WriteLine("Usage: dotnet run --project tools/DiscordSky.ScenarioLab -- <fixtures.json|dir> [--candidate <provider[:model[:effort]]>]... [--critic <provider[:model[:effort]]>] [--no-critic] [--model <legacy-override>] [--runs 1] [--json] [--artifact <results.local.json>] [--review-doc <review.md>] [--review-seed <int>]");
-    Console.WriteLine("Example: --candidate OpenAI:gpt-5.6-sol:medium --candidate xAI:grok-4.5:medium");
+    Console.WriteLine("Example: --candidate OpenAI:gpt-6-sol:medium --candidate xAI:grok-4.5:medium");
     Console.WriteLine("Episode replay: dotnet run --project tools/DiscordSky.ScenarioLab -- episode [fixtures.json] [--json]");
     Console.WriteLine("Novelty replay: dotnet run --project tools/DiscordSky.ScenarioLab -- novelty [fixtures.json] [--json]");
     Console.WriteLine("Memory replay: dotnet run --project tools/DiscordSky.ScenarioLab -- memory [fixtures.json] [--json]");

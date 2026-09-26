@@ -112,17 +112,17 @@ public sealed class LlmProviderOptions
     public string? Endpoint { get; init; }
 
     /// <summary>
-    /// Default chat model name (e.g. "gpt-5.2", "grok-4-1-fast-reasoning").
+    /// Default chat model name (e.g. "gpt-6-sol", "grok-4-1-fast-reasoning").
     /// </summary>
-    public string ChatModel { get; init; } = "gpt-5.6-sol";
+    public string ChatModel { get; init; } = "gpt-6-sol";
 
-    /// <summary>Lower-cost model for ambient generated replies. Falls back to <see cref="ChatModel"/>.</summary>
+    /// <summary>Model for ambient generated replies. Falls back to <see cref="ChatModel"/>.</summary>
     public string? AmbientModel { get; init; }
 
     /// <summary>High-quality model for rare proactive cold-open composition. Falls back to <see cref="ChatModel"/>.</summary>
     public string? ColdOpenModel { get; init; }
 
-    /// <summary>Balanced model for the advisory post-send cold-open audit. Falls back to <see cref="ChatModel"/>.</summary>
+    /// <summary>Model for the advisory post-send cold-open audit. Falls back to <see cref="ChatModel"/>.</summary>
     public string? ColdOpenCriticModel { get; init; }
 
     /// <summary>Model that grounds and rewrites explicit image requests. Falls back to <see cref="ChatModel"/>.</summary>
@@ -145,7 +145,7 @@ public sealed class LlmProviderOptions
     /// <summary>
     /// Model to use for memory extraction.
     /// Defaults to <see cref="ChatModel"/> when null/empty.
-    /// Should be a cheap/fast structured-output model (e.g. gpt-5.6-luna for OpenAI).
+    /// Must support structured outputs; can be configured separately to reduce cost.
     /// </summary>
     public string? MemoryExtractionModel { get; init; }
 
@@ -153,9 +153,9 @@ public sealed class LlmProviderOptions
     public string? MemoryConsolidationModel { get; init; }
 
     /// <summary>
-    /// Model for cheap, high-frequency utility calls (e.g. the in-character reaction judge).
-    /// Defaults to <see cref="ChatModel"/> when null/empty. Should be the cheapest capable model on this
-    /// provider (a mini/nano tier) so lightweight per-message decisions cost almost nothing.
+    /// Model for high-frequency utility calls (e.g. the in-character reaction judge).
+    /// Defaults to <see cref="ChatModel"/> when null/empty. Can be configured separately to reduce
+    /// the cost of per-message decisions.
     /// </summary>
     public string? UtilityModel { get; init; }
 

@@ -16,9 +16,10 @@ internal static class WorldAutonomyPromptCache
         WorldAutonomyRunContext context,
         bool terminalDeliveryEnabled)
     {
-        if (!context.Model.StartsWith("gpt-5.6", StringComparison.OrdinalIgnoreCase))
+        if (!context.Model.StartsWith("gpt-5.6", StringComparison.OrdinalIgnoreCase) &&
+            !context.Model.StartsWith("gpt-6-", StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidOperationException("Explicit world-autonomy prompt caching requires a GPT-5.6 model.");
+            throw new InvalidOperationException("Explicit world-autonomy prompt caching requires GPT-5.6 or a GPT-6 model.");
         }
 
         var stablePrefix = WorldAutonomyPrompt.BuildStableCachePrefix(
