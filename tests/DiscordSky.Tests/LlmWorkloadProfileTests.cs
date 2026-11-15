@@ -1,10 +1,35 @@
+using System.Runtime.CompilerServices;
 using DiscordSky.Bot.Configuration;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Configuration;
 
 namespace DiscordSky.Tests;
 
 public class LlmWorkloadProfileTests
 {
+    [Fact]
+    public void ApplicationDefaults_UseGrokForTextAndOpenAiForImages()
+    {
+        using var configuration = new ConfigurationManager();
+        configuration.AddJsonFile(ApplicationSettingsPath());
+        var options = configuration.GetSection(LlmOptions.SectionName).Get<LlmOptions>()!;
+
+        Assert.Equal("xAI", options.ActiveProvider);
+        var provider = options.GetActiveProvider();
+        Assert.Equal("https://api.x.ai/v1", provider.Endpoint);
+        Assert.True(provider.UseResponsesApi);
+        Assert.False(provider.UseHostedToolSearch);
+        foreach (var workload in Enum.GetValues<LlmWorkload>())
+            Assert.Equal("grok-4.7", provider.GetProfile(workload, "Robotnik from AOSTH").Model);
+        Assert.Equal(["grok-4.7"], provider.GetConfiguredModels());
+        Assert.Equal("OpenAI", configuration["Image:ProviderName"]);
+        Assert.Equal("gpt-image-2.5-flare", configuration["Image:Model"]);
+        Assert.Equal("gpt-image-2.5-sunburst", configuration["Image:EditModel"]);
+    }
+
+    private static string ApplicationSettingsPath([CallerFilePath] string sourceFile = "") =>
+        Path.GetFullPath(Path.Combine(Path.GetDirectoryName(sourceFile)!, "../../src/DiscordSky.Bot/appsettings.json"));
+
     private static LlmProviderOptions OpenAi(Dictionary<string, string>? overrides = null) => new()
     {
         ChatModel = "gpt-6-astra",
@@ -53,9 +78,10 @@ public class LlmWorkloadProfileTests
     }
 
     [Fact]
-    public void DefaultAndConfiguredModels_UseGpt6Astra()
+    public void DefaultsUseGrokAndInactiveOpenAiProfileIsPreserved()
     {
-        Assert.Equal("gpt-6-astra", new LlmProviderOptions().GetProfile(LlmWorkload.Main).Model);
+        Assert.Equal("xAI", new LlmOptions().ActiveProvider);
+        Assert.Equal("grok-4.7", new LlmProviderOptions().GetProfile(LlmWorkload.Main).Model);
         Assert.Equal(["gpt-6-astra"], OpenAi().GetConfiguredModels());
     }
 

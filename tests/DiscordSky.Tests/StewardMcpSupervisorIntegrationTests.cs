@@ -58,6 +58,10 @@ public sealed class StewardMcpSupervisorIntegrationTests
         Assert.Equal("tool_search", search.Name);
         Assert.NotNull(search.DeferredTools);
         Assert.Equal(bound.Tools.Select(tool => tool.Function.Name), search.DeferredTools!);
+        var direct = first.Catalog.Bind(context, useHostedToolSearch: false);
+        Assert.Empty(direct.SupplementaryTools);
+        Assert.Equal(bound.ManifestDigest, direct.ManifestDigest);
+        Assert.Equal(bound.Tools.Select(tool => tool.Function.Name), direct.Tools.Select(tool => tool.Function.Name));
         var health = supervisor.GetHealthSnapshot();
         Assert.True(health.IsHealthy);
         Assert.Equal(1, health.ConfiguredGuilds);

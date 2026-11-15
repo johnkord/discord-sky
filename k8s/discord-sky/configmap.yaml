@@ -23,7 +23,7 @@ data:
   WorldAutonomy__AmbientGateMode: "Canary"
   WorldAutonomy__AmbientFullThreshold: "0.65"
   WorldAutonomy__AmbientReactionThreshold: "0.35"
-  # Lower Canary threshold keeps uncertain structural opportunities fail-open; the 4/hour route budget bounds cost.
+  # Lower Canary threshold keeps uncertain structural opportunities fail-open; the 16/hour route budget bounds cost.
   WorldAutonomy__AmbientActionThreshold: "0.35"
   WorldAutonomy__AmbientJudgeConfidenceFloor: "0.35"
   WorldAutonomy__AmbientPostSpeechHoldEnabled: "true"
@@ -33,14 +33,14 @@ data:
   WorldAutonomy__AmbientLiveExplorationPercent: "5"
   WorldAutonomy__Budget__Enabled: "true"
   WorldAutonomy__Budget__StatePath: "/app/data/user_memories/world-autonomy/admission-budget.json"
-  WorldAutonomy__Budget__AmbientFullPerHour: "4"
-  WorldAutonomy__Budget__AmbientFullPerDay: "16"
-  WorldAutonomy__Budget__AmbientConversationPerHour: "12"
-  WorldAutonomy__Budget__AmbientConversationPerDay: "60"
-  WorldAutonomy__Budget__DirectFullPerHour: "8"
-  WorldAutonomy__Budget__DirectFullPerDay: "40"
-  WorldAutonomy__Budget__DirectConversationPerHour: "16"
-  WorldAutonomy__Budget__DirectConversationPerDay: "80"
+  WorldAutonomy__Budget__AmbientFullPerHour: "16"
+  WorldAutonomy__Budget__AmbientFullPerDay: "64"
+  WorldAutonomy__Budget__AmbientConversationPerHour: "48"
+  WorldAutonomy__Budget__AmbientConversationPerDay: "240"
+  WorldAutonomy__Budget__DirectFullPerHour: "32"
+  WorldAutonomy__Budget__DirectFullPerDay: "160"
+  WorldAutonomy__Budget__DirectConversationPerHour: "64"
+  WorldAutonomy__Budget__DirectConversationPerDay: "320"
   # A short debounce merges link-plus-comment fragments before admission. Post-speech cadence may hold only
   # episodes already below conversation, reaction, and action thresholds.
   WorldAutonomy__AmbientEpisodeCoalescingEnabled: "true"
@@ -85,13 +85,13 @@ data:
   MemoryExtraction__OpportunityGateMode: "Live"
   MemoryExtraction__ExplorationRate: "0.05"
   MemoryExtraction__ShutdownFlushPolicy: "RunAlways"
-  # GPT-6 Astra handles all OpenAI text workloads; creative calls use xhigh, utility and memory use low
-  # because Astra does not support reasoning effort none.
+  # Grok 4.7 drives all text workloads. OpenAI remains configured only for image generation and edits.
+  # Creative calls use xhigh; utility and memory use low. Existing spend and route budgets are preserved.
   # ConfigMap values override the Secret because configMapRef follows secretRef in the Deployment.
-  LLM__ActiveProvider: "OpenAI"
+  LLM__ActiveProvider: "xAI"
   LLM__Guard__Enabled: "true"
-  LLM__Guard__HourlyUsdLimit: "1.0"
-  LLM__Guard__DailyUsdLimit: "3.0"
+  LLM__Guard__HourlyUsdLimit: "4.0"
+  LLM__Guard__DailyUsdLimit: "12.0"
   LLM__Guard__ProbeIntervalMinutes: "5"
   LLM__Guard__StatePath: "/app/data/user_memories/llm-provider-guard.json"
   LLM__Providers__OpenAI__ChatModel: "gpt-6-astra"
@@ -113,20 +113,29 @@ data:
   LLM__Providers__OpenAI__MemoryExtractionReasoningEffort: "low"
   LLM__Providers__OpenAI__MemoryConsolidationReasoningEffort: "low"
   LLM__Providers__OpenAI__UseResponsesApi: "true"
-  # xAI/Grok challenger. OpenAI remains the active provider; Grok is never promoted by changing
-  # LLM__ActiveProvider. The isolated evaluator below mirrors eligible cold-open context only when its
-  # explicit kill switch is enabled, and has no Discord client or mutating tool surface.
+  # The inactive OpenAI text profiles above are retained for an explicit rollback, never an automatic fallback.
   LLM__Providers__xAI__Endpoint: "https://api.x.ai/v1"
-  LLM__Providers__xAI__ChatModel: "grok-4.5"
-  LLM__Providers__xAI__ColdOpenModel: "grok-4.5"
-  LLM__Providers__xAI__MemoryExtractionModel: "grok-4.20-0309-non-reasoning"
+  LLM__Providers__xAI__ChatModel: "grok-4.7"
+  LLM__Providers__xAI__AmbientModel: "grok-4.7"
+  LLM__Providers__xAI__UtilityModel: "grok-4.7"
+  LLM__Providers__xAI__ColdOpenModel: "grok-4.7"
+  LLM__Providers__xAI__ColdOpenCriticModel: "grok-4.7"
+  LLM__Providers__xAI__ImageRewriteModel: "grok-4.7"
+  LLM__Providers__xAI__MemoryExtractionModel: "grok-4.7"
+  LLM__Providers__xAI__MemoryConsolidationModel: "grok-4.7"
   LLM__Providers__xAI__MaxTokens: "1200"
   LLM__Providers__xAI__RequestTimeoutMinutes: "15"
-  LLM__Providers__xAI__ReasoningEffort: "medium"
-  LLM__Providers__xAI__ColdOpenReasoningEffort: "medium"
-  LLM__Providers__xAI__UseResponsesApi: "false"
-  # Disabled until the local blind GPT/Grok review is complete. Enabling adds xAI inference and durable
-  # candidate telemetry, but cannot post, react, write memory, or delay the OpenAI champion.
+  LLM__Providers__xAI__ReasoningEffort: "ExtraHigh"
+  LLM__Providers__xAI__AmbientReasoningEffort: "ExtraHigh"
+  LLM__Providers__xAI__UtilityReasoningEffort: "low"
+  LLM__Providers__xAI__ColdOpenReasoningEffort: "ExtraHigh"
+  LLM__Providers__xAI__ColdOpenCriticReasoningEffort: "ExtraHigh"
+  LLM__Providers__xAI__ImageRewriteReasoningEffort: "ExtraHigh"
+  LLM__Providers__xAI__MemoryExtractionReasoningEffort: "low"
+  LLM__Providers__xAI__MemoryConsolidationReasoningEffort: "low"
+  LLM__Providers__xAI__UseResponsesApi: "true"
+  LLM__Providers__xAI__UseHostedToolSearch: "false"
+  # The historical cold-open comparison remains disabled; switching providers does not enable extra calls.
   ModelEvaluation__GrokColdOpen__Enabled: "false"
   ModelEvaluation__GrokColdOpen__ProviderName: "xAI"
   ModelEvaluation__GrokColdOpen__Model: "grok-4.5"
@@ -134,8 +143,8 @@ data:
   ModelEvaluation__GrokColdOpen__SampleRate: "1.0"
   ModelEvaluation__GrokColdOpen__QueueCapacity: "32"
   Chaos__AmbientReplyChance: "0.25"
-  Chaos__MaxPromptsPerHour: "20"
-  Chaos__ExplicitReservePromptsPerHour: "4"
+  Chaos__MaxPromptsPerHour: "80"
+  Chaos__ExplicitReservePromptsPerHour: "16"
   # Inner-thought worth gate. The roll remains the cost/opportunity sampler; the media-aware utility judge is
   # the quality gate. A non-queuing per-channel lease plus post-send quiet prevents burst replies.
   Chaos__UseWorthGate: "true"

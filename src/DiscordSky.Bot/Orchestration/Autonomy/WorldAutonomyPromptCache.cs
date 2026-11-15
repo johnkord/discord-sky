@@ -14,7 +14,8 @@ internal static class WorldAutonomyPromptCache
     internal static string Configure(
         ChatOptions options,
         WorldAutonomyRunContext context,
-        bool terminalDeliveryEnabled)
+        bool terminalDeliveryEnabled,
+        bool useHostedToolSearch = true)
     {
         if (!context.Model.StartsWith("gpt-5.6", StringComparison.OrdinalIgnoreCase) &&
             !context.Model.StartsWith("gpt-6-", StringComparison.OrdinalIgnoreCase))
@@ -24,7 +25,8 @@ internal static class WorldAutonomyPromptCache
 
         var stablePrefix = WorldAutonomyPrompt.BuildStableCachePrefix(
             context.SourceChannelId.HasValue,
-            terminalDeliveryEnabled);
+            terminalDeliveryEnabled,
+            useHostedToolSearch);
         var dynamicSuffix = WorldAutonomyPrompt.BuildDynamicCacheSuffix(context);
         var prefixDigest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(stablePrefix)))
             .ToLowerInvariant()[..16];

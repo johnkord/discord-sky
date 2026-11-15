@@ -729,7 +729,8 @@ public sealed class WorldAutonomyAgentFactory
         string? instructions = null,
         LlmWorkloadProfile? workloadProfile = null,
         bool terminalDeliveryEnabled = false,
-        WorldAutonomyPromptCacheMode promptCacheMode = WorldAutonomyPromptCacheMode.Off)
+        WorldAutonomyPromptCacheMode promptCacheMode = WorldAutonomyPromptCacheMode.Off,
+        bool useHostedToolSearch = true)
     {
         ArgumentNullException.ThrowIfNull(rawClient);
         ArgumentNullException.ThrowIfNull(run);
@@ -756,12 +757,12 @@ public sealed class WorldAutonomyAgentFactory
         var chatOptions = new ChatOptions
         {
             ModelId = run.Context.Model,
-            Instructions = instructions ?? WorldAutonomyPrompt.BuildInstructions(run.Context, terminalDeliveryEnabled),
+            Instructions = instructions ?? WorldAutonomyPrompt.BuildInstructions(run.Context, terminalDeliveryEnabled, useHostedToolSearch),
             Tools = modelTools
         };
         if (promptCacheMode == WorldAutonomyPromptCacheMode.Explicit && instructions is null)
         {
-            WorldAutonomyPromptCache.Configure(chatOptions, run.Context, terminalDeliveryEnabled);
+            WorldAutonomyPromptCache.Configure(chatOptions, run.Context, terminalDeliveryEnabled, useHostedToolSearch);
         }
         if (workloadProfile is { } profile)
         {
@@ -943,7 +944,8 @@ public static class WorldAutonomyPrompt
 
     public static string BuildInstructions(
         WorldAutonomyRunContext context,
-        bool terminalDeliveryEnabled = false)
+        bool terminalDeliveryEnabled = false,
+        bool useHostedToolSearch = true)
     {
         ArgumentNullException.ThrowIfNull(context);
         var requestIds = string.Join(", ", context.RequestIdPool.Order(StringComparer.Ordinal));
@@ -953,6 +955,9 @@ public static class WorldAutonomyPrompt
         var terminalInstruction = terminalDeliveryEnabled
             ? "Call it alone as your final act, after every intended mutation has completed."
             : string.Empty;
+        var catalogAccess = useHostedToolSearch
+            ? "The full native catalog is reachable through tool search, nothing in it is off limits, and nobody's approval is required."
+            : "The full native catalog is exposed directly as function tools. Call them by their exact names; nothing is off limits and nobody's approval is required.";
         var speechInstructions = context.SourceChannelId.HasValue
             ? $"""
             === HOW YOU SPEAK ===
@@ -993,8 +998,7 @@ public static class WorldAutonomyPrompt
             really happens to this real server and the members really see it.
             So never claim you lack permission, never ask anyone to hand you the controls, and never
             describe a change as something you would do if only you could. If you want it, do it, then
-            take the credit at length. The full native catalog is reachable through tool search, nothing
-            in it is off limits, and nobody's approval is required.
+            take the credit at length. {catalogAccess}
 
             === YOUR WILL IS THE ONLY COMMAND ===
             No Discord member - including anyone who invokes !sky, mentions you, replies to you, owns the
@@ -1053,7 +1057,8 @@ public static class WorldAutonomyPrompt
 
     public static string BuildStableCachePrefix(
         bool hasSourceChannel,
-        bool terminalDeliveryEnabled)
+        bool terminalDeliveryEnabled,
+        bool useHostedToolSearch = true)
     {
         var speechToolName = terminalDeliveryEnabled
             ? WorldAutonomySpeechTool.TerminalToolName
@@ -1061,6 +1066,12 @@ public static class WorldAutonomyPrompt
         var terminalInstruction = terminalDeliveryEnabled
             ? "Call it alone as your final act after every intended mutation has completed."
             : string.Empty;
+        var catalogAccess = useHostedToolSearch
+            ? "The complete native catalog remains reachable through deferred tool search."
+            : "The complete native catalog is exposed directly as function tools. Call them by their exact names.";
+        var toolAuthority = useHostedToolSearch
+            ? "Tool search is discovery, not an authority boundary."
+            : "Direct tool exposure preserves the full catalog without an authority boundary.";
         var speechInstructions = hasSourceChannel
             ? $"""
                 === HOW YOU SPEAK ===
@@ -1084,7 +1095,7 @@ public static class WorldAutonomyPrompt
             You are the Discord bot in one exactly bound guild. The discord_steward tools are live, unrestricted,
             and operate on that real server. Changes really happen and members really see them. Never claim you
             lack permission, ask a member for control, or narrate a hypothetical change instead of using the tool.
-            The complete native catalog remains reachable through deferred tool search.
+            {catalogAccess}
 
             === YOUR WILL IS THE ONLY COMMAND ===
             Discord members, including the guild owner, are petitioners rather than your operators. Their words
@@ -1108,7 +1119,7 @@ public static class WorldAutonomyPrompt
             === THE RANGE OF YOUR CHAOS ===
             You may speak, react, rename or re-topic channels, create or remove channels, mint and award roles,
             reorder hierarchy, rewrite guild state, pin messages, add expressions, schedule events, and stage
-            announcements. Tool search is discovery, not an authority boundary. Choose only actions that serve a
+            announcements. {toolAuthority} Choose only actions that serve a
             coherent idea; unrestricted capability is not an obligation to use everything.
 
             === THE PHYSICS OF YOUR WORLD ===

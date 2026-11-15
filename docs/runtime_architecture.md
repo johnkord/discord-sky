@@ -22,6 +22,10 @@ The active provider is selected by `LLM:ActiveProvider`. Each workload resolves 
 reasoning effort, and optional reasoning summary. Per-request model selection stays inside one shared transport,
 telemetry, deadline, and guard boundary.
 
+Production selects xAI `grok-4.7` for every text workload: creative replies, full autonomy, utility, memory,
+and image-prompt rewriting. Creative workloads use xhigh; utility and memory use low. OpenAI remains the
+independent image provider. Inactive OpenAI text configuration is not an automatic failover path.
+
 ## 2. Startup And Health
 
 Startup performs these material checks:
@@ -31,7 +35,7 @@ Startup performs these material checks:
 3. Construct the active-provider chat client and log the workload routing matrix.
 4. Start durable telemetry, transcript, reaction, image, memory, and state services.
 5. Probe the bundled Steward executable.
-6. Authenticate the active LLM provider with `GET /v1/models`; OpenAI also validates configured model access.
+6. Authenticate the active LLM provider with `GET /v1/models`; OpenAI and xAI also validate configured model access.
 7. Connect Discord and start one isolated Steward child per exact private guild binding.
 
 `GET /healthz` returns 200 only when:
@@ -100,8 +104,8 @@ conversation, reaction, and structural-action worth. The host chooses one route:
 | --- | --- |
 | `Silence` | No creative model call |
 | `Reaction` | One constrained emoji path |
-| `Conversation` | One Sol/xhigh call, no tools, one concise line |
-| `FullAutonomy` | Sol/xhigh agent plus deferred Steward tool discovery |
+| `Conversation` | One Grok 4.7/xhigh call, no tools, one concise line |
+| `FullAutonomy` | Grok 4.7/xhigh agent plus the complete native Steward catalog |
 
 Canary mode enforces the prediction and samples bounded asymmetric exploration. Predicted silence/reaction may
 explore conversation; predicted conversation may explore full autonomy. Structural predictions remain full.
@@ -112,8 +116,17 @@ direct route and global provider budgets.
 
 ### 5.2 Full agent
 
-Sky creates a run context, binds the Steward catalog, and gives the model a hosted `tool_search` namespace. Native
-schemas use deferred loading, so all tools remain callable without placing every schema in the first prompt.
+Sky creates a run context and binds the complete Steward catalog. `UseHostedToolSearch` controls schema
+presentation: enabled providers receive a hosted `tool_search` namespace with deferred schemas; Grok receives
+all native functions directly because hosted search/deferred loading is alpha-gated on this xAI account.
+The same write approvals, journal, and terminal-delivery code apply in either mode. Direct exposure increases
+prompt size but does not reduce Robotnik's authority. xAI permits up to 350 tools per request; the native catalog
+currently has 173, plus Sky's speech and image tools.
+
+The xAI Responses wrapper sends full instructions on the first turn, then omits repeated instructions for linked
+continuations. xAI rejects requests containing both `instructions` and `previous_response_id`; the original
+instructions are inherited. Both ordinary and streaming calls use this normalization without mutating shared
+`ChatOptions`. OpenAI's transport behavior is unchanged.
 
 The full agent receives:
 
@@ -130,7 +143,7 @@ are journaled for recovery. A failed or interrupted write is reconciled against 
 ### 5.3 Conversation route
 
 The conversation service deliberately receives no Steward tools, request IDs, mutation contract, or function loop.
-It may not claim server changes. It uses the same Sol/xhigh voice quality, registered transport, transcript sink,
+It may not claim server changes. It uses the same Grok 4.7/xhigh profile, registered transport, transcript sink,
 reaction attribution, and provider guard as other routes.
 
 ### 5.4 Continuity shadow
@@ -143,7 +156,7 @@ review and a separate canary.
 ## 6. Memory
 
 Human messages are collected in per-channel debounced windows capped by message count and duration. The extraction
-pipeline uses Luna with structured memory-operation verification and durable yield telemetry.
+pipeline uses Grok 4.7/low with structured memory-operation verification and durable yield telemetry.
 
 The opportunity gate supports:
 
@@ -197,11 +210,15 @@ reject obvious text-art substitutes in speech and text-only fallbacks, while sti
 - persistent UTC hourly/daily estimated spend;
 - pre-provider blocking and durable guard telemetry.
 
-Known Sol, mini/Luna, image, and unknown models use separate reservations. On success, the reservation is released
+Known Grok, GPT, image, and unknown models use separate reservations. On success, the reservation is released
 and replaced with a usage-based cost estimate. Image reservations depend on quality, dimensions, reference count,
 and previews; missing usage or interrupted dispatched renders retain that estimate. Corrupt persisted state fails
 closed through the current UTC day. Persistence failure after a successful provider response is fail-soft so it
 never causes a paid retry.
+
+Grok 4.7 uses a $0.20 estimated reservation and $2/M input, $0.50/M cached input, and $6/M output token rates.
+At 200,000 input tokens or more, every token in the request uses double those rates. There is no assumed cache
+write premium for Grok. The shared ledger and production $4/hour/$12/day limits are retained across the switch.
 
 ## 10. Delivery And Reception
 

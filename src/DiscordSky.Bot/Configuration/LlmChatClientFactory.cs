@@ -23,14 +23,35 @@ public static class LlmChatClientFactory
             new System.ClientModel.ApiKeyCredential(provider.ApiKey),
             clientOptions);
 
-        var client = provider.UseResponsesApi
+        IChatClient client = provider.UseResponsesApi
             ? openAiClient.GetResponsesClient().AsIChatClient(model)
             : openAiClient.GetChatClient(model).AsIChatClient();
+        if (provider.UseResponsesApi && clientOptions.Endpoint?.Host.Equals("api.x.ai", StringComparison.OrdinalIgnoreCase) == true)
+            client = new XaiResponsesChatClient(client);
         return new TimeoutChatClient(client, timeout);
     }
 
     internal static TimeSpan ResolveTimeout(int minutes) =>
         TimeSpan.FromMinutes(Math.Clamp(minutes, 1, 60));
+}
+
+internal sealed class XaiResponsesChatClient(IChatClient inner) : DelegatingChatClient(inner)
+{
+    public override Task<ChatResponse> GetResponseAsync(
+        IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) =>
+        base.GetResponseAsync(messages, PrepareOptions(options), cancellationToken);
+
+    public override IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+        IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) =>
+        base.GetStreamingResponseAsync(messages, PrepareOptions(options), cancellationToken);
+
+    internal static ChatOptions? PrepareOptions(ChatOptions? options)
+    {
+        if (string.IsNullOrWhiteSpace(options?.ConversationId) || options.Instructions is null) return options;
+        var forwarded = options.Clone();
+        forwarded.Instructions = null;
+        return forwarded;
+    }
 }
 
 internal sealed class TimeoutChatClient : IChatClient

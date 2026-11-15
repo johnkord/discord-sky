@@ -57,7 +57,7 @@ public sealed class LlmOptions
     /// Which provider block to activate. Must be a key under <c>LLM:Providers</c>
     /// (e.g. "OpenAI", "xAI"). Case-insensitive.
     /// </summary>
-    public string ActiveProvider { get; init; } = "OpenAI";
+    public string ActiveProvider { get; init; } = "xAI";
 
     /// <summary>
     /// Named provider configurations. The key chosen by <see cref="ActiveProvider"/>
@@ -112,9 +112,9 @@ public sealed class LlmProviderOptions
     public string? Endpoint { get; init; }
 
     /// <summary>
-    /// Default chat model name (e.g. "gpt-6-astra", "grok-4-1-fast-reasoning").
+    /// Default chat model name (e.g. "grok-4.7").
     /// </summary>
-    public string ChatModel { get; init; } = "gpt-6-astra";
+    public string ChatModel { get; init; } = "grok-4.7";
 
     /// <summary>Model for ambient generated replies. Falls back to <see cref="ChatModel"/>.</summary>
     public string? AmbientModel { get; init; }
@@ -181,9 +181,11 @@ public sealed class LlmProviderOptions
     /// <summary>
     /// Whether to use OpenAI's Responses API (<c>/v1/responses</c>) instead of Chat Completions (<c>/v1/chat/completions</c>).
     /// Required for newer OpenAI models that need reasoning + tool calling together.
-    /// Should be <c>false</c> for non-OpenAI providers (xAI, etc.) that don't fully support the Responses API.
+    /// Enable only for providers with a compatible Responses API, including xAI.
     /// </summary>
     public bool UseResponsesApi { get; init; }
+
+    public bool UseHostedToolSearch { get; init; } = true;
 
     public LlmWorkloadProfile GetProfile(LlmWorkload workload, string? persona = null)
     {

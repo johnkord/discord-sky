@@ -1,17 +1,26 @@
 using System.Diagnostics;
+using System.Text.Json;
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Orchestration.Autonomy;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging.Abstractions;
 
-var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+var providerName = GetArgument(args, "--provider", "xAI");
+if (providerName is not ("xAI" or "OpenAI")) throw new ArgumentException("--provider must be xAI or OpenAI.");
+var apiKeyVariable = providerName == "xAI" ? "XAI_API_KEY" : "OPENAI_API_KEY";
+var apiKey = Environment.GetEnvironmentVariable(apiKeyVariable);
 if (string.IsNullOrWhiteSpace(apiKey))
 {
-    Console.Error.WriteLine("Set OPENAI_API_KEY in the environment first. Do not pass a key as an argument.");
+    Console.Error.WriteLine($"Set {apiKeyVariable} in the environment first. Do not pass a key as an argument.");
     return 2;
 }
 
-var model = GetArgument(args, "--model", "gpt-6-astra");
+var model = GetArgument(args, "--model", providerName == "xAI" ? "grok-4.7" : "gpt-6-astra");
+var profile = new LlmWorkloadProfile(model, GetArgument(args, "--effort", "ExtraHigh"));
+var useHostedToolSearch = bool.Parse(GetArgument(args, "--hosted-tool-search", providerName == "xAI" ? "false" : "true"));
 var timeoutSeconds = ParseTimeout(GetArgument(args, "--timeout-seconds", "120"));
+using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
 var confirmation = "deploy-validation";
 var approvals = 0;
 var invocations = 0;
@@ -19,6 +28,7 @@ var invocations = 0;
 var provider = new LlmProviderOptions
 {
     ApiKey = apiKey,
+    Endpoint = providerName == "xAI" ? "https://api.x.ai/v1" : null,
     ChatModel = model,
     RequestTimeoutMinutes = Math.Max(1, (int)Math.Ceiling(timeoutSeconds / 60d)),
     UseResponsesApi = true
@@ -29,35 +39,72 @@ var validationFunction = AIFunctionFactory.Create(
     {
         if (!string.Equals(confirmation, "deploy-validation", StringComparison.Ordinal))
         {
-            throw new InvalidOperationException("The hosted-tool-search smoke received an unexpected confirmation value.");
+            throw new InvalidOperationException("The tool-loop smoke received an unexpected confirmation value.");
         }
 
-        Interlocked.Increment(ref invocations);
+        if (Interlocked.Increment(ref invocations) > 1)
+            throw new InvalidOperationException("The validation function may run only once.");
         return "deployment validation tool completed";
     },
     name: "autonomy_smoke_validate",
-    description: "Returns a fixed deployment-validation result. Use it exactly once after finding it through tool search.");
+    description: "Returns a fixed deployment-validation result. Use it exactly once.");
+var chatOptions = new ChatOptions
+{
+    ModelId = model,
+    MaxOutputTokens = profile.WithReasoningHeadroom(1200),
+    Instructions = "Execute the requested deployment validation exactly. Do not perform unrelated work. After the validation tool result, reply with exactly: live smoke complete.",
+    Tools = [new ApprovalRequiredAIFunction(validationFunction)]
+};
+if (useHostedToolSearch)
+{
+    chatOptions.Tools.Add(new HostedToolSearchTool
+        {
+            DeferredTools = [validationFunction.Name],
+            Namespace = "discord_steward_smoke",
+            NamespaceDescription = "Deployment validation tools for the Discord Steward autonomy integration."
+        });
+    }
+    var stewardAssembly = GetArgument(args, "--steward-assembly", "");
+    var stewardProfile = GetArgument(args, "--steward-profile", "");
+    if (string.IsNullOrWhiteSpace(stewardAssembly) != string.IsNullOrWhiteSpace(stewardProfile))
+        throw new ArgumentException("Supply both --steward-assembly and --steward-profile for the full-catalog check.");
+    WorldAutonomyConfiguration? catalogConfiguration = null;
+    ulong catalogGuildId = 0;
+    if (!string.IsNullOrWhiteSpace(stewardAssembly))
+    {
+        using var profileDocument = JsonDocument.Parse(File.ReadAllText(stewardProfile));
+        catalogGuildId = ulong.Parse(profileDocument.RootElement.GetProperty("Discord").GetProperty("GuildId").GetString()!);
+        catalogConfiguration = WorldAutonomyConfiguration.FromOptions(new WorldAutonomyOptions
+        {
+            StewardCommand = "dotnet",
+            StewardArguments = [Path.GetFullPath(stewardAssembly)],
+            StewardWorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(stewardAssembly))!,
+            EnabledGuilds = new() { [catalogGuildId.ToString()] = new() { ProfilePath = Path.GetFullPath(stewardProfile) } },
+        });
+    }
+    await using var catalogSupervisor = catalogConfiguration is null ? null : new StewardMcpSupervisor(
+        catalogConfiguration, NullLoggerFactory.Instance, NullLogger<StewardMcpSupervisor>.Instance);
+    var nativeToolCount = 0;
+    if (catalogSupervisor is not null)
+    {
+        var catalogSession = await catalogSupervisor.GetSessionAsync(catalogGuildId, timeout.Token);
+        var context = WorldAutonomyRunContext.Create(catalogGuildId, "schema_smoke", model,
+            catalogSession.Catalog.Capabilities.ProfileDigest, catalogSession.Catalog.Capabilities.ManifestDigest, 1);
+        var catalog = catalogSession.Catalog.Bind(context, useHostedToolSearch);
+        foreach (var tool in catalog.Tools)
+            chatOptions.Tools.Add(AIFunctionFactory.CreateDeclaration(tool.Function.Name, tool.Function.Description, tool.Function.JsonSchema));
+        foreach (var tool in catalog.SupplementaryTools) chatOptions.Tools.Add(tool);
+        nativeToolCount = catalog.Tools.Length;
+        chatOptions.Instructions += " The native Discord schemas are present only for compatibility validation. Do not call any native Discord function; only autonomy_smoke_validate is executable.";
+    }
+profile.ApplyReasoning(chatOptions);
 var agent = new ChatClientAgent(
     chatClient,
     new ChatClientAgentOptions
     {
         Name = "Autonomy deployment smoke",
         UseProvidedChatClientAsIs = false,
-        ChatOptions = new ChatOptions
-        {
-            ModelId = model,
-            Instructions = "Execute the requested deployment validation exactly. Do not perform unrelated work.",
-            Tools =
-            [
-                new ApprovalRequiredAIFunction(validationFunction),
-                new HostedToolSearchTool
-                {
-                    DeferredTools = [validationFunction.Name],
-                    Namespace = "discord_steward_smoke",
-                    NamespaceDescription = "Deployment validation tools for the Discord Steward autonomy integration."
-                }
-            ]
-        }
+        ChatOptions = chatOptions
     })
     .AsBuilder()
     .UseToolApproval(new ToolApprovalAgentOptions
@@ -70,13 +117,15 @@ var agent = new ChatClientAgent(
     })
     .Build();
 
-using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
 var stopwatch = Stopwatch.StartNew();
 try
 {
     var session = await agent.CreateSessionAsync();
+    var instruction = useHostedToolSearch
+        ? "Use tool search to find the deployment validation tool in the discord_steward_smoke namespace."
+        : "Use the autonomy_smoke_validate function tool directly.";
     var response = await agent.RunAsync(
-        $"Use tool search to find the deployment validation tool in the discord_steward_smoke namespace. Call it exactly once with confirmation '{confirmation}'. After the tool result, reply with exactly: live smoke complete.",
+        $"{instruction} Call it exactly once with confirmation '{confirmation}'. Then follow your original instructions for the final answer.",
         session,
         cancellationToken: timeout.Token);
     stopwatch.Stop();
@@ -92,7 +141,7 @@ try
         throw new InvalidOperationException("The model did not produce the expected completion after the tool result.");
     }
 
-    Console.WriteLine($"LIVE AUTONOMY SMOKE PASSED model={model} elapsed_ms={stopwatch.ElapsedMilliseconds} approvals={approvals} invocations={invocations}");
+    Console.WriteLine($"LIVE AUTONOMY SMOKE PASSED provider={providerName} model={model} effort={profile.ReasoningEffort} native_schemas={nativeToolCount} elapsed_ms={stopwatch.ElapsedMilliseconds} approvals={approvals} invocations={invocations}");
     return 0;
 }
 catch (OperationCanceledException) when (timeout.IsCancellationRequested)
@@ -102,7 +151,12 @@ catch (OperationCanceledException) when (timeout.IsCancellationRequested)
 }
 catch (Exception exception)
 {
-    Console.Error.WriteLine($"LIVE AUTONOMY SMOKE FAILED model={model} error_type={exception.GetType().Name}");
+    Console.Error.WriteLine($"LIVE AUTONOMY SMOKE FAILED provider={providerName} model={model} error_type={exception.GetType().Name}");
+    if (exception is System.ClientModel.ClientResultException apiError)
+    {
+        Console.Error.WriteLine($"Provider error: {apiError.Status} {apiError.Message}");
+        Console.Error.WriteLine($"Provider response: {apiError.GetRawResponse()?.Content}");
+    }
     return 1;
 }
 

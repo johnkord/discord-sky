@@ -112,13 +112,16 @@ public sealed class LlmAuthCheckHostedServiceTests
         Assert.False(lifetime.StopRequested);
     }
 
-    [Fact]
-    public async Task CustomEndpoint_IsUsed()
+    [Theory]
+    [InlineData("https://api.x.ai/")]
+    [InlineData("https://api.x.ai/v1")]
+    [InlineData("https://api.x.ai/v1/")]
+    public async Task CustomEndpoint_IsUsedWithoutDuplicatingApiVersion(string endpoint)
     {
         var handler = new CannedResponseHandler(HttpStatusCode.OK);
         var factory = new SingleClientFactory(handler);
         var service = new LlmAuthCheckHostedService(
-            Options.Create(OptionsWithKey(endpoint: "https://api.x.ai/")),
+            Options.Create(OptionsWithKey(endpoint: endpoint)),
             factory, new FakeLifetime(), NullLogger<LlmAuthCheckHostedService>.Instance);
 
         await service.StartAsync(CancellationToken.None);
@@ -129,6 +132,26 @@ public sealed class LlmAuthCheckHostedServiceTests
         Assert.NotNull(auth);
         Assert.Equal("Bearer", auth!.Scheme);
         Assert.Equal("sk-test-key", auth.Parameter);
+    }
+
+    [Theory]
+    [InlineData("grok-4.7", false)]
+    [InlineData("grok-other", true)]
+    public async Task Xai_ValidatesConfiguredModelAccess(string availableModel, bool shouldFail)
+    {
+        var options = new LlmOptions
+        {
+            ActiveProvider = "xAI",
+            Providers = new() { ["xAI"] = new LlmProviderOptions
+                { ApiKey = "test-key", Endpoint = "https://api.x.ai/v1", ChatModel = "grok-4.7" } },
+        };
+        var (service, lifetime) = Build(HttpStatusCode.OK, options,
+            responseBody: $$"""{"data":[{"id":"{{availableModel}}"}]}""");
+        if (shouldFail)
+            await Assert.ThrowsAsync<InvalidOperationException>(() => service.StartAsync(CancellationToken.None));
+        else
+            await service.StartAsync(CancellationToken.None);
+        Assert.Equal(shouldFail, lifetime.StopRequested);
     }
 
     [Fact]

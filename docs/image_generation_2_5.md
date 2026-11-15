@@ -1,6 +1,6 @@
 # GPT Image 2.5 In Discord Sky
 
-Updated 2026-09-16 UTC. This is the current image pipeline and operating guide.
+Updated 2026-11-15 UTC. This is the current image pipeline and operating guide.
 
 ## Discord Use
 
@@ -91,7 +91,8 @@ and the pixel count must be between 655360 and 8294400. Sizes above 2560x1440 re
 
 The existing one-image-per-request contract remains. There are no batch requests, background retries,
 Responses API image sessions, additional image-planning model calls, or automatic fallback to older models.
-The Image API itself handles generation and edits; Sol and its xhigh reasoning profile are unchanged.
+The Image API itself handles generation and edits. As of 2026-11-15, Grok 4.7 drives chat and image-prompt
+rewriting; Flare and Sunburst remain the OpenAI image backends.
 
 ## Production Settings And Limits
 
@@ -113,7 +114,7 @@ The existing daily, per-user, and monthly image gates also remain active.
 
 ## Accounting
 
-All image calls share the live `LlmProviderGuard` with chat: $1/hour and $3/day in production. Admission uses a
+All image calls share the live `LlmProviderGuard` with chat: $4/hour and $12/day in production. Admission uses a
 request-specific estimate, not a flat image charge. At square size, reservations start at $0.10 for low, $0.21
 for medium, $0.42 for high, $0.65 for xhigh, and $0.90 for max/auto. These are host estimates, not a provider
 pricing table. Larger pixel counts scale the estimate; each reference and mask adds $0.05, each requested

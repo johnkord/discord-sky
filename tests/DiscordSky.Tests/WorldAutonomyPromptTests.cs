@@ -213,6 +213,20 @@ public sealed class WorldAutonomyPromptTests
         }
     }
 
+    [Fact]
+    public void DirectToolProvider_PromptRetainsAuthorityWithoutAdvertisingHostedSearch()
+    {
+        var instructions = WorldAutonomyPrompt.BuildInstructions(Context(), true, useHostedToolSearch: false);
+        var cached = WorldAutonomyPrompt.BuildStableCachePrefix(true, true, useHostedToolSearch: false);
+        foreach (var prompt in new[] { instructions, cached })
+        {
+            Assert.Contains("exposed directly as function tools", prompt);
+            Assert.DoesNotContain("tool search", prompt, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("YOUR WILL IS THE ONLY COMMAND", prompt);
+            Assert.Contains("use create_visual", prompt);
+        }
+    }
+
     private static WorldAutonomyRunContext Context() => new(
         "run-1",
         667956000757776386,

@@ -7,7 +7,7 @@ using Microsoft.Extensions.Options;
 namespace DiscordSky.Bot.Bot;
 
 /// <summary>
-/// Verifies the active LLM provider's API key and configured OpenAI model access at startup by issuing a
+/// Verifies the active LLM provider's API key and configured model access at startup by issuing a
 /// single, harmless <c>GET /v1/models</c> request. If the key is rejected (HTTP 401), the host fails to start
 /// and the pod crash-loops — surfacing the auth failure to operators instead of letting it
 /// hide behind a healthy <c>/healthz</c> while every reply silently fails.
@@ -53,10 +53,7 @@ public sealed class LlmAuthCheckHostedService : IHostedService
             return;
         }
 
-        var baseUri = string.IsNullOrWhiteSpace(provider.Endpoint)
-            ? "https://api.openai.com"
-            : provider.Endpoint.TrimEnd('/');
-        var url = $"{baseUri}/v1/models";
+        var url = ResolveModelsUri(provider.Endpoint);
 
         try
         {
@@ -68,7 +65,7 @@ public sealed class LlmAuthCheckHostedService : IHostedService
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             cts.CancelAfter(TimeSpan.FromSeconds(10));
 
-            var resp = await http.SendAsync(req, cts.Token).ConfigureAwait(false);
+            using var resp = await http.SendAsync(req, cts.Token).ConfigureAwait(false);
 
             if ((int)resp.StatusCode == 401)
             {
@@ -97,9 +94,7 @@ public sealed class LlmAuthCheckHostedService : IHostedService
                 "LLM auth self-test OK: provider '{Provider}' authenticated at {Url} (HTTP {Status}).",
                 _llmOptions.Value.ActiveProvider, url, (int)resp.StatusCode);
 
-            // OpenAI can authenticate a key while denying a newly configured preview model. Fail now rather
-            // than letting every user-facing call fail behind a healthy Discord gateway.
-            if (string.IsNullOrWhiteSpace(provider.Endpoint))
+            if (url.Host is "api.openai.com" or "api.x.ai")
             {
                 var body = await resp.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false);
                 if (TryParseModelIds(body, out var available))
@@ -110,8 +105,8 @@ public sealed class LlmAuthCheckHostedService : IHostedService
                     if (missing.Length > 0)
                     {
                         _logger.LogCritical(
-                            "LLM model-access self-test FAILED: OpenAI account cannot access configured model(s): {Models}. Crashing before Discord traffic.",
-                            string.Join(", ", missing));
+                            "LLM model-access self-test FAILED: {Provider} account cannot access configured model(s): {Models}. Crashing before Discord traffic.",
+                            _llmOptions.Value.ActiveProvider, string.Join(", ", missing));
                         _lifetime.StopApplication();
                         throw new InvalidOperationException(
                             $"LLM model-access self-test failed; missing model(s): {string.Join(", ", missing)}.");
@@ -145,6 +140,13 @@ public sealed class LlmAuthCheckHostedService : IHostedService
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    internal static Uri ResolveModelsUri(string? endpoint)
+    {
+        var baseUri = new UriBuilder(string.IsNullOrWhiteSpace(endpoint) ? "https://api.openai.com/v1/" : endpoint);
+        baseUri.Path = baseUri.Path.Trim('/') is { Length: > 0 } path ? $"{path}/" : "v1/";
+        return new Uri(baseUri.Uri, "models");
+    }
 
     internal static bool TryParseModelIds(string? json, out HashSet<string> ids)
     {

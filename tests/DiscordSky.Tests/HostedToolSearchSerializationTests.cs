@@ -5,6 +5,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using DiscordSky.Bot.Configuration;
 using Microsoft.Extensions.AI;
 using OpenAI;
 
@@ -12,8 +13,10 @@ namespace DiscordSky.Tests;
 
 public sealed class HostedToolSearchSerializationTests
 {
-    [Fact]
-    public async Task ResponsesAdapter_SerializesDeferredApprovalRequiredToolsIntoHostedSearchNamespace()
+    [Theory]
+    [InlineData("gpt-6-astra", true)]
+    [InlineData("grok-4.7", false)]
+    public async Task ResponsesAdapter_SerializesProviderSpecificToolExposure(string model, bool useHostedToolSearch)
     {
         var port = ReserveLoopbackPort();
         var prefix = $"http://127.0.0.1:{port}/";
@@ -25,7 +28,7 @@ public sealed class HostedToolSearchSerializationTests
         var openAi = new OpenAIClient(
             new System.ClientModel.ApiKeyCredential("not-a-real-key"),
             new OpenAIClientOptions { Endpoint = new Uri(prefix) });
-        var chatClient = openAi.GetResponsesClient().AsIChatClient("gpt-6-astra");
+        var chatClient = openAi.GetResponsesClient().AsIChatClient(model);
         AIFunction deferredWrite = new ApprovalRequiredAIFunction(AIFunctionFactory.Create(
             (string value) => value,
             name: "update_channel",
@@ -44,7 +47,7 @@ public sealed class HostedToolSearchSerializationTests
                 new ChatOptions
                 {
                     Reasoning = new ReasoningOptions { Effort = ReasoningEffort.ExtraHigh },
-                    Tools = [deferredWrite, toolSearch],
+                    Tools = useHostedToolSearch ? [deferredWrite, toolSearch] : [deferredWrite],
                 },
                 timeout.Token);
         }
@@ -55,12 +58,43 @@ public sealed class HostedToolSearchSerializationTests
 
         using var document = JsonDocument.Parse(await capturedRequest.WaitAsync(timeout.Token));
         var serialized = document.RootElement.GetRawText();
-        Assert.Equal("gpt-6-astra", document.RootElement.GetProperty("model").GetString());
+        Assert.Equal(model, document.RootElement.GetProperty("model").GetString());
         Assert.Equal("xhigh", document.RootElement.GetProperty("reasoning").GetProperty("effort").GetString());
-        Assert.Contains("tool_search", serialized, StringComparison.Ordinal);
-        Assert.Contains("defer_loading", serialized, StringComparison.Ordinal);
-        Assert.Contains("discord_channels", serialized, StringComparison.Ordinal);
+        if (useHostedToolSearch)
+        {
+            Assert.Contains("tool_search", serialized, StringComparison.Ordinal);
+            Assert.Contains("defer_loading", serialized, StringComparison.Ordinal);
+            Assert.Contains("discord_channels", serialized, StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.DoesNotContain("tool_search", serialized, StringComparison.Ordinal);
+            Assert.DoesNotContain("defer_loading", serialized, StringComparison.Ordinal);
+            var tool = Assert.Single(document.RootElement.GetProperty("tools").EnumerateArray());
+            Assert.Equal("function", tool.GetProperty("type").GetString());
+            Assert.Equal("update_channel", tool.GetProperty("name").GetString());
+        }
         Assert.Contains("update_channel", serialized, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void XaiContinuation_InheritsInstructionsWithoutMutatingSharedOptions()
+    {
+        var options = new ChatOptions
+        {
+            ModelId = "grok-4.7",
+            Instructions = "Robotnik persona and tool contract",
+            Reasoning = new ReasoningOptions { Effort = ReasoningEffort.ExtraHigh },
+        };
+        Assert.Same(options, XaiResponsesChatClient.PrepareOptions(options));
+        options.ConversationId = "resp-test";
+        var forwarded = XaiResponsesChatClient.PrepareOptions(options)!;
+        Assert.NotSame(options, forwarded);
+        Assert.Null(forwarded.Instructions);
+        Assert.Equal("resp-test", forwarded.ConversationId);
+        Assert.Equal("grok-4.7", forwarded.ModelId);
+        Assert.Equal(ReasoningEffort.ExtraHigh, forwarded.Reasoning!.Effort);
+        Assert.Equal("Robotnik persona and tool contract", options.Instructions);
     }
 
     private static async Task<string> CaptureRequestAsync(HttpListener listener)

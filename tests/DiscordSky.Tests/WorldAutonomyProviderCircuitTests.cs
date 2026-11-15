@@ -127,6 +127,8 @@ public sealed class LlmProviderGuardTests
     [InlineData("gpt-5.6-sol", 0.006575)]
     [InlineData("gpt-6-sol", 0.00243)]
     [InlineData("gpt-6-astra", 0.01215)]
+    [InlineData("grok-4.7", 0.002)]
+    [InlineData("grok-4.7-2026-11-01", 0.002)]
     public void EstimateUpperBoundCost_UsesModelSpecificCachedWriteAndOutputRates(string model, double expected)
     {
         var response = Response(input: 1_000, output: 100, cached: 400, cacheWrite: 300);
@@ -140,6 +142,7 @@ public sealed class LlmProviderGuardTests
     [InlineData("gpt-5.6-sol", 0.00695)]
     [InlineData("gpt-6-sol", 0.00258)]
     [InlineData("gpt-6-astra", 0.0129)]
+    [InlineData("grok-4.7", 0.002)]
     public void EstimateUpperBoundCost_TreatsUnobservedUncachedInputAsWrites(string model, double expected)
     {
         var response = new ChatResponse(new ChatMessage(ChatRole.Assistant, "done"))
@@ -179,6 +182,34 @@ public sealed class LlmProviderGuardTests
 
         Assert.Equal(2.725, atBoundary, precision: 6);
         Assert.Equal(5.44752, aboveBoundary, precision: 6);
+    }
+
+    [Theory]
+    [InlineData(199_999, 0.400598)]
+    [InlineData(200_000, 0.8012)]
+    [InlineData(200_001, 0.801204)]
+    public void Grok47Pricing_DoublesAllRatesAt200KInput(long input, double expected)
+    {
+        Assert.Equal(expected, LlmProviderGuard.EstimateUpperBoundCost("grok-4.7", Response(input, 100)), 6);
+    }
+
+    [Fact]
+    public void Grok47Pricing_DoublesCachedInputRateAtLongContext()
+    {
+        Assert.Equal(0.8000, LlmProviderGuard.EstimateUpperBoundCost("grok-4.7", Response(200_000, 100, cached: 400)), 6);
+    }
+
+    [Theory]
+    [InlineData("grok-4.7", 0.20)]
+    [InlineData("grok-4.7-2026-11-01", 0.20)]
+    [InlineData("grok-4.70", 0.75)]
+    public void Grok47Reservation_DoesNotMispriceOtherModelVersions(string model, double expected)
+    {
+        var guard = new LlmProviderGuard(NullLogger<LlmProviderGuard>.Instance,
+            options: new LlmProviderGuardOptions { StatePath = Path.Combine(Path.GetTempPath(), $"guard-{Guid.NewGuid():N}.json") });
+        Assert.True(guard.TryBeginCall(model, true, out var lease, out _));
+        Assert.Equal(expected, lease.ReservedUsd);
+        guard.RecordCallFailure(lease, new InvalidOperationException("test cleanup"));
     }
 
     [Fact]

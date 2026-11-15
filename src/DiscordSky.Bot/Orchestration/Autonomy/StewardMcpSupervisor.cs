@@ -128,7 +128,7 @@ public sealed class WorldAutonomyStewardCatalog
         string.Equals(tool.Name, name, StringComparison.Ordinal))
         ?? throw new InvalidOperationException($"Steward MCP child did not expose native tool '{name}'.");
 
-    public WorldAutonomyBoundCatalog Bind(WorldAutonomyRunContext run)
+    public WorldAutonomyBoundCatalog Bind(WorldAutonomyRunContext run, bool useHostedToolSearch = true)
     {
         ArgumentNullException.ThrowIfNull(run);
         if (run.GuildId != Capabilities.GuildId)
@@ -148,7 +148,7 @@ public sealed class WorldAutonomyStewardCatalog
         };
         return new WorldAutonomyBoundCatalog(
             tools,
-            [search],
+            useHostedToolSearch ? [search] : [],
             ComputeManifestDigest(tools));
     }
 

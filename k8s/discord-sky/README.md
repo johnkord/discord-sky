@@ -41,6 +41,25 @@ This directory contains the Kubernetes resources required to run the Discord Sky
 3. Use raw `kubectl apply -k` only for client-side validation or deliberate dark/local experiments. Do not use
    `kubectl set image` as the normal production path; it bypasses combined-runtime and private-binding checks.
 
+## Chat Provider
+
+Production chat uses `LLM__ActiveProvider=xAI` and `grok-4.7` for all text workloads. Keep
+`LLM__Providers__xAI__ApiKey` in the existing Secret. The ConfigMap follows the Secret in `envFrom`, so the
+committed active-provider setting takes precedence over a legacy `LLM__ActiveProvider=OpenAI` Secret entry.
+OpenAI's key remains for Flare/Sunburst image calls; no credential rotation is needed for the chat switch.
+
+Grok uses Responses with `UseHostedToolSearch=false`: this account's hosted search is alpha-gated, so the
+complete Steward catalog is exposed directly. The xAI continuation adapter omits repeated instructions on
+linked response turns. Both changes are required; changing only the active-provider/model strings is insufficient.
+Verify private autonomy/persona model overrides, startup routing and model-access logs, then `llm_call` records
+with `provider=xAI` and `model=grok-4.7`. `/healthz` alone does not prove provider inference works.
+
+The harmless live smoke accepts `--provider xAI --model grok-4.7 --effort ExtraHigh`; supply `XAI_API_KEY` through
+the environment, never on the command line. Optional `--steward-assembly` and `--steward-profile` point to a local
+Steward binary and example profile for a full-catalog schema check. Native tools are sent as non-executable
+declarations, and only one fixed local validation function runs. Do not use a production profile for this probe.
+Use `--provider OpenAI --hosted-tool-search true` only for an intentional OpenAI rollback validation.
+
 ## Images
 
 Image generation uses Flare for new pictures and Sunburst for edits, with one in-flight render, bounded reference
@@ -84,7 +103,7 @@ WorldAutonomy__EnabledGuilds__<exact-guild-id>__ProfilePath=/app/steward/profile
 ```
 
 The deployment Secret needs `Discord__BotToken` in addition to `Bot__Token`, because Steward runs as a
-separate inherited-configuration child process. Do not enable a binding before the live hosted-tool-search
+separate inherited-configuration child process. Do not enable a binding before the live provider/tool-loop
 smoke and disposable-guild R0 through R5 validation have passed.
 
 Automated production deployment checks out a pinned public Discord Steward revision and calls the same deploy

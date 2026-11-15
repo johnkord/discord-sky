@@ -101,7 +101,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         if (!provider.UseResponsesApi)
         {
             throw new InvalidOperationException(
-                "World autonomy requires an LLM provider configured for the OpenAI Responses API and hosted tool search.");
+                "World autonomy requires an LLM provider configured for a compatible Responses API.");
         }
 
         if (string.IsNullOrWhiteSpace(provider.ApiKey))
@@ -170,7 +170,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         timeout.CancelAfter(_configuration.SessionTimeout);
         try
         {
-            var catalog = session.Catalog.Bind(context);
+            var catalog = session.Catalog.Bind(context, provider.UseHostedToolSearch);
             await _ledger.RecordRunEventAsync(
                 context.RunId,
                 "catalog_bound",
@@ -222,7 +222,8 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
                 supplementaryTools,
                 workloadProfile: mainProfile with { Model = model },
                 terminalDeliveryEnabled: _configuration.TerminalDeliveryEnabled,
-                promptCacheMode: _configuration.PromptCacheMode);
+                promptCacheMode: _configuration.PromptCacheMode,
+                useHostedToolSearch: provider.UseHostedToolSearch);
             var agentSession = await agent.CreateSessionAsync().ConfigureAwait(false);
             var response = await agent.RunAsync(
                 opportunity.Prompt,
