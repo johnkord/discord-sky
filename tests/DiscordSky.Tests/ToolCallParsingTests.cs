@@ -1,11 +1,72 @@
 using System.Text.Json;
 using DiscordSky.Bot.Orchestration;
+using DiscordSky.Bot.Models.Orchestration;
 using Microsoft.Extensions.AI;
 
 namespace DiscordSky.Tests;
 
 public class ToolCallParsingTests
 {
+    [Theory]
+    [InlineData("{\"name\":\"send_discord_message\",\"arguments\":{\"mode\":\"reply\",\"target_message_id\":\"99999\",\"text\":\"My decree stands.\"}}")]
+    [InlineData("```json\n{\"name\":\"send_discord_message\",\"arguments\":{\"mode\":\"broadcast\",\"text\":\"My decree stands.\"}}\n```")]
+    [InlineData("```JSON\r\n{\"name\":\"send_discord_message\",\"arguments\":{\"mode\":\"reply\",\"text\":\"My decree stands.\"}}\r\n```")]
+    [InlineData("```\n{\"name\":\"send_discord_message\",\"arguments\":{\"mode\":\"reply\",\"text\":\"My decree stands.\"}}\n```")]
+    [InlineData("{\"function\":{\"name\":\"send_discord_message\",\"arguments\":\"{\\\"mode\\\":\\\"reply\\\",\\\"text\\\":\\\"My decree stands.\\\"}\"}}")]
+    [InlineData("[{\"name\":\"send_discord_message\",\"arguments\":{\"mode\":\"reply\",\"text\":\"My decree stands.\"}}]")]
+    [InlineData("{\"tool_calls\":[{\"function\":{\"name\":\"send_discord_message\",\"arguments\":{\"mode\":\"reply\",\"text\":\"My decree stands.\"}}}]}")]
+    public void TextualSendEnvelope_RecoversOnlyReplyText(string response)
+    {
+        var text = CreativeOrchestrator.NormalizeFallbackReply(response, out var envelope);
+        Assert.True(envelope);
+        Assert.Equal("My decree stands.", text);
+    }
+
+    [Theory]
+    [InlineData("{\"name\":\"recall_about_user\",\"arguments\":{\"user_id\":\"123\"}}")]
+    [InlineData("{\"name\":\"generate_image\",\"arguments\":{\"image_prompt\":\"a tower\"}}")]
+    [InlineData("{\"name\":\"send_discord_message\",\"arguments\":{\"mode\":\"reply\"}}")]
+    [InlineData("{\"name\":\"send_discord_message\",\"arguments\":{\"mode\":\"reply\",\"text\":{\"name\":\"get_member\"}}}")]
+    [InlineData("{\"name\":\"send_discord_message\",\"arguments\":{\"mode\":\"reply\",\"text\":\"unfinished")]
+    [InlineData("{\"function\":{\"name\":\"send_discord_message\",\"arguments\":\"broken\"}}")]
+    [InlineData("{\"tool_calls\":[{\"name\":\"send_discord_message\"},{\"name\":\"generate_image\"}]}")]
+    [InlineData("{\"type\":\"function_call\",\"name\":\"create_role\",\"arguments\":{}}")]
+    public void OtherOrInvalidToolEnvelopes_AreNotPublished(string response)
+    {
+        Assert.Empty(CreativeOrchestrator.NormalizeFallbackReply(response, out var envelope));
+        Assert.True(envelope);
+    }
+
+    [Theory]
+    [InlineData("A perfectly ordinary proclamation.")]
+    [InlineData("{\"name\":\"build\",\"arguments\":[\"release\"]}")]
+    [InlineData("```json\n{\"score\":42}\n```")]
+    [InlineData("[{\"name\":\"build\",\"arguments\":[\"release\"]}]")]
+    [InlineData("[{\"score\":1},{\"score\":2}]")]
+    [InlineData("Some prose explaining {\"name\":\"send_discord_message\"} as an example.")]
+    public void NormalRepliesAndUserFacingJson_ArePreserved(string response)
+    {
+        Assert.Equal(response, CreativeOrchestrator.NormalizeFallbackReply(response, out var envelope));
+        Assert.False(envelope);
+    }
+
+    [Theory]
+    [InlineData(CreativeInvocationKind.Mention)]
+    [InlineData(CreativeInvocationKind.DirectReply)]
+    public void RecoveredEnvelope_CannotRedirectTheReply(CreativeInvocationKind kind)
+    {
+        var request = new CreativeRequest("Robotnik", "topic", "member", 1, 2, 3, DateTimeOffset.UtcNow,
+            InvocationKind: kind, TriggerMessageId: 42);
+        var text = CreativeOrchestrator.NormalizeFallbackReply(
+            "{\"name\":\"send_discord_message\",\"arguments\":{\"mode\":\"reply\",\"target_message_id\":\"99999\",\"text\":\"My decree stands.\"}}",
+            out var envelope);
+        var result = CreativeOrchestrator.BuildProviderFallback(request, text);
+        Assert.True(envelope);
+        Assert.Equal("My decree stands.", result.PrimaryMessage);
+        Assert.Equal((ulong)42, result.ReplyToMessageId);
+        Assert.Null(result.AttachmentBytes);
+    }
+
     [Fact]
     public void TryParseToolCallArguments_ReplyMode_ExtractsAllFields()
     {

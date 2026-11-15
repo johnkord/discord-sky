@@ -86,6 +86,12 @@ text, Discord embeds/attachments, cached media semantics, and bounded HTTP unfur
 `SendChunkedAsync` enforces Discord's 2,000-character limit. Only the first chunk carries a reply reference. Every
 sent chunk is registered in `SentMessageRegistry` with persona, source, trigger, episode, and reply-target metadata.
 
+The creative tool-only contract is enforced with API `tool_choice=required`, not just prompt instructions.
+If a provider still returns a textual tool envelope, the fallback recovers only the text of a single validated
+`send_discord_message` call. It does not execute tools recovered from text or trust their target IDs. Other
+recognized internal envelopes are suppressed; ordinary prose and user-facing JSON remain unchanged. Fallback
+logs record envelope/recovery flags rather than raw response content. This behavior is provider-neutral.
+
 ## 5. World Autonomy
 
 World autonomy is enabled only by exact private guild bindings. Each enabled guild owns:
@@ -139,6 +145,18 @@ The full agent receives:
 
 Terminal Sky speech or visual delivery stops the loop when no unsettled write remains. Tool calls and run outcomes
 are journaled for recovery. A failed or interrupted write is reconciled against Steward's durable operation state.
+
+With the custom terminal function client, the agent framework may request approval for read-only peers in a
+mixed read/write batch. Sky accepts only explicitly registered native read-only peers through that callback.
+Writes still require durable pre-invocation records and valid unused request IDs; unknown approvals still fail.
+This was reproduced without a model and applies equally to OpenAI and xAI.
+
+On every agent exit, approvals that were never claimed for invocation are closed as failed with
+`run_ended_before_invocation`. Claimed operations keep their actual or unknown outcome. Recovery distinguishes
+an explicit missing Steward journal receipt from a tool/permission/identity failure. Missing receipts for ended
+or prior-process runs remain `unknown` with `steward_operation_missing`, and emit `recovery_unavailable` once.
+They are not replayed and do not enter automatic lookup loops. Active runs remain retryable because their
+receipts may not exist yet. Missing evidence is never interpreted as success.
 
 ### 5.3 Conversation route
 

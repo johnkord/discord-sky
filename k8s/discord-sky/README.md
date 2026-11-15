@@ -69,6 +69,26 @@ Both image model IDs must be accessible to the configured OpenAI account. A succ
 image API billing or generation works. The current controls and guarded live smoke procedure are in
 [../../docs/image_generation_2_5.md](../../docs/image_generation_2_5.md).
 
+## Tool Failure Diagnostics
+
+The ordinary creative path requires native tool calls. A log with `tool_envelope=true` means its text fallback
+recognized an internal tool envelope; `recovered_text=true` indicates the validated send text was recovered.
+It never executes arbitrary tools found in that text, and explicit reply ownership remains host-controlled.
+
+Mixed read/write batches are covered by tests through the real agent framework with both terminal modes and
+both tool orderings. A successful single-tool provider smoke does not cover these approval interactions.
+
+In the private autonomy ledger, `run_ended_before_invocation` is a failed approval that never reached a tool.
+`steward_operation_missing` is different: the receipt is absent and the outcome remains unknown. These unknown
+records stop automatic lookups and require operator review; do not replay the original mutation to find out
+what happened. Other recovery errors retain normal retries and identity validation. Use the request ID to
+inspect Steward's journal and Discord state before making a deliberate corrective operation.
+
+AngleSharp is patched to 1.5.0. ImageSharp 3.1.12 still has known security advisories; its patched 3.2 line adds a
+Release-build license requirement. Before upgrading it, choose an eligible licensed deployment or a replacement
+parser. Do not disable the vendor's license validation. Existing bounded Discord-only reference downloads and
+metadata limits remain in place, but are not a substitute for fixing the dependency advisories.
+
 ## Unrestricted Steward Child
 
 World autonomy is disabled until the deployment configuration contains an exact guild binding. To build an

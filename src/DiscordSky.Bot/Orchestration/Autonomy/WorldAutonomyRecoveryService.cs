@@ -15,6 +15,13 @@ public sealed record StewardOperationEvidence(
     string InvocationJson,
     string RawJson)
 {
+    internal static bool IsMissingOperation(JsonElement envelope) =>
+        envelope.ValueKind == JsonValueKind.Object &&
+        envelope.TryGetProperty("outcome", out var outcome) && outcome.ValueKind == JsonValueKind.String && outcome.GetString() == "error" &&
+        (!envelope.TryGetProperty("data", out var data) || data.ValueKind == JsonValueKind.Null) &&
+        envelope.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object &&
+        error.TryGetProperty("code", out var code) && code.ValueKind == JsonValueKind.String && code.GetString() == "resource_not_found";
+
     internal static StewardOperationEvidence Parse(JsonElement envelope, WorldAutonomyToolCall expected)
     {
         var data = RequiredProperty(envelope, "data");
@@ -251,6 +258,7 @@ public sealed record StewardOperationEvidence(
 
 public sealed class WorldAutonomyRecoveryService : BackgroundService
 {
+    internal const string MissingOperationReason = "steward_operation_missing";
     private static readonly TimeSpan ReconciliationInterval = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan[] RecoveryRetryDelays =
     [
@@ -301,11 +309,11 @@ public sealed class WorldAutonomyRecoveryService : BackgroundService
         DateTimeOffset processStartedAt,
         CancellationToken cancellationToken)
     {
-        await ReconcileOutstandingCallsAsync(cancellationToken).ConfigureAwait(false);
+        await ReconcileOutstandingCallsAsync(processStartedAt, cancellationToken).ConfigureAwait(false);
         await FinalizeInterruptedRunsAsync(processStartedAt, cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task ReconcileOutstandingCallsAsync(CancellationToken cancellationToken)
+    private async Task ReconcileOutstandingCallsAsync(DateTimeOffset processStartedAt, CancellationToken cancellationToken)
     {
         for (var attempt = 0; attempt <= RecoveryRetryDelays.Length; attempt++)
         {
@@ -326,7 +334,8 @@ public sealed class WorldAutonomyRecoveryService : BackgroundService
                 continue;
             }
 
-            var journaledCalls = calls.Where(call => !string.IsNullOrWhiteSpace(call.RequestId)).ToArray();
+            var journaledCalls = calls.Where(call => !string.IsNullOrWhiteSpace(call.RequestId) &&
+                !(call.DispatchStatus == WorldAutonomyDispatchStatuses.Unknown && call.ErrorMessage == MissingOperationReason)).ToArray();
             if (attempt == 0)
             {
                 foreach (var call in calls.Where(call =>
@@ -344,7 +353,7 @@ public sealed class WorldAutonomyRecoveryService : BackgroundService
 
             foreach (var call in journaledCalls)
             {
-                await RecoverCallAsync(call, cancellationToken).ConfigureAwait(false);
+                await RecoverCallAsync(call, processStartedAt, cancellationToken).ConfigureAwait(false);
             }
 
             if (attempt == RecoveryRetryDelays.Length)
@@ -445,7 +454,20 @@ public sealed class WorldAutonomyRecoveryService : BackgroundService
             call.CallId);
     }
 
-    private async Task RecoverCallAsync(WorldAutonomyToolCall call, CancellationToken cancellationToken)
+    internal async Task<bool> RecordMissingOperationAsync(
+        WorldAutonomyToolCall call, WorldAutonomyRunRecord run, DateTimeOffset processStartedAt, CancellationToken cancellationToken)
+    {
+        if (run.Status == WorldAutonomyRunStatuses.Running && run.StartedAt >= processStartedAt) return false;
+        await _ledger.CompleteToolCallAsync(call.CallId, WorldAutonomyDispatchStatuses.Unknown,
+            resultJson: call.ResultJson, errorMessage: MissingOperationReason, _timeProvider.GetUtcNow(), cancellationToken).ConfigureAwait(false);
+        await _ledger.RecordRunEventAsync(call.RunId, "recovery_unavailable",
+            JsonSerializer.Serialize(new { callId = call.CallId, reason = MissingOperationReason }),
+            _timeProvider.GetUtcNow(), cancellationToken).ConfigureAwait(false);
+        _logger.LogWarning("Autonomy call {CallId} has no Steward journal receipt; retaining unknown outcome without replay or automatic retries.", call.CallId);
+        return true;
+    }
+
+    private async Task RecoverCallAsync(WorldAutonomyToolCall call, DateTimeOffset processStartedAt, CancellationToken cancellationToken)
     {
         try
         {
@@ -463,7 +485,13 @@ public sealed class WorldAutonomyRecoveryService : BackgroundService
             var operationResult = await session.Catalog.GetNativeTool("get_operation")
                 .CallAsync(requestArguments, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
-            var evidence = StewardOperationEvidence.Parse(ExtractEnvelope(operationResult), call);
+            var envelope = ExtractEnvelope(operationResult);
+            if (StewardOperationEvidence.IsMissingOperation(envelope))
+            {
+                await RecordMissingOperationAsync(call, run, processStartedAt, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            var evidence = StewardOperationEvidence.Parse(envelope, call);
             var status = evidence.Status;
             var rawEvidence = evidence.RawJson;
             if (string.Equals(status, WorldAutonomyDispatchStatuses.Unknown, StringComparison.Ordinal))

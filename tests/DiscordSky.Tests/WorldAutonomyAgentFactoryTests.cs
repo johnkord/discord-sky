@@ -9,6 +9,106 @@ namespace DiscordSky.Tests;
 
 public sealed class WorldAutonomyAgentFactoryTests
 {
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Agent_MixedReadWriteBatchApprovesAndRecordsEachTool(bool terminalDelivery, bool readFirst)
+    {
+        var requestIds = new[] { "01900000-0000-7000-8000-000000000001", "01900000-0000-7000-8000-000000000002" };
+        var context = new WorldAutonomyRunContext("mixed-run", 4001, "message", "5001", null, null,
+            "provider-independent-model", "profile", "manifest", requestIds.ToImmutableHashSet());
+        var ledger = new RecordingLedger();
+        await ledger.StartRunAsync(context.ToRunStart(DateTimeOffset.UtcNow), CancellationToken.None);
+        var writes = 0;
+        var reads = 0;
+        var descriptors = new[]
+        {
+            new WorldAutonomyToolDescriptor(AIFunctionFactory.Create((string request_id) =>
+            {
+                Assert.Contains(ledger.PendingDispatches, dispatch => dispatch.RequestId == request_id);
+                writes++;
+                return "written";
+            }, name: "create_category"), true, true, "category-schema"),
+            new WorldAutonomyToolDescriptor(AIFunctionFactory.Create((string request_id) =>
+            {
+                Assert.Contains(ledger.PendingDispatches, dispatch => dispatch.RequestId == request_id);
+                writes++;
+                return "written";
+            }, name: "create_role"), true, true, "role-schema"),
+            new WorldAutonomyToolDescriptor(AIFunctionFactory.Create(() => { reads++; return "member"; },
+                name: "get_member"), false, false, "member-schema"),
+        };
+        var run = new WorldAutonomyRunState(context, ledger, descriptors);
+        var client = new MixedBatchChatClient(requestIds, readFirst);
+        var agent = new WorldAutonomyAgentFactory().Create(client, run, descriptors,
+            terminalDeliveryEnabled: terminalDelivery, useHostedToolSearch: false);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var session = await agent.CreateSessionAsync();
+
+        var response = await agent.RunAsync("inspect and update", session, cancellationToken: timeout.Token);
+
+        Assert.Equal("done", response.Text);
+        Assert.Equal(2, writes);
+        Assert.Equal(1, reads);
+        Assert.Equal(2, ledger.PendingDispatches.Count);
+        Assert.Equal(1, run.ActivitySnapshot.NativeReadCount);
+        Assert.Equal(2, run.ActivitySnapshot.NativeWriteCount);
+        Assert.False(run.HasUnsettledWrites);
+        await run.AbandonUninvokedApprovalsAsync();
+        Assert.All(ledger.PendingDispatches, dispatch => Assert.Equal(WorldAutonomyDispatchStatuses.Accepted, dispatch.DispatchStatus));
+    }
+
+    [Fact]
+    public async Task Agent_AbortedApprovalBatchClosesOnlyUninvokedDispatches()
+    {
+        const string validId = "01900000-0000-7000-8000-000000000001";
+        const string invalidId = "01900000-0000-7000-8000-000000000999";
+        var context = new WorldAutonomyRunContext("aborted-run", 4001, "message", null, null, null,
+            "provider-independent-model", "profile", "manifest", [validId]);
+        var ledger = new RecordingLedger();
+        var invocations = 0;
+        var tools = new[] { "create_category", "create_role" }.Select(name => new WorldAutonomyToolDescriptor(
+            AIFunctionFactory.Create((string request_id) => { invocations++; return "written"; }, name: name),
+            true, true, name + "-schema")).ToArray();
+        var run = new WorldAutonomyRunState(context, ledger, tools);
+        var agent = new WorldAutonomyAgentFactory().Create(new MixedBatchChatClient([validId, invalidId], false), run, tools,
+            terminalDeliveryEnabled: true, useHostedToolSearch: false);
+        var session = await agent.CreateSessionAsync();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => agent.RunAsync("go", session));
+        Assert.Equal(0, invocations);
+        Assert.Equal(WorldAutonomyDispatchStatuses.Pending, Assert.Single(ledger.PendingDispatches).DispatchStatus);
+
+        await run.AbandonUninvokedApprovalsAsync();
+        await run.AbandonUninvokedApprovalsAsync();
+
+        var abandoned = Assert.Single(ledger.PendingDispatches);
+        Assert.Equal(WorldAutonomyDispatchStatuses.Failed, abandoned.DispatchStatus);
+        Assert.Equal("run_ended_before_invocation", abandoned.ErrorMessage);
+        Assert.False(run.HasUnsettledWrites);
+        Assert.Empty(await ledger.ListRecoverableCallsAsync(CancellationToken.None));
+        Assert.Equal(0, invocations);
+    }
+
+    [Fact]
+    public async Task Agent_UnknownApprovalStillFailsBeforeInvocation()
+    {
+        var context = new WorldAutonomyRunContext("unknown-run", 4001, "message", null, null, null,
+            "provider-independent-model", "profile", "manifest", []);
+        var ledger = new RecordingLedger();
+        var invoked = 0;
+        var unregistered = new ApprovalRequiredAIFunction(AIFunctionFactory.Create(() => { invoked++; return "unexpected"; },
+            name: "unknown_tool"));
+        var agent = new WorldAutonomyAgentFactory().Create(
+            new ScriptedChatClient(null, "unknown_tool", includeValue: false),
+            new WorldAutonomyRunState(context, ledger, []), [], supplementaryTools: [unregistered], terminalDeliveryEnabled: true);
+        var session = await agent.CreateSessionAsync();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => agent.RunAsync("go", session));
+        Assert.Equal(0, invoked);
+        Assert.Empty(ledger.PendingDispatches);
+    }
+
     [Fact]
     public async Task Agent_TerminalDeliveryUsesOneProviderCallWhenEnabled()
     {
@@ -661,6 +761,31 @@ public sealed class WorldAutonomyAgentFactoryTests
             ChatOptions? options = null,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
+    }
+
+    private sealed class MixedBatchChatClient(string[] requestIds, bool readFirst) : IChatClient
+    {
+        private int _calls;
+
+        public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (_calls++ > 0) return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, "done")));
+            var calls = new List<AIContent>
+            {
+                new FunctionCallContent("category-call", "create_category", new Dictionary<string, object?> { ["request_id"] = requestIds[0] }),
+                new FunctionCallContent("role-call", "create_role", new Dictionary<string, object?> { ["request_id"] = requestIds[1] }),
+            };
+            var read = new FunctionCallContent("member-call", "get_member", new Dictionary<string, object?>());
+            if (readFirst) calls.Insert(0, read);
+            else calls.Add(read);
+            return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, calls)));
+        }
+
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public object? GetService(Type serviceType, object? serviceKey = null) => null;
         public void Dispose() { }
     }

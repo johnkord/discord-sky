@@ -82,6 +82,60 @@ public sealed class WorldAutonomyRecoveryServiceTests
         Assert.Null(current?.CompletedAt);
     }
 
+    [Theory]
+    [InlineData("{\"outcome\":\"error\",\"data\":null,\"error\":{\"code\":\"resource_not_found\"}}", true)]
+    [InlineData("{\"outcome\":\"error\",\"error\":{\"code\":\"resource_not_found\"}}", true)]
+    [InlineData("{\"outcome\":\"error\",\"data\":null,\"error\":{\"code\":\"discord_permission_denied\"}}", false)]
+    [InlineData("{\"outcome\":\"ok\",\"data\":{},\"error\":null}", false)]
+    [InlineData("{}", false)]
+    public void MissingOperation_RequiresExplicitAbsentReceipt(string payload, bool expected)
+    {
+        using var document = JsonDocument.Parse(payload);
+        Assert.Equal(expected, StewardOperationEvidence.IsMissingOperation(document.RootElement));
+    }
+
+    [Fact]
+    public async Task RecoveryCycle_MissingPriorReceiptRemainsUnknownWithoutRepeatedLookup()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "world-autonomy.json");
+        using var ledger = CreateLedger(path);
+        await ledger.StartRunAsync(Run("missing-receipt", ProcessStartedAt.AddMinutes(-2)), CancellationToken.None);
+        await ledger.RecordDispatchPendingAsync(Dispatch("missing-call", "missing-receipt", ProcessStartedAt.AddMinutes(-1)), CancellationToken.None);
+        await using var supervisor = CreateSupervisor();
+        using var service = CreateService(ledger, supervisor);
+        var call = Assert.Single(await ledger.ListRecoverableCallsAsync(CancellationToken.None));
+        var run = await ledger.GetRunAsync("missing-receipt", CancellationToken.None);
+
+        Assert.True(await service.RecordMissingOperationAsync(call, run!, ProcessStartedAt, CancellationToken.None));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await service.RunRecoveryCycleAsync(ProcessStartedAt, timeout.Token);
+        await service.RunRecoveryCycleAsync(ProcessStartedAt, timeout.Token);
+
+        var recovered = Assert.Single(await ledger.ListToolCallsAsync("missing-receipt", CancellationToken.None));
+        Assert.Equal(WorldAutonomyDispatchStatuses.Unknown, recovered.DispatchStatus);
+        Assert.Equal(WorldAutonomyRecoveryService.MissingOperationReason, recovered.ErrorMessage);
+        Assert.Equal(WorldAutonomyRunStatuses.Failed, (await ledger.GetRunAsync("missing-receipt", CancellationToken.None))!.Status);
+        using var snapshot = JsonDocument.Parse(await File.ReadAllTextAsync(path));
+        Assert.Single(snapshot.RootElement.GetProperty("events").EnumerateArray().Where(record => record.GetProperty("kind").GetString() == "recovery_unavailable"));
+    }
+
+    [Fact]
+    public async Task MissingReceipt_CurrentRunRemainsRetryable()
+    {
+        using var directory = new TemporaryDirectory();
+        using var ledger = CreateLedger(Path.Combine(directory.Path, "world-autonomy.json"));
+        await ledger.StartRunAsync(Run("active-run", ProcessStartedAt), CancellationToken.None);
+        await ledger.RecordDispatchPendingAsync(Dispatch("active-call", "active-run", ProcessStartedAt), CancellationToken.None);
+        await using var supervisor = CreateSupervisor();
+        using var service = CreateService(ledger, supervisor);
+        var call = Assert.Single(await ledger.ListRecoverableCallsAsync(CancellationToken.None));
+        var run = await ledger.GetRunAsync("active-run", CancellationToken.None);
+
+        Assert.False(await service.RecordMissingOperationAsync(call, run!, ProcessStartedAt, CancellationToken.None));
+        Assert.Equal(WorldAutonomyDispatchStatuses.Pending, Assert.Single(await ledger.ListRecoverableCallsAsync(CancellationToken.None)).DispatchStatus);
+    }
+
     private static WorldAutonomyRecoveryService CreateService(
         IWorldAutonomyLedger ledger,
         StewardMcpSupervisor supervisor) => new(

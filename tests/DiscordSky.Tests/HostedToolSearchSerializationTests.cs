@@ -46,6 +46,7 @@ public sealed class HostedToolSearchSerializationTests
                 [new ChatMessage(ChatRole.User, "Find a channel tool.")],
                 new ChatOptions
                 {
+                    ToolMode = ChatToolMode.RequireAny,
                     Reasoning = new ReasoningOptions { Effort = ReasoningEffort.ExtraHigh },
                     Tools = useHostedToolSearch ? [deferredWrite, toolSearch] : [deferredWrite],
                 },
@@ -60,6 +61,7 @@ public sealed class HostedToolSearchSerializationTests
         var serialized = document.RootElement.GetRawText();
         Assert.Equal(model, document.RootElement.GetProperty("model").GetString());
         Assert.Equal("xhigh", document.RootElement.GetProperty("reasoning").GetProperty("effort").GetString());
+        Assert.Equal("required", document.RootElement.GetProperty("tool_choice").GetString());
         if (useHostedToolSearch)
         {
             Assert.Contains("tool_search", serialized, StringComparison.Ordinal);

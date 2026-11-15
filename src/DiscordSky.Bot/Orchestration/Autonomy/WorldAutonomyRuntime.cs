@@ -225,10 +225,19 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
                 promptCacheMode: _configuration.PromptCacheMode,
                 useHostedToolSearch: provider.UseHostedToolSearch);
             var agentSession = await agent.CreateSessionAsync().ConfigureAwait(false);
-            var response = await agent.RunAsync(
-                opportunity.Prompt,
-                agentSession,
-                cancellationToken: timeout.Token).ConfigureAwait(false);
+            Microsoft.Agents.AI.AgentResponse response;
+            try
+            {
+                response = await agent.RunAsync(opportunity.Prompt, agentSession, cancellationToken: timeout.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                try { await runState.AbandonUninvokedApprovalsAsync().ConfigureAwait(false); }
+                catch (Exception cleanupError)
+                {
+                    _logger.LogError(cleanupError, "Could not close uninvoked approvals for autonomy run {RunId}.", context.RunId);
+                }
+            }
             if (_visualTool is not null
                 && opportunity.VisualIntent != VisualRequestIntent.None
                 && !runState.VisualMediumSelected)

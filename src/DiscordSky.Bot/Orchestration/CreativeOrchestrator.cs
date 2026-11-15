@@ -383,7 +383,7 @@ public sealed class CreativeOrchestrator
             Tools = tools,
             ToolMode = requireImage
                 ? ChatToolMode.RequireSpecific(GenerateImageToolName)
-                : ChatToolMode.Auto,
+                : ChatToolMode.RequireAny,
         };
 
         profile.ApplyReasoning(chatOptions);
@@ -510,11 +510,12 @@ public sealed class CreativeOrchestrator
                     .ToList();
                 if (recallCalls.Count == 0 && imageCall is null)
                 {
+                    var normalized = NormalizeFallbackReply(response.Text, out var wasToolEnvelope);
                     _logger.LogWarning(
-                        "LLM response missing send_discord_message tool call; falling back to broadcast text. Response text: {Text}",
-                        response.Text ?? "(empty)");
+                        "LLM response missing send_discord_message tool call; using validated text fallback. tool_envelope={ToolEnvelope} recovered_text={HasText}",
+                        wasToolEnvelope, normalized.Length > 0);
                     var fallback = _safetyFilter.ScrubBannedContent(
-                        WebUtility.HtmlDecode(response.Text ?? string.Empty));
+                        WebUtility.HtmlDecode(normalized));
                     if (string.IsNullOrWhiteSpace(fallback))
                     {
                         fallback = BuildEmptyResponsePlaceholder(request.Persona, request.InvocationKind);
@@ -600,6 +601,85 @@ public sealed class CreativeOrchestrator
             }
             _llmThrottle.Release();
         }
+    }
+
+    internal static string NormalizeFallbackReply(string? responseText, out bool wasToolEnvelope)
+    {
+        wasToolEnvelope = false;
+        var text = responseText?.Trim() ?? string.Empty;
+        var candidate = text.ReplaceLineEndings("\n");
+        if (candidate.StartsWith("```", StringComparison.Ordinal) && candidate.EndsWith("```", StringComparison.Ordinal))
+        {
+            var firstLine = candidate.IndexOf('\n');
+            if (firstLine >= 0 && (candidate[..firstLine].Equals("```json", StringComparison.OrdinalIgnoreCase) || firstLine == 3))
+                candidate = candidate[(firstLine + 1)..^3].Trim();
+        }
+        try
+        {
+            using var document = JsonDocument.Parse(candidate);
+            var root = document.RootElement;
+            if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("tool_calls", out var toolCalls))
+            {
+                wasToolEnvelope = true;
+                if (toolCalls.ValueKind != JsonValueKind.Array || toolCalls.GetArrayLength() != 1) return string.Empty;
+                root = toolCalls[0];
+            }
+            if (root.ValueKind == JsonValueKind.Array)
+            {
+                if (root.GetArrayLength() != 1)
+                {
+                    wasToolEnvelope = HasInternalToolHeader(candidate);
+                    return wasToolEnvelope ? string.Empty : text;
+                }
+                root = root[0];
+            }
+            if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("function", out var function) && function.ValueKind == JsonValueKind.Object)
+                root = function;
+            if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("type", out var type) &&
+                type.ValueKind == JsonValueKind.String && type.GetString() is "function_call" or "tool_use")
+                wasToolEnvelope = true;
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("name", out var name) || name.ValueKind != JsonValueKind.String ||
+                name.GetString() is not (SendDiscordMessageToolName or RecallAboutUserToolName or GenerateImageToolName))
+                return wasToolEnvelope ? string.Empty : text;
+
+            wasToolEnvelope = true;
+            if (name.GetString() != SendDiscordMessageToolName ||
+                !root.TryGetProperty("arguments", out var arguments)) return string.Empty;
+            using var argumentDocument = arguments.ValueKind == JsonValueKind.String
+                ? JsonDocument.Parse(arguments.GetString()!) : null;
+            if (argumentDocument is not null) arguments = argumentDocument.RootElement;
+            if (arguments.ValueKind != JsonValueKind.Object ||
+                !arguments.TryGetProperty("mode", out var mode) || mode.ValueKind != JsonValueKind.String ||
+                mode.GetString() is not ("reply" or "broadcast") ||
+                !arguments.TryGetProperty("text", out var content) || content.ValueKind != JsonValueKind.String)
+                return string.Empty;
+
+            return content.GetString()!.Trim();
+        }
+        catch (JsonException)
+        {
+            wasToolEnvelope |= HasInternalToolHeader(candidate);
+            return wasToolEnvelope ? string.Empty : text;
+        }
+    }
+
+    private static bool HasInternalToolHeader(string candidate)
+    {
+        var reader = new Utf8JsonReader(Encoding.UTF8.GetBytes(candidate), isFinalBlock: false, state: default);
+        try
+        {
+            while (reader.Read())
+            {
+                if (reader.TokenType != JsonTokenType.PropertyName) continue;
+                if (reader.ValueTextEquals("tool_calls")) return true;
+                if (reader.ValueTextEquals("name") && reader.Read() && reader.TokenType == JsonTokenType.String &&
+                    reader.GetString() is SendDiscordMessageToolName or RecallAboutUserToolName or GenerateImageToolName)
+                    return true;
+            }
+        }
+        catch (JsonException) { }
+        return false;
     }
 
     private CreativeResult BuildSendResult(FunctionCallContent functionCall, CreativeRequest request, IReadOnlyDictionary<ulong, ChannelMessage> knownMessages, byte[]? attachmentBytes = null, string? attachmentFileName = null)
@@ -866,6 +946,7 @@ public sealed class CreativeOrchestrator
             }
         }
         builder.Append(" Your entire response must be tool calls — no plain text. Always finish by calling send_discord_message.");
+        builder.Append(" Use the API's native tool-call mechanism. Do not print JSON that describes a tool call as message text.");
         if (invocationKind is CreativeInvocationKind.DirectReply or CreativeInvocationKind.Mention)
         {
             builder.Append(" This invocation has one explicit trigger message. Set mode=\"reply\" and use the TRIGGER MESSAGE ID identified in the user content; do not target an older history item.");

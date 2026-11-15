@@ -113,6 +113,7 @@ public sealed class WorldAutonomyRunState
 {
     private readonly IWorldAutonomyLedger _ledger;
     private readonly ImmutableDictionary<string, WorldAutonomyToolDescriptor> _writes;
+    private readonly ImmutableHashSet<string> _readOnlyToolNames;
     private readonly HashSet<string> _usedRequestIds = new(StringComparer.Ordinal);
     private readonly HashSet<string> _deterministicFailureRetryKeys = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ApprovedDispatch> _byModelCallId = new(StringComparer.Ordinal);
@@ -144,6 +145,10 @@ public sealed class WorldAutonomyRunState
         _writes = tools
             .Where(tool => tool.IsWrite)
             .ToImmutableDictionary(tool => tool.Function.Name, StringComparer.Ordinal);
+        _readOnlyToolNames = tools
+            .Where(tool => !tool.IsWrite)
+            .Select(tool => tool.Function.Name)
+            .ToImmutableHashSet(StringComparer.Ordinal);
     }
 
     public WorldAutonomyRunContext Context { get; }
@@ -238,6 +243,7 @@ public sealed class WorldAutonomyRunState
         var functionCall = approvalContext.FunctionCallContent;
         if (!_writes.TryGetValue(functionCall.Name, out var descriptor))
         {
+            if (_readOnlyToolNames.Contains(functionCall.Name)) return true;
             throw new InvalidOperationException(
                 $"Autonomy approval received an unregistered write tool '{functionCall.Name}'.");
         }
@@ -316,13 +322,15 @@ public sealed class WorldAutonomyRunState
             }
 
             _byModelCallId.Add(functionCall.CallId, dispatch);
-            if (!_pendingInvocations.TryGetValue(dispatch.ToolName, out var pending))
+            lock (_pendingInvocations)
             {
-                pending = new Queue<ApprovedDispatch>();
-                _pendingInvocations.Add(dispatch.ToolName, pending);
+                if (!_pendingInvocations.TryGetValue(dispatch.ToolName, out var pending))
+                {
+                    pending = new Queue<ApprovedDispatch>();
+                    _pendingInvocations.Add(dispatch.ToolName, pending);
+                }
+                pending.Enqueue(dispatch);
             }
-
-            pending.Enqueue(dispatch);
             _unsettledWriteCount++;
             Interlocked.Increment(ref _nativeWriteCount);
             return true;
@@ -345,14 +353,41 @@ public sealed class WorldAutonomyRunState
                     $"Autonomy write '{toolName}' was invoked without a durable approved dispatch.");
             }
 
-            var dispatch = pending.Dequeue();
+            var dispatch = pending.Peek();
             if (!string.Equals(dispatch.ArgumentsJson, argumentsJson, StringComparison.Ordinal))
             {
                 throw new InvalidOperationException(
                     $"Autonomy write '{toolName}' arguments differed from the durable approved dispatch.");
             }
 
-            return dispatch;
+            return pending.Dequeue();
+        }
+    }
+
+    internal async Task AbandonUninvokedApprovalsAsync()
+    {
+        ApprovedDispatch[] uninvoked;
+        await _dispatchGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            _terminalizing = true;
+            lock (_pendingInvocations)
+            {
+                uninvoked = _pendingInvocations.Values.SelectMany(queue => queue).ToArray();
+                _pendingInvocations.Clear();
+            }
+        }
+        finally
+        {
+            _dispatchGate.Release();
+        }
+
+        foreach (var dispatch in uninvoked)
+        {
+            await _ledger.CompleteToolCallAsync(dispatch.CallId, WorldAutonomyDispatchStatuses.Failed,
+                resultJson: null, errorMessage: "run_ended_before_invocation", TimeProvider.GetUtcNow(), CancellationToken.None).ConfigureAwait(false);
+            RecordWriteOutcome(WorldAutonomyDispatchStatuses.Failed);
+            await MarkWriteSettledAsync(dispatch, deterministicErrorCode: null).ConfigureAwait(false);
         }
     }
 

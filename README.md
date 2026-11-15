@@ -141,6 +141,10 @@ to hosted tool search. `LLM:Providers:xAI:UseHostedToolSearch=false` changes sch
 Providers with hosted-search access can enable it. Linked xAI Responses turns inherit the original instructions;
 Sky omits repeated `instructions` when sending `previous_response_id`, as xAI requires.
 
+Tool-call enforcement, safe reply-envelope recovery, and mixed read/write approval handling are shared across
+providers. Switching back to an OpenAI profile does not require undoing these fixes. Approved but uninvoked
+writes are closed on agent exit, and missing journal receipts stay unknown without replay or endless recovery.
+
 Private profiles and guild IDs never enter public image layers or committed manifests. The hardened deployment
 validates exact bindings, probes the bundled Steward executable, and restores prior resources if rollout fails.
 
