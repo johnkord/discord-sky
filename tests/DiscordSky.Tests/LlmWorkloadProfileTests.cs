@@ -22,11 +22,11 @@ public class LlmWorkloadProfileTests
         foreach (var workload in Enum.GetValues<LlmWorkload>())
         {
             var profile = provider.GetProfile(workload, "Robotnik from AOSTH");
-            Assert.Equal("gpt-6-astra", profile.Model);
+            Assert.Equal("gpt-6.2-astra", profile.Model);
             Assert.Equal(workload is LlmWorkload.Utility or LlmWorkload.MemoryExtraction or LlmWorkload.MemoryConsolidation
                 ? "low" : "ExtraHigh", profile.ReasoningEffort);
         }
-        Assert.Equal(["gpt-6-astra"], provider.GetConfiguredModels());
+        Assert.Equal(["gpt-6.2-astra"], provider.GetConfiguredModels());
         Assert.Equal("OpenAI", configuration["Image:ProviderName"]);
         Assert.Equal("gpt-image-2.5-flare", configuration["Image:Model"]);
         Assert.Equal("gpt-image-2.5-sunburst", configuration["Image:EditModel"]);
@@ -37,14 +37,14 @@ public class LlmWorkloadProfileTests
 
     private static LlmProviderOptions OpenAi(Dictionary<string, string>? overrides = null) => new()
     {
-        ChatModel = "gpt-6-astra",
-        AmbientModel = "gpt-6-astra",
-        UtilityModel = "gpt-6-astra",
-        ColdOpenModel = "gpt-6-astra",
-        ColdOpenCriticModel = "gpt-6-astra",
-        ImageRewriteModel = "gpt-6-astra",
-        MemoryExtractionModel = "gpt-6-astra",
-        MemoryConsolidationModel = "gpt-6-astra",
+        ChatModel = "gpt-6.2-astra",
+        AmbientModel = "gpt-6.2-astra",
+        UtilityModel = "gpt-6.2-astra",
+        ColdOpenModel = "gpt-6.2-astra",
+        ColdOpenCriticModel = "gpt-6.2-astra",
+        ImageRewriteModel = "gpt-6.2-astra",
+        MemoryExtractionModel = "gpt-6.2-astra",
+        MemoryConsolidationModel = "gpt-6.2-astra",
         ReasoningEffort = "ExtraHigh",
         AmbientReasoningEffort = "ExtraHigh",
         UtilityReasoningEffort = "low",
@@ -57,14 +57,14 @@ public class LlmWorkloadProfileTests
     };
 
     [Theory]
-    [InlineData(LlmWorkload.Main, "gpt-6-astra", "ExtraHigh")]
-    [InlineData(LlmWorkload.Ambient, "gpt-6-astra", "ExtraHigh")]
-    [InlineData(LlmWorkload.Utility, "gpt-6-astra", "low")]
-    [InlineData(LlmWorkload.ColdOpen, "gpt-6-astra", "ExtraHigh")]
-    [InlineData(LlmWorkload.ColdOpenCritic, "gpt-6-astra", "ExtraHigh")]
-    [InlineData(LlmWorkload.ImageRewrite, "gpt-6-astra", "ExtraHigh")]
-    [InlineData(LlmWorkload.MemoryExtraction, "gpt-6-astra", "low")]
-    [InlineData(LlmWorkload.MemoryConsolidation, "gpt-6-astra", "low")]
+    [InlineData(LlmWorkload.Main, "gpt-6.2-astra", "ExtraHigh")]
+    [InlineData(LlmWorkload.Ambient, "gpt-6.2-astra", "ExtraHigh")]
+    [InlineData(LlmWorkload.Utility, "gpt-6.2-astra", "low")]
+    [InlineData(LlmWorkload.ColdOpen, "gpt-6.2-astra", "ExtraHigh")]
+    [InlineData(LlmWorkload.ColdOpenCritic, "gpt-6.2-astra", "ExtraHigh")]
+    [InlineData(LlmWorkload.ImageRewrite, "gpt-6.2-astra", "ExtraHigh")]
+    [InlineData(LlmWorkload.MemoryExtraction, "gpt-6.2-astra", "low")]
+    [InlineData(LlmWorkload.MemoryConsolidation, "gpt-6.2-astra", "low")]
     public void GetProfile_RoutesOpenAiWorkloads(LlmWorkload workload, string model, string effort)
     {
         var profile = OpenAi().GetProfile(workload, "Robotnik");
@@ -79,15 +79,15 @@ public class LlmWorkloadProfileTests
 
         Assert.Equal("special-robotnik", provider.GetProfile(LlmWorkload.Main, "Robotnik").Model);
         Assert.Equal("special-robotnik", provider.GetProfile(LlmWorkload.Ambient, "Robotnik").Model);
-        Assert.Equal("gpt-6-astra", provider.GetProfile(LlmWorkload.ColdOpen, "Robotnik").Model);
+        Assert.Equal("gpt-6.2-astra", provider.GetProfile(LlmWorkload.ColdOpen, "Robotnik").Model);
     }
 
     [Fact]
     public void DefaultsAndConfiguredModelsUseAstra()
     {
         Assert.Equal("OpenAI", new LlmOptions().ActiveProvider);
-        Assert.Equal("gpt-6-astra", new LlmProviderOptions().GetProfile(LlmWorkload.Main).Model);
-        Assert.Equal(["gpt-6-astra"], OpenAi().GetConfiguredModels());
+        Assert.Equal("gpt-6.2-astra", new LlmProviderOptions().GetProfile(LlmWorkload.Main).Model);
+        Assert.Equal(["gpt-6.2-astra"], OpenAi().GetConfiguredModels());
     }
 
     [Fact]

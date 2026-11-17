@@ -127,6 +127,7 @@ public sealed class LlmProviderGuardTests
     [InlineData("gpt-5.6-sol", 0.006575)]
     [InlineData("gpt-6-sol", 0.00243)]
     [InlineData("gpt-6-astra", 0.01215)]
+    [InlineData("gpt-6.2-astra", 0.00956)]
     [InlineData("grok-4.7", 0.002)]
     [InlineData("grok-4.7-2026-11-01", 0.002)]
     public void EstimateUpperBoundCost_UsesModelSpecificCachedWriteAndOutputRates(string model, double expected)
@@ -142,6 +143,7 @@ public sealed class LlmProviderGuardTests
     [InlineData("gpt-5.6-sol", 0.00695)]
     [InlineData("gpt-6-sol", 0.00258)]
     [InlineData("gpt-6-astra", 0.0129)]
+    [InlineData("gpt-6.2-astra", 0.01016)]
     [InlineData("grok-4.7", 0.002)]
     public void EstimateUpperBoundCost_TreatsUnobservedUncachedInputAsWrites(string model, double expected)
     {
@@ -172,16 +174,19 @@ public sealed class LlmProviderGuardTests
         Assert.Equal(1.089504, aboveBoundary, precision: 6);
     }
 
-    [Fact]
-    public void EstimateUpperBoundCost_Gpt6AstraAppliesLongContextRatesAbove272KInput()
+    [Theory]
+    [InlineData("gpt-6-astra", 2.725, 5.44752)]
+    [InlineData("gpt-6.2-astra", 2.18, 4.358016)]
+    public void EstimateUpperBoundCost_AstraAppliesLongContextRatesAbove272KInput(
+        string model, double expectedAtBoundary, double expectedAboveBoundary)
     {
         var atBoundary = LlmProviderGuard.EstimateUpperBoundCost(
-            "gpt-6-astra", Response(input: 272_000, output: 100));
+            model, Response(input: 272_000, output: 100));
         var aboveBoundary = LlmProviderGuard.EstimateUpperBoundCost(
-            "gpt-6-astra", Response(input: 272_001, output: 100));
+            model, Response(input: 272_001, output: 100));
 
-        Assert.Equal(2.725, atBoundary, precision: 6);
-        Assert.Equal(5.44752, aboveBoundary, precision: 6);
+        Assert.Equal(expectedAtBoundary, atBoundary, precision: 6);
+        Assert.Equal(expectedAboveBoundary, aboveBoundary, precision: 6);
     }
 
     [Theory]
@@ -212,8 +217,10 @@ public sealed class LlmProviderGuardTests
         guard.RecordCallFailure(lease, new InvalidOperationException("test cleanup"));
     }
 
-    [Fact]
-    public void AstraReservation_AccountsForHigherCostWithinExistingBudget()
+    [Theory]
+    [InlineData("gpt-6-astra")]
+    [InlineData("gpt-6.2-astra")]
+    public void AstraReservation_AccountsForHigherCostWithinExistingBudget(string model)
     {
         var guard = new LlmProviderGuard(
             NullLogger<LlmProviderGuard>.Instance,
@@ -224,10 +231,10 @@ public sealed class LlmProviderGuardTests
                 StatePath = Path.Combine(Path.GetTempPath(), $"guard-{Guid.NewGuid():N}.json"),
             });
 
-        Assert.True(guard.TryBeginCall("gpt-6-astra", true, out var lease, out _));
+        Assert.True(guard.TryBeginCall(model, true, out var lease, out _));
         Assert.Equal(0.50, lease.ReservedUsd);
-        Assert.True(guard.TryBeginCall("gpt-6-astra", false, out var secondLease, out _));
-        Assert.False(guard.TryBeginCall("gpt-6-astra", false, out _, out var blocked));
+        Assert.True(guard.TryBeginCall(model, false, out var secondLease, out _));
+        Assert.False(guard.TryBeginCall(model, false, out _, out var blocked));
         Assert.Equal("hourly_cost_budget_exhausted", blocked.Reason);
         guard.RecordCallFailure(lease, new InvalidOperationException("test cleanup"));
         guard.RecordCallFailure(secondLease, new InvalidOperationException("test cleanup"));

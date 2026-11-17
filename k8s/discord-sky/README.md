@@ -43,23 +43,32 @@ This directory contains the Kubernetes resources required to run the Discord Sky
 
 ## Chat Provider
 
-Production chat uses `LLM__ActiveProvider=OpenAI` and `gpt-6-astra` for all text workloads. Keep
+Production chat uses `LLM__ActiveProvider=OpenAI` and `gpt-6.2-astra` for all text workloads. Keep
 `LLM__Providers__OpenAI__ApiKey` in the existing Secret. The ConfigMap follows the Secret in `envFrom`, so the
 committed active-provider setting takes precedence over any legacy Secret entry. Images keep the same OpenAI
-key and Flare/Sunburst models. No credential rotation is needed for the provider switch.
+key and Flare/Sunburst models. No credential rotation is needed for the model upgrade.
 
 Astra uses Responses with `UseHostedToolSearch=true`. The inactive Grok profile retains direct tool exposure
 because that account's hosted search is alpha-gated. Its continuation adapter omits repeated instructions on
 linked response turns; that adapter does not affect OpenAI. All shared reply/approval/recovery fixes remain active.
 Verify private autonomy/persona model overrides, startup routing and model-access logs, then `llm_call` records
-with `provider=OpenAI` and `model=gpt-6-astra`. `/healthz` alone does not prove provider inference works.
+with `provider=OpenAI` and `model=gpt-6.2-astra`. `/healthz` alone does not prove provider inference works.
 
 The harmless live smoke accepts `--provider xAI --model grok-4.7 --effort ExtraHigh`; supply `XAI_API_KEY` through
 the environment, never on the command line. Optional `--steward-assembly` and `--steward-profile` point to a local
 Steward binary and example profile for a full-catalog schema check. Native tools are sent as non-executable
 declarations, and only one fixed local validation function runs. Do not use a production profile for this probe.
-Use `--provider OpenAI --model gpt-6-astra --effort ExtraHigh --hosted-tool-search true` for the current production
+Use `--provider OpenAI --model gpt-6.2-astra --effort ExtraHigh --hosted-tool-search true` for the current production
 profile, supplying `OPENAI_API_KEY` through the environment.
+
+GPT-6.2 Astra keeps the existing reasoning matrix, $0.50 reservation, and $4/hour / $12/day production limits.
+Standard pricing is $8/M input, $0.40/M cached input, $10/M 30-minute cache writes, and $40/M output. Above 272K
+input tokens, input/cache rates double and output rises by 50%. Old Astra pricing remains supported for rollback.
+Compare cache cohorts within the same model; pre-upgrade samples are not a like-for-like baseline.
+
+Live compatibility probes on 2026-11-17 passed xhigh/Hybrid and low/Off, including tool approval and linked
+continuations. The Hybrid continuation reused 2,132 of 2,187 input tokens. Both probes together cost an estimated
+$0.037865 in a separate local ledger, used no real memories, and made no Discord mutations.
 
 ## Cache And Recall Rollout
 
@@ -107,7 +116,7 @@ Recall is lazy, bound to the direct requester, and subject to the existing memor
 budget exhaustion. These are selection/evidence signals, not proof the response used a returned fact well.
 The shadow continuity brief remains non-injecting.
 
-Live pre-release synthetic checks verified first-call reuse of 1,757/2,190 input tokens across fresh run contexts,
+The original GPT-6 Astra cache-canary checks verified first-call reuse of 1,757/2,190 input tokens across fresh run contexts,
 and continuation reuse of 2,187/2,242 tokens. A persona-only breakpoint initially missed the minimum cacheable
 length, so the final implementation uses the full stable instruction prefix. Four bounded smoke loops cost an
 estimated $0.122659 in a separate local ledger, used no real memories, and made no Discord mutations. These

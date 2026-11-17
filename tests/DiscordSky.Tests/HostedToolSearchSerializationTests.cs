@@ -15,6 +15,7 @@ public sealed class HostedToolSearchSerializationTests
 {
     [Theory]
     [InlineData("gpt-6-astra", true)]
+    [InlineData("gpt-6.2-astra", true)]
     [InlineData("grok-4.7", false)]
     public async Task ResponsesAdapter_SerializesProviderSpecificToolExposure(string model, bool useHostedToolSearch)
     {

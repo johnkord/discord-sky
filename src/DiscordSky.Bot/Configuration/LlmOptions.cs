@@ -112,9 +112,9 @@ public sealed class LlmProviderOptions
     public string? Endpoint { get; init; }
 
     /// <summary>
-    /// Default chat model name (e.g. "gpt-6-astra").
+    /// Default chat model name (e.g. "gpt-6.2-astra").
     /// </summary>
-    public string ChatModel { get; init; } = "gpt-6-astra";
+    public string ChatModel { get; init; } = "gpt-6.2-astra";
 
     /// <summary>Model for ambient generated replies. Falls back to <see cref="ChatModel"/>.</summary>
     public string? AmbientModel { get; init; }

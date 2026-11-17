@@ -110,7 +110,7 @@ profiles for `Main`, `Ambient`, `Utility`, `ColdOpen`, `ColdOpenCritic`, `ImageR
 The active provider may be OpenAI or another configured compatible provider. Per-request `ChatOptions.ModelId`
 selects the workload model through one shared telemetry and guard boundary.
 
-Production uses OpenAI's `gpt-6-astra` through the Responses API for all eight text workloads. Image generation
+Production uses OpenAI's `gpt-6.2-astra` through the Responses API for all eight text workloads. Image generation
 and editing still use Flare and Sunburst, not Astra. xAI remains an inactive comparison profile, with no automatic
 provider fallback. The historical cold-open comparison stays disabled.
 
@@ -132,12 +132,12 @@ verbosity, reasoning effort, and output-token limits are different controls. The
 universal cap: explicit workload budgets and reasoning headroom can override it, and full autonomy currently
 uses the provider's output limit.
 
-The existing live limits remain $4/hour and $12/day, with the existing route budgets. Astra accounting uses
-$10/M input, $1/M cached input, $12.50/M cache writes, and $50/M output. Above 272,000 input tokens, input/cache
+The existing live limits remain $4/hour and $12/day, with the existing route budgets. GPT-6.2 Astra accounting uses
+$8/M input, $0.40/M cached input, $10/M 30-minute cache writes, and $40/M output. Above 272,000 input tokens, input/cache
 rates double and output rises by 50%. The $0.50 in-flight reservation is an estimate, not a hard per-call cap.
 Private per-guild or persona model overrides can supersede defaults; check those when changing providers.
 
-Model capabilities and pricing: [OpenAI GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra).
+Model capabilities and pricing: [OpenAI GPT-6.2 Astra](https://developers.openai.com/api/docs/models/gpt-6.2-astra).
 
 ## Memory
 

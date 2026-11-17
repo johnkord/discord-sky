@@ -18,7 +18,7 @@ if (string.IsNullOrWhiteSpace(apiKey))
     return 2;
 }
 
-var model = GetArgument(args, "--model", providerName == "xAI" ? "grok-4.7" : "gpt-6-astra");
+var model = GetArgument(args, "--model", providerName == "xAI" ? "grok-4.7" : new LlmProviderOptions().ChatModel);
 var profile = new LlmWorkloadProfile(model, GetArgument(args, "--effort", "ExtraHigh"));
 var useHostedToolSearch = bool.Parse(GetArgument(args, "--hosted-tool-search", providerName == "xAI" ? "false" : "true"));
 var cacheMode = Enum.Parse<WorldAutonomyPromptCacheMode>(GetArgument(args, "--cache-mode", "Off"), ignoreCase: true);

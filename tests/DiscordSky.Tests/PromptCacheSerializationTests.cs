@@ -18,6 +18,7 @@ public sealed class PromptCacheSerializationTests
     [InlineData("gpt-5.6")]
     [InlineData("gpt-6-sol")]
     [InlineData("gpt-6-astra")]
+    [InlineData("gpt-6.2-astra")]
     public async Task ResponsesAdapter_DropsUnsupportedRequestCacheControls(string model)
     {
         var port = ReserveLoopbackPort();
@@ -66,6 +67,8 @@ public sealed class PromptCacheSerializationTests
     [InlineData("gpt-6-sol", WorldAutonomyPromptCacheMode.Explicit)]
     [InlineData("gpt-6-astra", WorldAutonomyPromptCacheMode.Explicit)]
     [InlineData("gpt-6-astra", WorldAutonomyPromptCacheMode.Hybrid)]
+    [InlineData("gpt-6.2-astra", WorldAutonomyPromptCacheMode.Explicit)]
+    [InlineData("gpt-6.2-astra", WorldAutonomyPromptCacheMode.Hybrid)]
     public async Task ResponsesAdapter_RawRepresentationForwardsAllCacheControls(string model, WorldAutonomyPromptCacheMode mode)
     {
         var port = ReserveLoopbackPort();
@@ -138,9 +141,11 @@ public sealed class PromptCacheSerializationTests
     }
 
     [Theory]
-    [InlineData(WorldAutonomyPromptCacheMode.Hybrid)]
-    [InlineData(WorldAutonomyPromptCacheMode.Explicit)]
-    public async Task CachedContinuation_DoesNotResendDeveloperInstructions(WorldAutonomyPromptCacheMode mode)
+    [InlineData("gpt-6-astra", WorldAutonomyPromptCacheMode.Hybrid)]
+    [InlineData("gpt-6-astra", WorldAutonomyPromptCacheMode.Explicit)]
+    [InlineData("gpt-6.2-astra", WorldAutonomyPromptCacheMode.Hybrid)]
+    [InlineData("gpt-6.2-astra", WorldAutonomyPromptCacheMode.Explicit)]
+    public async Task CachedContinuation_DoesNotResendDeveloperInstructions(string model, WorldAutonomyPromptCacheMode mode)
     {
         var prefix = $"http://127.0.0.1:{ReserveLoopbackPort()}/";
         using var listener = new HttpListener();
@@ -149,9 +154,9 @@ public sealed class PromptCacheSerializationTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var capture = CaptureRequestAsync(listener);
         var openAi = new OpenAIClient(new System.ClientModel.ApiKeyCredential("not-a-real-key"), new OpenAIClientOptions { Endpoint = new Uri(prefix) });
-        using var client = WorldAutonomyPromptCache.Wrap(openAi.GetResponsesClient().AsIChatClient("gpt-6-astra"));
+        using var client = WorldAutonomyPromptCache.Wrap(openAi.GetResponsesClient().AsIChatClient(model));
         var context = new WorldAutonomyRunContext("run", 4001, "message", "5001", null, null,
-            "gpt-6-astra", "profile", "manifest", [], SourceChannelId: 6001);
+            model, "profile", "manifest", [], SourceChannelId: 6001);
         var options = new ChatOptions();
         WorldAutonomyPromptCache.Configure(options, context, true, mode: mode);
         options.ConversationId = "resp-prior";
@@ -168,13 +173,15 @@ public sealed class PromptCacheSerializationTests
         Assert.Equal(2, initial.InputItems.Count);
     }
 
-    [Fact]
-    public void HybridCohorts_AreStableAcrossRunsAndDisabledForOtherProviders()
+    [Theory]
+    [InlineData("gpt-6-astra")]
+    [InlineData("gpt-6.2-astra")]
+    public void HybridCohorts_AreStableAcrossRunsAndDisabledForOtherProviders(string model)
     {
         var configuration = WorldAutonomyConfiguration.FromOptions(new WorldAutonomyOptions
         { PromptCacheMode = WorldAutonomyPromptCacheMode.Hybrid, PromptCacheCanaryPercent = 50 });
         var context = new WorldAutonomyRunContext("run", 4001, "message", "5001", null, null,
-            "gpt-6-astra", "profile", "manifest", []);
+            model, "profile", "manifest", []);
         var first = WorldAutonomyPromptCache.SelectMode(configuration, context, "OpenAI");
         Assert.Equal(first, WorldAutonomyPromptCache.SelectMode(configuration, context with { RunId = "another-run" }, "OpenAI"));
         Assert.Equal(WorldAutonomyPromptCacheMode.Off, WorldAutonomyPromptCache.SelectMode(configuration, context, "xAI"));

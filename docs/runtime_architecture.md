@@ -22,7 +22,7 @@ The active provider is selected by `LLM:ActiveProvider`. Each workload resolves 
 reasoning effort, and optional reasoning summary. Per-request model selection stays inside one shared transport,
 telemetry, deadline, and guard boundary.
 
-Production selects OpenAI `gpt-6-astra` for every text workload: creative replies, full autonomy, utility, memory,
+Production selects OpenAI `gpt-6.2-astra` for every text workload: creative replies, full autonomy, utility, memory,
 and image-prompt rewriting. Creative workloads use xhigh; utility and memory use low. Flare/Sunburst remain the
 separate image models. Inactive xAI configuration is not an automatic failover path.
 

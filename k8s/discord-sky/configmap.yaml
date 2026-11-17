@@ -87,7 +87,7 @@ data:
   MemoryExtraction__OpportunityGateMode: "Live"
   MemoryExtraction__ExplorationRate: "0.05"
   MemoryExtraction__ShutdownFlushPolicy: "RunAlways"
-  # GPT-6 Astra drives all text workloads; Flare/Sunburst remain the separate image models.
+  # GPT-6.2 Astra drives all text workloads; Flare/Sunburst remain the separate image models.
   # Creative calls use xhigh; utility and memory use low. Existing spend and route budgets are preserved.
   # ConfigMap values override the Secret because configMapRef follows secretRef in the Deployment.
   LLM__ActiveProvider: "OpenAI"
@@ -96,14 +96,14 @@ data:
   LLM__Guard__DailyUsdLimit: "12.0"
   LLM__Guard__ProbeIntervalMinutes: "5"
   LLM__Guard__StatePath: "/app/data/user_memories/llm-provider-guard.json"
-  LLM__Providers__OpenAI__ChatModel: "gpt-6-astra"
-  LLM__Providers__OpenAI__AmbientModel: "gpt-6-astra"
-  LLM__Providers__OpenAI__UtilityModel: "gpt-6-astra"
-  LLM__Providers__OpenAI__ColdOpenModel: "gpt-6-astra"
-  LLM__Providers__OpenAI__ColdOpenCriticModel: "gpt-6-astra"
-  LLM__Providers__OpenAI__ImageRewriteModel: "gpt-6-astra"
-  LLM__Providers__OpenAI__MemoryExtractionModel: "gpt-6-astra"
-  LLM__Providers__OpenAI__MemoryConsolidationModel: "gpt-6-astra"
+  LLM__Providers__OpenAI__ChatModel: "gpt-6.2-astra"
+  LLM__Providers__OpenAI__AmbientModel: "gpt-6.2-astra"
+  LLM__Providers__OpenAI__UtilityModel: "gpt-6.2-astra"
+  LLM__Providers__OpenAI__ColdOpenModel: "gpt-6.2-astra"
+  LLM__Providers__OpenAI__ColdOpenCriticModel: "gpt-6.2-astra"
+  LLM__Providers__OpenAI__ImageRewriteModel: "gpt-6.2-astra"
+  LLM__Providers__OpenAI__MemoryExtractionModel: "gpt-6.2-astra"
+  LLM__Providers__OpenAI__MemoryConsolidationModel: "gpt-6.2-astra"
   LLM__Providers__OpenAI__MaxTokens: "1200"
   LLM__Providers__OpenAI__RequestTimeoutMinutes: "15"
   LLM__Providers__OpenAI__ReasoningEffort: "ExtraHigh"

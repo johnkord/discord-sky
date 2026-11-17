@@ -239,12 +239,13 @@ public sealed class LlmProviderGuard
 
         var isGpt6Sol = model.StartsWith("gpt-6-sol", StringComparison.OrdinalIgnoreCase);
         var isGpt6Astra = model.StartsWith("gpt-6-astra", StringComparison.OrdinalIgnoreCase);
+        var isGpt62Astra = IsGpt62Astra(model);
         var isGrok47 = IsGrok47(model);
         var input = Math.Max(0, usage.InputTokenCount ?? 0);
         var cached = Math.Clamp(usage.CachedInputTokenCount ?? 0, 0, input);
         var observedWrite = TelemetryChatClient.GetCacheWriteInputTokens(response);
         var write = Math.Clamp(
-            observedWrite ?? (model.StartsWith("gpt-5.6", StringComparison.OrdinalIgnoreCase) || isGpt6Sol || isGpt6Astra
+            observedWrite ?? (model.StartsWith("gpt-5.6", StringComparison.OrdinalIgnoreCase) || isGpt6Sol || isGpt6Astra || isGpt62Astra
                 ? input - cached
                 : 0),
             0,
@@ -253,6 +254,8 @@ public sealed class LlmProviderGuard
         var output = Math.Max(0, usage.OutputTokenCount ?? 0);
         var rates = isGrok47
             ? (Input: 2.0, Cached: 0.5, Write: 2.0, Output: 6.0)
+            : isGpt62Astra
+            ? (Input: 8.0, Cached: 0.4, Write: 10.0, Output: 40.0)
             : isGpt6Astra
             ? (Input: 10.0, Cached: 1.0, Write: 12.5, Output: 50.0)
             : isGpt6Sol
@@ -264,7 +267,7 @@ public sealed class LlmProviderGuard
                     : model.StartsWith("gpt-5.4-mini", StringComparison.OrdinalIgnoreCase)
                         ? (Input: 0.75, Cached: 0.075, Write: 0.75, Output: 4.5)
                         : (Input: 5.0, Cached: 0.5, Write: 6.25, Output: 30.0);
-        var longContext = (isGpt6Sol || isGpt6Astra) && input > 272_000;
+        var longContext = (isGpt6Sol || isGpt6Astra || isGpt62Astra) && input > 272_000;
         if (isGrok47 && input >= 200_000)
             return (ordinary * rates.Input + cached * rates.Cached + write * rates.Write + output * rates.Output) * 2 / 1_000_000.0;
         return ((ordinary * rates.Input + cached * rates.Cached + write * rates.Write) * (longContext ? 2.0 : 1.0)
@@ -382,12 +385,16 @@ public sealed class LlmProviderGuard
             ? 0.02
             : model.StartsWith("gpt-image-", StringComparison.OrdinalIgnoreCase)
                 ? 0.21
-                : model.StartsWith("gpt-6-astra", StringComparison.OrdinalIgnoreCase)
+                : model.StartsWith("gpt-6-astra", StringComparison.OrdinalIgnoreCase) || IsGpt62Astra(model)
                     ? 0.50
                 : model.StartsWith("gpt-5.6-sol", StringComparison.OrdinalIgnoreCase) ||
                   model.StartsWith("gpt-6-sol", StringComparison.OrdinalIgnoreCase)
                     ? 0.20
                     : 0.75;
+
+    private static bool IsGpt62Astra(string model) =>
+        model.Equals("gpt-6.2-astra", StringComparison.OrdinalIgnoreCase) ||
+        model.StartsWith("gpt-6.2-astra-", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsGrok47(string model) =>
         model.Equals("grok-4.7", StringComparison.OrdinalIgnoreCase) ||
