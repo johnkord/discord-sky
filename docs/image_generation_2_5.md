@@ -1,6 +1,6 @@
 # GPT Image 2.5 In Discord Sky
 
-Updated 2026-11-15 UTC. This is the current image pipeline and operating guide.
+Updated 2026-11-17 UTC. This is the current image pipeline and operating guide.
 
 ## Discord Use
 
@@ -91,8 +91,8 @@ and the pixel count must be between 655360 and 8294400. Sizes above 2560x1440 re
 
 The existing one-image-per-request contract remains. There are no batch requests, background retries,
 Responses API image sessions, additional image-planning model calls, or automatic fallback to older models.
-The Image API itself handles generation and edits. As of 2026-11-15, Grok 4.7 drives chat and image-prompt
-rewriting; Flare and Sunburst remain the OpenAI image backends.
+The Image API itself handles generation and edits. GPT-6 Astra drives chat and image-prompt rewriting;
+Flare and Sunburst remain the OpenAI image backends.
 
 ## Production Settings And Limits
 

@@ -12,7 +12,7 @@ while host-owned routing and persistent budgets decide when the expensive tool-e
 - Direct commands, mentions, and replies with deterministic reply targeting.
 - Ambient `Conversation`, `Reaction`, `Silence`, and `FullAutonomy` routes selected by a utility-model judge.
 - One-call, no-tools conversation for ordinary Robotnik lines.
-- Full Grok 4.7/xhigh autonomy with the complete native Steward catalog for bound guilds.
+- Full Astra/xhigh autonomy with hosted discovery of the complete native Steward catalog for bound guilds.
 - Per-user factual, experiential, running-bit, meta, and suppression memories.
 - GPT Image 2.5 generation, reference edits, transparent outputs, and progressive previews behind shared budgets.
 - Persistent Empire State mood, ranks, and bounded war-room log.
@@ -69,9 +69,9 @@ See [docs/runtime_architecture.md](docs/runtime_architecture.md) and
        "Token": "..."
      },
      "LLM": {
-       "ActiveProvider": "xAI",
+      "ActiveProvider": "OpenAI",
        "Providers": {
-         "xAI": {
+         "OpenAI": {
            "ApiKey": "..."
          }
        }
@@ -110,17 +110,34 @@ profiles for `Main`, `Ambient`, `Utility`, `ColdOpen`, `ColdOpenCritic`, `ImageR
 The active provider may be OpenAI or another configured compatible provider. Per-request `ChatOptions.ModelId`
 selects the workload model through one shared telemetry and guard boundary.
 
-Production uses xAI's `grok-4.7` via `https://api.x.ai/v1` for all eight text workloads, including image-prompt
-rewriting. Creative replies and full autonomy use `xhigh`; utility and memory use `low`. OpenAI is used only for
-Flare image generation and Sunburst edits. The inactive OpenAI text profiles remain for an explicit rollback;
-there is no automatic OpenAI text fallback. The historical cold-open comparison stays disabled.
+Production uses OpenAI's `gpt-6-astra` through the Responses API for all eight text workloads. Image generation
+and editing still use Flare and Sunburst, not Astra. xAI remains an inactive comparison profile, with no automatic
+provider fallback. The historical cold-open comparison stays disabled.
 
-The existing live limits remain $4/hour and $12/day, with the existing route budgets. Grok accounting uses its
-published input/cached-input/output rates, doubling all rates when input reaches 200,000 tokens. A $0.20
-in-flight reservation is an estimate, not a hard per-call billing cap. Private per-guild or persona model
-overrides can supersede defaults; check those when changing providers.
+| Workload | Callers | Reasoning |
+| --- | --- | --- |
+| Main | Commands, mentions, direct replies, full world-autonomy agent | xhigh |
+| Ambient | Ordinary ambient replies and one-call autonomy conversation | xhigh |
+| Utility | Audience/routing and ambient-worth judges, emoji judge, media summaries, Empire updates | low |
+| ColdOpen | Proactive cold-open composition | xhigh; cold opens currently disabled |
+| ColdOpenCritic | Advisory cold-open audit | xhigh; cold opens currently disabled |
+| ImageRewrite | Persona-aware image prompt and caption preparation | xhigh |
+| MemoryExtraction | Conversation-window memory extraction | low |
+| MemoryConsolidation | Rewriting a user's memory set at the cap | low; consolidation currently disabled |
 
-Model capabilities and pricing: [xAI Grok 4.7](https://docs.x.ai/developers/models/grok-4.7).
+`ExtraHigh` in configuration serializes as `xhigh`. Effort applies to each model call, not to the total run;
+a tool-enabled run can make several xhigh calls. Astra supports low, medium, high, xhigh, and max, but not none.
+The current profile layer does not yet expose max; it should be wired and tested before enabling it. Reply
+verbosity, reasoning effort, and output-token limits are different controls. The 1,200-token setting is not a
+universal cap: explicit workload budgets and reasoning headroom can override it, and full autonomy currently
+uses the provider's output limit.
+
+The existing live limits remain $4/hour and $12/day, with the existing route budgets. Astra accounting uses
+$10/M input, $1/M cached input, $12.50/M cache writes, and $50/M output. Above 272,000 input tokens, input/cache
+rates double and output rises by 50%. The $0.50 in-flight reservation is an estimate, not a hard per-call cap.
+Private per-guild or persona model overrides can supersede defaults; check those when changing providers.
+
+Model capabilities and pricing: [OpenAI GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra).
 
 ## Memory
 
@@ -136,10 +153,10 @@ Robotnik's prompt.
 
 World autonomy is dark unless an exact guild binding exists in private runtime configuration. Each enabled guild
 gets one isolated Steward child with its own profile and durable paths. All native tools remain callable through
-that child. Grok receives the full function catalog directly because this xAI account does not have alpha access
-to hosted tool search. `LLM:Providers:xAI:UseHostedToolSearch=false` changes schema presentation, not authority.
-Providers with hosted-search access can enable it. Linked xAI Responses turns inherit the original instructions;
-Sky omits repeated `instructions` when sending `previous_response_id`, as xAI requires.
+that child. Astra uses hosted tool search and deferred schemas, so the complete catalog remains available without
+placing every schema in the first prompt. The inactive xAI profile retains direct exposure because its account
+lacks hosted-search alpha access. This setting changes schema presentation, not authority. The xAI-specific
+continuation adapter remains available but is not used for OpenAI requests.
 
 Tool-call enforcement, safe reply-envelope recovery, and mixed read/write approval handling are shared across
 providers. Switching back to an OpenAI profile does not require undoing these fixes. Approved but uninvoked

@@ -43,22 +43,23 @@ This directory contains the Kubernetes resources required to run the Discord Sky
 
 ## Chat Provider
 
-Production chat uses `LLM__ActiveProvider=xAI` and `grok-4.7` for all text workloads. Keep
-`LLM__Providers__xAI__ApiKey` in the existing Secret. The ConfigMap follows the Secret in `envFrom`, so the
-committed active-provider setting takes precedence over a legacy `LLM__ActiveProvider=OpenAI` Secret entry.
-OpenAI's key remains for Flare/Sunburst image calls; no credential rotation is needed for the chat switch.
+Production chat uses `LLM__ActiveProvider=OpenAI` and `gpt-6-astra` for all text workloads. Keep
+`LLM__Providers__OpenAI__ApiKey` in the existing Secret. The ConfigMap follows the Secret in `envFrom`, so the
+committed active-provider setting takes precedence over any legacy Secret entry. Images keep the same OpenAI
+key and Flare/Sunburst models. No credential rotation is needed for the provider switch.
 
-Grok uses Responses with `UseHostedToolSearch=false`: this account's hosted search is alpha-gated, so the
-complete Steward catalog is exposed directly. The xAI continuation adapter omits repeated instructions on
-linked response turns. Both changes are required; changing only the active-provider/model strings is insufficient.
+Astra uses Responses with `UseHostedToolSearch=true`. The inactive Grok profile retains direct tool exposure
+because that account's hosted search is alpha-gated. Its continuation adapter omits repeated instructions on
+linked response turns; that adapter does not affect OpenAI. All shared reply/approval/recovery fixes remain active.
 Verify private autonomy/persona model overrides, startup routing and model-access logs, then `llm_call` records
-with `provider=xAI` and `model=grok-4.7`. `/healthz` alone does not prove provider inference works.
+with `provider=OpenAI` and `model=gpt-6-astra`. `/healthz` alone does not prove provider inference works.
 
 The harmless live smoke accepts `--provider xAI --model grok-4.7 --effort ExtraHigh`; supply `XAI_API_KEY` through
 the environment, never on the command line. Optional `--steward-assembly` and `--steward-profile` point to a local
 Steward binary and example profile for a full-catalog schema check. Native tools are sent as non-executable
 declarations, and only one fixed local validation function runs. Do not use a production profile for this probe.
-Use `--provider OpenAI --hosted-tool-search true` only for an intentional OpenAI rollback validation.
+Use `--provider OpenAI --model gpt-6-astra --effort ExtraHigh --hosted-tool-search true` for the current production
+profile, supplying `OPENAI_API_KEY` through the environment.
 
 ## Images
 

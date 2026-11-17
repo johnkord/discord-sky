@@ -22,9 +22,9 @@ The active provider is selected by `LLM:ActiveProvider`. Each workload resolves 
 reasoning effort, and optional reasoning summary. Per-request model selection stays inside one shared transport,
 telemetry, deadline, and guard boundary.
 
-Production selects xAI `grok-4.7` for every text workload: creative replies, full autonomy, utility, memory,
-and image-prompt rewriting. Creative workloads use xhigh; utility and memory use low. OpenAI remains the
-independent image provider. Inactive OpenAI text configuration is not an automatic failover path.
+Production selects OpenAI `gpt-6-astra` for every text workload: creative replies, full autonomy, utility, memory,
+and image-prompt rewriting. Creative workloads use xhigh; utility and memory use low. Flare/Sunburst remain the
+separate image models. Inactive xAI configuration is not an automatic failover path.
 
 ## 2. Startup And Health
 
@@ -110,8 +110,8 @@ conversation, reaction, and structural-action worth. The host chooses one route:
 | --- | --- |
 | `Silence` | No creative model call |
 | `Reaction` | One constrained emoji path |
-| `Conversation` | One Grok 4.7/xhigh call, no tools, one concise line |
-| `FullAutonomy` | Grok 4.7/xhigh agent plus the complete native Steward catalog |
+| `Conversation` | One Astra/xhigh call, no tools, one concise line |
+| `FullAutonomy` | Astra/xhigh agent plus hosted discovery of the complete native Steward catalog |
 
 Canary mode enforces the prediction and samples bounded asymmetric exploration. Predicted silence/reaction may
 explore conversation; predicted conversation may explore full autonomy. Structural predictions remain full.
@@ -161,7 +161,7 @@ receipts may not exist yet. Missing evidence is never interpreted as success.
 ### 5.3 Conversation route
 
 The conversation service deliberately receives no Steward tools, request IDs, mutation contract, or function loop.
-It may not claim server changes. It uses the same Grok 4.7/xhigh profile, registered transport, transcript sink,
+It may not claim server changes. It uses the same Astra/xhigh profile, registered transport, transcript sink,
 reaction attribution, and provider guard as other routes.
 
 ### 5.4 Continuity shadow
@@ -174,7 +174,7 @@ review and a separate canary.
 ## 6. Memory
 
 Human messages are collected in per-channel debounced windows capped by message count and duration. The extraction
-pipeline uses Grok 4.7/low with structured memory-operation verification and durable yield telemetry.
+pipeline uses Astra/low with structured memory-operation verification and durable yield telemetry.
 
 The opportunity gate supports:
 

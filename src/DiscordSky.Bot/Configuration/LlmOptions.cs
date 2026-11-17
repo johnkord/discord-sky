@@ -57,7 +57,7 @@ public sealed class LlmOptions
     /// Which provider block to activate. Must be a key under <c>LLM:Providers</c>
     /// (e.g. "OpenAI", "xAI"). Case-insensitive.
     /// </summary>
-    public string ActiveProvider { get; init; } = "xAI";
+    public string ActiveProvider { get; init; } = "OpenAI";
 
     /// <summary>
     /// Named provider configurations. The key chosen by <see cref="ActiveProvider"/>
@@ -112,9 +112,9 @@ public sealed class LlmProviderOptions
     public string? Endpoint { get; init; }
 
     /// <summary>
-    /// Default chat model name (e.g. "grok-4.7").
+    /// Default chat model name (e.g. "gpt-6-astra").
     /// </summary>
-    public string ChatModel { get; init; } = "grok-4.7";
+    public string ChatModel { get; init; } = "gpt-6-astra";
 
     /// <summary>Model for ambient generated replies. Falls back to <see cref="ChatModel"/>.</summary>
     public string? AmbientModel { get; init; }

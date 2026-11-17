@@ -85,10 +85,10 @@ data:
   MemoryExtraction__OpportunityGateMode: "Live"
   MemoryExtraction__ExplorationRate: "0.05"
   MemoryExtraction__ShutdownFlushPolicy: "RunAlways"
-  # Grok 4.7 drives all text workloads. OpenAI remains configured only for image generation and edits.
+  # GPT-6 Astra drives all text workloads; Flare/Sunburst remain the separate image models.
   # Creative calls use xhigh; utility and memory use low. Existing spend and route budgets are preserved.
   # ConfigMap values override the Secret because configMapRef follows secretRef in the Deployment.
-  LLM__ActiveProvider: "xAI"
+  LLM__ActiveProvider: "OpenAI"
   LLM__Guard__Enabled: "true"
   LLM__Guard__HourlyUsdLimit: "4.0"
   LLM__Guard__DailyUsdLimit: "12.0"
@@ -113,7 +113,8 @@ data:
   LLM__Providers__OpenAI__MemoryExtractionReasoningEffort: "low"
   LLM__Providers__OpenAI__MemoryConsolidationReasoningEffort: "low"
   LLM__Providers__OpenAI__UseResponsesApi: "true"
-  # The inactive OpenAI text profiles above are retained for an explicit rollback, never an automatic fallback.
+  LLM__Providers__OpenAI__UseHostedToolSearch: "true"
+  # xAI remains an inactive comparison profile, never an automatic fallback.
   LLM__Providers__xAI__Endpoint: "https://api.x.ai/v1"
   LLM__Providers__xAI__ChatModel: "grok-4.7"
   LLM__Providers__xAI__AmbientModel: "grok-4.7"
