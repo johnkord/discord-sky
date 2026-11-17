@@ -212,6 +212,8 @@ public static class TelemetryEventTypes
     public const string WorldAutonomyBudget = "world_autonomy_budget";
     public const string LlmProviderGuard = "llm_provider_guard";
     public const string WorldAutonomyContinuity = "world_autonomy_continuity";
+    public const string WorldAutonomyFeatures = "world_autonomy_features";
+    public const string WorldAutonomyRecall = "world_autonomy_recall";
 }
 
 /// <summary>Writes one content-free deployment boundary after the durable telemetry sink has started.</summary>

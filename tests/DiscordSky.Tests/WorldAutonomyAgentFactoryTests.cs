@@ -10,11 +10,13 @@ namespace DiscordSky.Tests;
 public sealed class WorldAutonomyAgentFactoryTests
 {
     [Theory]
-    [InlineData(false, false)]
-    [InlineData(false, true)]
-    [InlineData(true, false)]
-    [InlineData(true, true)]
-    public async Task Agent_MixedReadWriteBatchApprovesAndRecordsEachTool(bool terminalDelivery, bool readFirst)
+    [InlineData(false, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(true, false, false)]
+    [InlineData(true, true, false)]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, true)]
+    public async Task Agent_MixedReadWriteBatchApprovesAndRecordsEachTool(bool terminalDelivery, bool readFirst, bool hostRecall)
     {
         var requestIds = new[] { "01900000-0000-7000-8000-000000000001", "01900000-0000-7000-8000-000000000002" };
         var context = new WorldAutonomyRunContext("mixed-run", 4001, "message", "5001", null, null,
@@ -38,11 +40,14 @@ public sealed class WorldAutonomyAgentFactoryTests
                 return "written";
             }, name: "create_role"), true, true, "role-schema"),
             new WorldAutonomyToolDescriptor(AIFunctionFactory.Create(() => { reads++; return "member"; },
-                name: "get_member"), false, false, "member-schema"),
+                name: hostRecall ? WorldAutonomyRecallTool.ToolName : "get_member"), false, false, "member-schema"),
         };
-        var run = new WorldAutonomyRunState(context, ledger, descriptors);
-        var client = new MixedBatchChatClient(requestIds, readFirst);
-        var agent = new WorldAutonomyAgentFactory().Create(client, run, descriptors,
+        var nativeTools = hostRecall ? descriptors.Take(2).ToArray() : descriptors;
+        var run = new WorldAutonomyRunState(context, ledger, nativeTools,
+            additionalReadOnlyTools: hostRecall ? [WorldAutonomyRecallTool.ToolName] : []);
+        var client = new MixedBatchChatClient(requestIds, readFirst, descriptors[2].Function.Name);
+        var agent = new WorldAutonomyAgentFactory().Create(client, run, nativeTools,
+            supplementaryTools: hostRecall ? [descriptors[2].Function] : [],
             terminalDeliveryEnabled: terminalDelivery, useHostedToolSearch: false);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         var session = await agent.CreateSessionAsync();
@@ -53,7 +58,7 @@ public sealed class WorldAutonomyAgentFactoryTests
         Assert.Equal(2, writes);
         Assert.Equal(1, reads);
         Assert.Equal(2, ledger.PendingDispatches.Count);
-        Assert.Equal(1, run.ActivitySnapshot.NativeReadCount);
+        Assert.Equal(hostRecall ? 0 : 1, run.ActivitySnapshot.NativeReadCount);
         Assert.Equal(2, run.ActivitySnapshot.NativeWriteCount);
         Assert.False(run.HasUnsettledWrites);
         await run.AbandonUninvokedApprovalsAsync();
@@ -765,7 +770,7 @@ public sealed class WorldAutonomyAgentFactoryTests
         public void Dispose() { }
     }
 
-    private sealed class MixedBatchChatClient(string[] requestIds, bool readFirst) : IChatClient
+    private sealed class MixedBatchChatClient(string[] requestIds, bool readFirst, string readToolName = "get_member") : IChatClient
     {
         private int _calls;
 
@@ -778,7 +783,7 @@ public sealed class WorldAutonomyAgentFactoryTests
                 new FunctionCallContent("category-call", "create_category", new Dictionary<string, object?> { ["request_id"] = requestIds[0] }),
                 new FunctionCallContent("role-call", "create_role", new Dictionary<string, object?> { ["request_id"] = requestIds[1] }),
             };
-            var read = new FunctionCallContent("member-call", "get_member", new Dictionary<string, object?>());
+            var read = new FunctionCallContent("member-call", readToolName, new Dictionary<string, object?>());
             if (readFirst) calls.Insert(0, read);
             else calls.Add(read);
             return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, calls)));

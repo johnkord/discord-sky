@@ -145,9 +145,10 @@ Conversation windows are extracted into typed per-user memories. Suppressed, sup
 instruction-shaped entries are filtered before ambient use. The extraction opportunity gate supports `Off`,
 `Shadow`, and `Live` modes plus bounded exploration.
 
-The dominant world-autonomy routes do not yet receive memory text. Production computes a shadow-only, bounded
-continuity candidate and records selected memory IDs and a digest for relevance review. It does not change
-Robotnik's prompt.
+Full-autonomy direct petitions can deliberately call `recall_about_user`. The tool is bound to the requester,
+loads notes only when selected, and reuses the existing suppression, supersession, ranking, and recall limits.
+It does not accept a model-selected user ID. Ambient autonomy and the no-tools conversation route do not receive
+this capability. The separate continuity brief remains shadow-only; its top two notes are never injected automatically.
 
 ## World Autonomy And Steward
 
@@ -161,6 +162,13 @@ continuation adapter remains available but is not used for OpenAI requests.
 Tool-call enforcement, safe reply-envelope recovery, and mixed read/write approval handling are shared across
 providers. Switching back to an OpenAI profile does not require undoing these fixes. Approved but uninvoked
 writes are closed on agent exit, and missing journal receipts stay unknown without replay or endless recovery.
+
+Hybrid prompt caching is running as a deterministic 50% canary. Both cohorts use the full static persona and
+operational instructions before changing run data; Hybrid adds an explicit stable-prefix breakpoint while keeping
+implicit caching for the growing tool conversation. The control uses ordinary implicit caching. Neither cohort
+changes reasoning effort, authority, or reply style. `world_autonomy_features` identifies the selected cohort and
+recall availability for each run. Rollback: `WorldAutonomy:PromptCacheMode=Off` and/or
+`WorldAutonomy:MemoryRecallEnabled=false`. See the Kubernetes runbook for comparison queries and promotion gates.
 
 Private profiles and guild IDs never enter public image layers or committed manifests. The hardened deployment
 validates exact bindings, probes the bundled Steward executable, and restores prior resources if rollout fails.

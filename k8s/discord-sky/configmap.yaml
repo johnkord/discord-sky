@@ -14,7 +14,9 @@ data:
   WorldAutonomy__RequestIdPoolSize: "40"
   WorldAutonomy__ValidateStewardOnStartup: "true"
   WorldAutonomy__TerminalDeliveryEnabled: "true"
-  WorldAutonomy__PromptCacheMode: "Off"
+  WorldAutonomy__PromptCacheMode: "Hybrid"
+  WorldAutonomy__PromptCacheCanaryPercent: "50"
+  WorldAutonomy__MemoryRecallEnabled: "true"
   # Build and log bounded memory/rank briefs without injecting them. Promotion requires relevance review.
   WorldAutonomy__ContinuityBriefShadowEnabled: "true"
   WorldAutonomy__LedgerPath: "/app/data/user_memories/world-autonomy/world-autonomy.json"

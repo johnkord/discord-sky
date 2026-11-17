@@ -24,6 +24,10 @@ public sealed class WorldAutonomyOptions
 
     public WorldAutonomyPromptCacheMode PromptCacheMode { get; init; } = WorldAutonomyPromptCacheMode.Off;
 
+    public int PromptCacheCanaryPercent { get; init; } = 100;
+
+    public bool MemoryRecallEnabled { get; init; }
+
     public bool ContinuityBriefShadowEnabled { get; init; }
 
     public string LedgerPath { get; init; } = "data/world-autonomy/world-autonomy.json";
@@ -75,6 +79,7 @@ public enum WorldAutonomyPromptCacheMode
 {
     Off,
     Explicit,
+    Hybrid,
 }
 
 public sealed class WorldAutonomyGuildOptions
@@ -100,6 +105,8 @@ public sealed class WorldAutonomyConfiguration
         bool validateStewardOnStartup,
         bool terminalDeliveryEnabled,
         WorldAutonomyPromptCacheMode promptCacheMode,
+        int promptCacheCanaryPercent,
+        bool memoryRecallEnabled,
         WorldAutonomyAmbientGateMode ambientGateMode,
         double ambientFullThreshold,
         double ambientReactionThreshold,
@@ -126,6 +133,8 @@ public sealed class WorldAutonomyConfiguration
         ValidateStewardOnStartup = validateStewardOnStartup;
         TerminalDeliveryEnabled = terminalDeliveryEnabled;
         PromptCacheMode = promptCacheMode;
+        PromptCacheCanaryPercent = promptCacheCanaryPercent;
+        MemoryRecallEnabled = memoryRecallEnabled;
         AmbientGateMode = ambientGateMode;
         AmbientFullThreshold = ambientFullThreshold;
         AmbientReactionThreshold = ambientReactionThreshold;
@@ -160,6 +169,10 @@ public sealed class WorldAutonomyConfiguration
     public bool TerminalDeliveryEnabled { get; }
 
     public WorldAutonomyPromptCacheMode PromptCacheMode { get; }
+
+    public int PromptCacheCanaryPercent { get; }
+
+    public bool MemoryRecallEnabled { get; }
 
     public WorldAutonomyAmbientGateMode AmbientGateMode { get; }
 
@@ -214,6 +227,11 @@ public sealed class WorldAutonomyConfiguration
     public static WorldAutonomyConfiguration FromOptions(WorldAutonomyOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
+
+        if (!Enum.IsDefined(options.PromptCacheMode))
+            throw new InvalidOperationException("WorldAutonomy:PromptCacheMode is invalid.");
+        if (options.PromptCacheCanaryPercent is < 0 or > 100)
+            throw new InvalidOperationException("WorldAutonomy:PromptCacheCanaryPercent must be between 0 and 100.");
 
         if (options.SessionTimeoutMinutes is < 1 or > 60)
         {
@@ -339,6 +357,8 @@ public sealed class WorldAutonomyConfiguration
             options.ValidateStewardOnStartup,
             options.TerminalDeliveryEnabled,
             options.PromptCacheMode,
+            options.PromptCacheCanaryPercent,
+            options.MemoryRecallEnabled,
             options.AmbientGateMode,
             options.AmbientFullThreshold,
             options.AmbientReactionThreshold,

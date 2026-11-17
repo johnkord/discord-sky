@@ -57,6 +57,7 @@ builder.Services.AddSingleton<IWorldAutonomyMessageTransport, DiscordWorldAutono
 builder.Services.AddSingleton<IWorldAutonomyVisualTransport, DiscordWorldAutonomyVisualTransport>();
 builder.Services.AddSingleton<WorldAutonomySpeechTool>();
 builder.Services.AddSingleton<WorldAutonomyVisualTool>();
+builder.Services.AddSingleton<WorldAutonomyRecallTool>();
 builder.Services.AddSingleton<WorldAutonomyOrchestrator>();
 builder.Services.AddSingleton<IWorldAutonomyRunner>(sp => sp.GetRequiredService<WorldAutonomyOrchestrator>());
 builder.Services.AddSingleton<WorldAutonomyRouter>();

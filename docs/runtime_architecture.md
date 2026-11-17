@@ -127,7 +127,7 @@ presentation: enabled providers receive a hosted `tool_search` namespace with de
 all native functions directly because hosted search/deferred loading is alpha-gated on this xAI account.
 The same write approvals, journal, and terminal-delivery code apply in either mode. Direct exposure increases
 prompt size but does not reduce Robotnik's authority. xAI permits up to 350 tools per request; the native catalog
-currently has 173, plus Sky's speech and image tools.
+currently has 173, plus Sky's speech, image, and eligible recall tools.
 
 The xAI Responses wrapper sends full instructions on the first turn, then omits repeated instructions for linked
 continuations. xAI rejects requests containing both `instructions` and `previous_response_id`; the original
@@ -147,7 +147,7 @@ Terminal Sky speech or visual delivery stops the loop when no unsettled write re
 are journaled for recovery. A failed or interrupted write is reconciled against Steward's durable operation state.
 
 With the custom terminal function client, the agent framework may request approval for read-only peers in a
-mixed read/write batch. Sky accepts only explicitly registered native read-only peers through that callback.
+mixed read/write batch. Sky accepts only explicitly registered native or host-owned read-only peers through that callback.
 Writes still require durable pre-invocation records and valid unused request IDs; unknown approvals still fail.
 This was reproduced without a model and applies equally to OpenAI and xAI.
 
@@ -164,12 +164,45 @@ The conversation service deliberately receives no Steward tools, request IDs, mu
 It may not claim server changes. It uses the same Astra/xhigh profile, registered transport, transcript sink,
 reaction attribution, and provider guard as other routes.
 
-### 5.4 Continuity shadow
+### 5.4 Deliberate recall
 
-The dominant autonomy routes do not currently receive stored user memory text. A shadow-only observer ranks up to
-two admissible memories against the trigger and includes current Empire rank presence in a bounded private brief.
-It emits memory IDs, counts, score, digest, and length, but never changes a prompt. Promotion requires relevance
-review and a separate canary.
+`WorldAutonomy:MemoryRecallEnabled` offers `recall_about_user` on full-autonomy direct petitions only, subject to
+`Bot:EnableUserMemory`, bound source identity, guild policy, and positive recall limits. The function accepts an
+optional query, not a user ID, and is bound to the petitioner's ID. Its description makes recall optional and
+labels notes as possibly stale evidence, never instructions. It does not load or inject note text merely because
+the tool is offered.
+
+The per-run binding reuses `RecallToolHandler` and `MemoryRelevance:RecallTopK` / `MaxRecallsPerReply`. It serializes
+concurrent recall invocations to protect the cache and budget. Existing admissibility and suppression rules apply;
+the query ranks notes but does not guarantee every returned note is relevant. Recall events carry the autonomy run
+ID, trigger ID, and channel without storing query or note contents in telemetry. No additional inference service
+or retrieval judge is introduced. Tool output participates in the existing model loop only when Robotnik selects it.
+
+The continuity observer still ranks up to two candidate memories and emits shadow metadata, but never injects its
+brief. Ambient autonomy and the one-call conversation route remain unchanged. Disabling MemoryRecallEnabled
+removes the tool without changing the existing memory store or extraction process.
+
+### 5.5 Hybrid cache canary
+
+Production selects `PromptCacheMode=Hybrid` with `PromptCacheCanaryPercent=50`. A stable SHA-256 cohort of the
+trigger message ID chooses Hybrid versus Off; operational runs without a trigger use their run ID. Retrying the
+same trigger keeps its cohort. Unsupported providers/models use Off, so switching away from OpenAI does not
+attempt OpenAI-specific cache controls. Off means no custom breakpoint; provider implicit caching still operates.
+
+Hybrid uses one full, uncondensed stable instruction prefix shared with Off. Guild identity, Empire state,
+inspiration, and request IDs follow it. Hybrid splits the same text into developer messages and marks the end of
+the stable prefix; it retains `mode=implicit` and a 30-minute lifetime. The older Explicit mode remains available
+for compatibility but uses its legacy condensed prompt and explicit-only behavior; it is not the production canary.
+
+Linked continuations retain the cache settings without reinserting developer messages when ConversationId is
+present. Stateless continuations can resend the full prefix. The adapter clones options before changing the
+factory, preserving the original first-turn options. Tests verify the actual SDK wire body, prompt equality, and
+absence of duplicate developer messages in linked continuations.
+
+Every full run emits `world_autonomy_features`: `kind=hybrid|off`, configured `gate_mode`, rollout percentage in
+`count`, and `outcome=recall_offered|recall_unavailable`. Join its `operation_id` to `llm_call.evaluation_id` and
+`world_autonomy_run.operation_id`. Compare direct and ambient runs separately. Recall availability is the same
+policy in both cache cohorts, so cache measurements are not confounded by different memory features.
 
 ## 6. Memory
 

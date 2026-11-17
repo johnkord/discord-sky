@@ -137,7 +137,8 @@ public sealed class WorldAutonomyRunState
         WorldAutonomyRunContext context,
         IWorldAutonomyLedger ledger,
         IEnumerable<WorldAutonomyToolDescriptor> tools,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IEnumerable<string>? additionalReadOnlyTools = null)
     {
         Context = context ?? throw new ArgumentNullException(nameof(context));
         _ledger = ledger ?? throw new ArgumentNullException(nameof(ledger));
@@ -148,6 +149,7 @@ public sealed class WorldAutonomyRunState
         _readOnlyToolNames = tools
             .Where(tool => !tool.IsWrite)
             .Select(tool => tool.Function.Name)
+            .Concat(additionalReadOnlyTools ?? [])
             .ToImmutableHashSet(StringComparer.Ordinal);
     }
 
@@ -795,9 +797,10 @@ public sealed class WorldAutonomyAgentFactory
             Instructions = instructions ?? WorldAutonomyPrompt.BuildInstructions(run.Context, terminalDeliveryEnabled, useHostedToolSearch),
             Tools = modelTools
         };
-        if (promptCacheMode == WorldAutonomyPromptCacheMode.Explicit && instructions is null)
+        if (promptCacheMode is WorldAutonomyPromptCacheMode.Explicit or WorldAutonomyPromptCacheMode.Hybrid && instructions is null)
         {
-            WorldAutonomyPromptCache.Configure(chatOptions, run.Context, terminalDeliveryEnabled, useHostedToolSearch);
+            WorldAutonomyPromptCache.Configure(chatOptions, run.Context, terminalDeliveryEnabled, useHostedToolSearch, promptCacheMode);
+            rawClient = WorldAutonomyPromptCache.Wrap(rawClient);
         }
         if (workloadProfile is { } profile)
         {
@@ -983,7 +986,12 @@ public static class WorldAutonomyPrompt
         bool useHostedToolSearch = true)
     {
         ArgumentNullException.ThrowIfNull(context);
-        var requestIds = string.Join(", ", context.RequestIdPool.Order(StringComparer.Ordinal));
+        return BuildFullStableInstructions(context.SourceChannelId.HasValue, terminalDeliveryEnabled, useHostedToolSearch) +
+            "\n\n" + BuildDynamicCacheSuffix(context);
+    }
+
+    internal static string BuildFullStableInstructions(bool hasSourceChannel, bool terminalDeliveryEnabled, bool useHostedToolSearch)
+    {
         var speechToolName = terminalDeliveryEnabled
             ? WorldAutonomySpeechTool.TerminalToolName
             : WorldAutonomySpeechTool.ToolName;
@@ -993,7 +1001,7 @@ public static class WorldAutonomyPrompt
         var catalogAccess = useHostedToolSearch
             ? "The full native catalog is reachable through tool search, nothing in it is off limits, and nobody's approval is required."
             : "The full native catalog is exposed directly as function tools. Call them by their exact names; nothing is off limits and nobody's approval is required.";
-        var speechInstructions = context.SourceChannelId.HasValue
+        var speechInstructions = hasSourceChannel
             ? $"""
             === HOW YOU SPEAK ===
             Your final answer text is NOT delivered to Discord. When you choose to address the room, speak
@@ -1021,14 +1029,10 @@ public static class WorldAutonomyPrompt
         var builder = new StringBuilder();
 
         builder.Append(RobotnikPersona.SystemCore).Append("\n\n");
-        if (!string.IsNullOrWhiteSpace(context.PersonaDirective))
-        {
-            builder.Append(context.PersonaDirective.Trim()).Append("\n\n");
-        }
 
         builder.Append($"""
             === THIS IS NOT A BIT: YOU HAVE REAL HANDS ===
-            You are a Discord bot inside guild {context.GuildId}, and this server has handed you genuine
+            You are a Discord bot inside the guild identified in this run's binding, and this server has handed you genuine
             administrative control. The discord_steward tools are live. Every change you make with them
             really happens to this real server and the members really see it.
             So never claim you lack permission, never ask anyone to hand you the controls, and never
@@ -1071,7 +1075,6 @@ public static class WorldAutonomyPrompt
             You are not confined to talking. You can rename and re-topic channels, raise and raze them,
             mint roles and award them as titles and punishments, reorder the hierarchy, rewrite the server
             itself, pin, unpin, add emoji, schedule events, and stage announcements.
-            If nothing better presents itself this run, you might: {Inspiration(context.RunId)}.
             Do not reach for the same mutation you used last time merely because it worked. An empire that
             only ever renames one channel is not an empire. Vary the scale too: not every remark needs a
             constitutional amendment, and not every hour should pass without one.
@@ -1083,7 +1086,7 @@ public static class WorldAutonomyPrompt
             If a tool fails, the failure is real. Read the error, adapt, and if the thing genuinely cannot
             be done, blame a minion rather than inventing a success.
             For any native mutation whose schema includes request_id, use exactly one unused UUID from this
-            reserved pool: {requestIds}
+            run's reserved pool, supplied below.
             Finish when your vision for this run is complete.
             """);
 
@@ -1181,7 +1184,7 @@ public static class WorldAutonomyPrompt
             builder.Append(" Source channel ID: ").Append(context.SourceChannelId.Value).Append('.');
         }
         builder.Append("\nOptional inspiration, never an assignment: ")
-            .Append(Inspiration(context.RunId)).Append(".\n")
+            .Append("If nothing better presents itself this run, you might: ").Append(Inspiration(context.RunId)).Append(".\n")
             .Append("Reserved mutation request IDs: ").Append(requestIds).Append('\n');
         return builder.ToString();
     }

@@ -61,6 +61,62 @@ declarations, and only one fixed local validation function runs. Do not use a pr
 Use `--provider OpenAI --model gpt-6-astra --effort ExtraHigh --hosted-tool-search true` for the current production
 profile, supplying `OPENAI_API_KEY` through the environment.
 
+## Cache And Recall Rollout
+
+Current controls:
+
+```text
+WorldAutonomy__PromptCacheMode=Hybrid
+WorldAutonomy__PromptCacheCanaryPercent=50
+WorldAutonomy__MemoryRecallEnabled=true
+```
+
+`Off` disables custom cache controls, not provider implicit caching. `Hybrid` adds a stable-prefix breakpoint
+without disabling implicit history caching. `Explicit` is the older explicit-only implementation and should not
+be substituted for Hybrid. Unsupported providers/models bypass custom cache settings automatically.
+Set the cache mode to Off or canary percentage to zero to stop the cache experiment. Set MemoryRecallEnabled
+to false to remove the direct-petition recall tool. Neither switch alters the Astra model/effort, full-autonomy
+ownership, voice, or stored memory. Apply changes through the normal deployment workflow.
+
+The private telemetry now records the feature selection per run. For exported daily JSONL files, join by run ID:
+
+```bash
+jq -s '
+  (map(select(.event=="world_autonomy_features"))
+   | map({key:.operation_id,value:{cache:.kind,route:.reason,recall:.outcome}}) | from_entries) as $features
+  | map(select(.event=="llm_call" and .workload=="world_autonomy")
+   | . + {features:$features[.evaluation_id // ""]})
+  | map(select(.features != null))
+  | group_by([.model,.features.cache,.features.route,(.call_index==1)])
+  | map({model:.[0].model,cache:.[0].features.cache,route:.[0].features.route,
+      first_call:(.[0].call_index==1),calls:length,
+      input:(map(.input_tokens//0)|add),cached:(map(.cached_input_tokens//0)|add),
+      writes:(map(.cache_write_input_tokens//0)|add),output:(map(.output_tokens//0)|add),
+         total_ms:(map(.latency_ms//0)|add),non_ok:(map(select(.outcome!="ok"))|length)})
+' telemetry/recall-*.jsonl
+```
+
+Review at least 30 first calls per cohort across multiple active periods before promotion. Look for lower input
+cost without materially reducing later-call reuse, increased failures, duplicate delivery, or degraded behavior.
+A 15% input-cost improvement is a proposed promotion threshold, not a promised saving. Compare costs normalized
+for input length and inspect end-to-end run cost, recall selection, and outcome; a higher cache percentage alone
+is insufficient. The owner judges whether memory use helps the character rather than repeating stale callbacks.
+
+Recall is lazy, bound to the direct requester, and subject to the existing memory limits. `recall_tool_ok`,
+`recall_tool_no_notes`, and related events now carry an autonomy `operation_id`; `world_autonomy_recall` reports
+budget exhaustion. These are selection/evidence signals, not proof the response used a returned fact well.
+The shadow continuity brief remains non-injecting.
+
+Live pre-release synthetic checks verified first-call reuse of 1,757/2,190 input tokens across fresh run contexts,
+and continuation reuse of 2,187/2,242 tokens. A persona-only breakpoint initially missed the minimum cacheable
+length, so the final implementation uses the full stable instruction prefix. Four bounded smoke loops cost an
+estimated $0.122659 in a separate local ledger, used no real memories, and made no Discord mutations. These
+checks establish protocol behavior, not production savings or callback quality.
+
+The smoke tool accepts `--cache-mode Hybrid` and `--guard-state <local-path>` with the existing provider/model
+arguments. Its local $1/hour/day guard is separate from the production ledger. Do not warm the cache periodically
+or introduce paid speed tiers as part of this rollout.
+
 ## Images
 
 Image generation uses Flare for new pictures and Sunburst for edits, with one in-flight render, bounded reference

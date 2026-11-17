@@ -1,12 +1,14 @@
 using System.Diagnostics;
 using System.Text.Json;
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Memory.Logging;
 using DiscordSky.Bot.Orchestration.Autonomy;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
-var providerName = GetArgument(args, "--provider", "xAI");
+var providerName = GetArgument(args, "--provider", new LlmOptions().ActiveProvider);
 if (providerName is not ("xAI" or "OpenAI")) throw new ArgumentException("--provider must be xAI or OpenAI.");
 var apiKeyVariable = providerName == "xAI" ? "XAI_API_KEY" : "OPENAI_API_KEY";
 var apiKey = Environment.GetEnvironmentVariable(apiKeyVariable);
@@ -19,6 +21,7 @@ if (string.IsNullOrWhiteSpace(apiKey))
 var model = GetArgument(args, "--model", providerName == "xAI" ? "grok-4.7" : "gpt-6-astra");
 var profile = new LlmWorkloadProfile(model, GetArgument(args, "--effort", "ExtraHigh"));
 var useHostedToolSearch = bool.Parse(GetArgument(args, "--hosted-tool-search", providerName == "xAI" ? "false" : "true"));
+var cacheMode = Enum.Parse<WorldAutonomyPromptCacheMode>(GetArgument(args, "--cache-mode", "Off"), ignoreCase: true);
 var timeoutSeconds = ParseTimeout(GetArgument(args, "--timeout-seconds", "120"));
 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
 var confirmation = "deploy-validation";
@@ -33,7 +36,20 @@ var provider = new LlmProviderOptions
     RequestTimeoutMinutes = Math.Max(1, (int)Math.Ceiling(timeoutSeconds / 60d)),
     UseResponsesApi = true
 };
-using var chatClient = LlmChatClientFactory.Create(provider, model);
+var smokeTelemetry = new InMemoryTelemetrySink();
+var smokeGuard = new LlmProviderGuard(Options.Create(new LlmOptions
+{
+    Guard = new LlmProviderGuardOptions
+    {
+        HourlyUsdLimit = 1,
+        DailyUsdLimit = 1,
+        StatePath = GetArgument(args, "--guard-state", "data/autonomy-smoke-provider-guard.json"),
+    },
+}), smokeTelemetry, NullLogger<LlmProviderGuard>.Instance);
+var rawClient = new LlmCallTaggingChatClient(
+    new TelemetryChatClient(LlmChatClientFactory.Create(provider, model), providerName, smokeTelemetry, smokeGuard),
+    "autonomy_smoke", profile);
+using var chatClient = cacheMode == WorldAutonomyPromptCacheMode.Off ? (IChatClient)rawClient : WorldAutonomyPromptCache.Wrap(rawClient);
 var validationFunction = AIFunctionFactory.Create(
     (string confirmation) =>
     {
@@ -98,6 +114,14 @@ if (useHostedToolSearch)
         chatOptions.Instructions += " The native Discord schemas are present only for compatibility validation. Do not call any native Discord function; only autonomy_smoke_validate is executable.";
     }
 profile.ApplyReasoning(chatOptions);
+if (cacheMode != WorldAutonomyPromptCacheMode.Off)
+{
+    if (providerName != "OpenAI") throw new ArgumentException("Cache smoke requires the OpenAI provider.");
+    var cacheContext = WorldAutonomyRunContext.Create(4001, "cache_smoke", model, "smoke-profile", "smoke-manifest", 1);
+    chatOptions.Instructions = WorldAutonomyPrompt.BuildInstructions(cacheContext, useHostedToolSearch: useHostedToolSearch) +
+        "\nThis is a trusted deployment self-test, not a Discord member petition. " + chatOptions.Instructions;
+    WorldAutonomyPromptCache.Configure(chatOptions, cacheContext, false, useHostedToolSearch, cacheMode);
+}
 var agent = new ChatClientAgent(
     chatClient,
     new ChatClientAgentOptions
@@ -142,6 +166,10 @@ try
     }
 
     Console.WriteLine($"LIVE AUTONOMY SMOKE PASSED provider={providerName} model={model} effort={profile.ReasoningEffort} native_schemas={nativeToolCount} elapsed_ms={stopwatch.ElapsedMilliseconds} approvals={approvals} invocations={invocations}");
+    Console.WriteLine($"cache_mode={cacheMode} local_guard_daily_usd={smokeGuard.Snapshot().DailyCostUsd:F6}");
+    foreach (var metric in smokeTelemetry.Events.Where(metric => metric.EventType == TelemetryEventTypes.LlmCall))
+        Console.WriteLine(JsonSerializer.Serialize(metric, new JsonSerializerOptions
+        { DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull }));
     return 0;
 }
 catch (OperationCanceledException) when (timeout.IsCancellationRequested)

@@ -55,6 +55,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
     private readonly LlmProviderGuard _providerGuard;
     private readonly TimeProvider _timeProvider;
     private readonly WorldAutonomyContinuityObserver? _continuityObserver;
+    private readonly WorldAutonomyRecallTool? _recallTool;
 
     public WorldAutonomyOrchestrator(
         WorldAutonomyConfiguration configuration,
@@ -68,7 +69,8 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         IRecallTelemetrySink? telemetry = null,
         LlmProviderGuard? providerGuard = null,
         TimeProvider? timeProvider = null,
-        WorldAutonomyContinuityObserver? continuityObserver = null)
+        WorldAutonomyContinuityObserver? continuityObserver = null,
+        WorldAutonomyRecallTool? recallTool = null)
     {
         _configuration = configuration;
         _llmOptions = llmOptions;
@@ -84,6 +86,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
             Microsoft.Extensions.Logging.Abstractions.NullLogger<LlmProviderGuard>.Instance,
             _timeProvider);
         _continuityObserver = continuityObserver;
+        _recallTool = recallTool;
     }
 
     public async Task<WorldAutonomyRunResult> RunAsync(
@@ -195,8 +198,20 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
                 messageId: ulong.TryParse(opportunity.SourceMessageId, out var sourceMessageId) ? sourceMessageId : null,
                 evaluationId: context.RunId,
                 usageAccumulator: usageAccumulator);
-            runState = new WorldAutonomyRunState(context, _ledger, catalog.Tools, _timeProvider);
+            var recall = _configuration.MemoryRecallEnabled && _recallTool?.CanBind(opportunity) == true
+                ? _recallTool.Bind(opportunity, context) : null;
+            var cacheMode = WorldAutonomyPromptCache.SelectMode(_configuration, context, _llmOptions.CurrentValue.ActiveProvider);
+            _telemetry.Emit(new TelemetryEvent(startedAt, TelemetryEventTypes.WorldAutonomyFeatures,
+                Model: model, Kind: cacheMode.ToString().ToLowerInvariant(),
+                GateMode: _configuration.PromptCacheMode.ToString().ToLowerInvariant(),
+                Outcome: recall is null ? "recall_unavailable" : "recall_offered",
+                Count: _configuration.PromptCacheCanaryPercent,
+                OperationId: context.RunId, MessageId: ulong.TryParse(opportunity.SourceMessageId, out var featureTrigger) ? featureTrigger : null,
+                Reason: opportunity.IsDirectAddress ? "direct" : "ambient"));
+            runState = new WorldAutonomyRunState(context, _ledger, catalog.Tools, _timeProvider,
+                additionalReadOnlyTools: recall is null ? [] : [recall.Name]);
             var supplementaryTools = catalog.SupplementaryTools.Cast<AITool>().ToList();
+            if (recall is not null) supplementaryTools.Add(recall);
             if (_speechTool is not null && opportunity.SourceChannelId.HasValue)
             {
                 supplementaryTools.Add(_speechTool.Bind(
@@ -222,7 +237,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
                 supplementaryTools,
                 workloadProfile: mainProfile with { Model = model },
                 terminalDeliveryEnabled: _configuration.TerminalDeliveryEnabled,
-                promptCacheMode: _configuration.PromptCacheMode,
+                promptCacheMode: cacheMode,
                 useHostedToolSearch: provider.UseHostedToolSearch);
             var agentSession = await agent.CreateSessionAsync().ConfigureAwait(false);
             Microsoft.Agents.AI.AgentResponse response;

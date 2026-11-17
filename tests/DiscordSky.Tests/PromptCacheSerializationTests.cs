@@ -25,6 +25,7 @@ public sealed class PromptCacheSerializationTests
         using var listener = new HttpListener();
         listener.Prefixes.Add(prefix);
         listener.Start();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var capturedRequest = CaptureRequestAsync(listener);
         var openAi = new OpenAIClient(
             new System.ClientModel.ApiKeyCredential("not-a-real-key"),
@@ -47,30 +48,32 @@ public sealed class PromptCacheSerializationTests
         {
             await chatClient.GetResponseAsync(
                 [new ChatMessage(ChatRole.User, "Harmless cache serialization probe.")],
-                options);
+                options, timeout.Token);
         }
-        catch
+            catch (System.ClientModel.ClientResultException exception) when (exception.Status == 400)
         {
             // The loopback listener deliberately returns an API error after capturing the outbound request.
         }
 
-        using var document = JsonDocument.Parse(await capturedRequest);
+        using var document = JsonDocument.Parse(await capturedRequest.WaitAsync(timeout.Token));
         var root = document.RootElement;
         Assert.False(root.TryGetProperty("prompt_cache_key", out _));
         Assert.False(root.TryGetProperty("prompt_cache_options", out _));
     }
 
     [Theory]
-    [InlineData("gpt-5.6")]
-    [InlineData("gpt-6-sol")]
-    [InlineData("gpt-6-astra")]
-    public async Task ResponsesAdapter_RawRepresentationForwardsAllCacheControls(string model)
+    [InlineData("gpt-5.6", WorldAutonomyPromptCacheMode.Explicit)]
+    [InlineData("gpt-6-sol", WorldAutonomyPromptCacheMode.Explicit)]
+    [InlineData("gpt-6-astra", WorldAutonomyPromptCacheMode.Explicit)]
+    [InlineData("gpt-6-astra", WorldAutonomyPromptCacheMode.Hybrid)]
+    public async Task ResponsesAdapter_RawRepresentationForwardsAllCacheControls(string model, WorldAutonomyPromptCacheMode mode)
     {
         var port = ReserveLoopbackPort();
         var prefix = $"http://127.0.0.1:{port}/";
         using var listener = new HttpListener();
         listener.Prefixes.Add(prefix);
         listener.Start();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var capturedRequest = CaptureRequestAsync(listener);
         var openAi = new OpenAIClient(
             new System.ClientModel.ApiKeyCredential("not-a-real-key"),
@@ -93,24 +96,24 @@ public sealed class PromptCacheSerializationTests
             SourceAuthorId: 8001,
             SourceAuthorDisplayName: "member");
         var options = new ChatOptions();
-        var cacheKey = WorldAutonomyPromptCache.Configure(options, context, terminalDeliveryEnabled: true);
+        var cacheKey = WorldAutonomyPromptCache.Configure(options, context, terminalDeliveryEnabled: true, mode: mode);
 
         try
         {
             await chatClient.GetResponseAsync(
                 [new ChatMessage(ChatRole.User, "Dynamic episode suffix.")],
-                options);
+                options, timeout.Token);
         }
-        catch
+            catch (System.ClientModel.ClientResultException exception) when (exception.Status == 400)
         {
             // The loopback listener deliberately returns an API error after capturing the outbound request.
         }
 
-        using var document = JsonDocument.Parse(await capturedRequest);
+        using var document = JsonDocument.Parse(await capturedRequest.WaitAsync(timeout.Token));
         var root = document.RootElement;
         Assert.Equal(cacheKey, root.GetProperty("prompt_cache_key").GetString());
         var cacheOptions = root.GetProperty("prompt_cache_options");
-        Assert.Equal("explicit", cacheOptions.GetProperty("mode").GetString());
+        Assert.Equal(mode == WorldAutonomyPromptCacheMode.Hybrid ? "implicit" : "explicit", cacheOptions.GetProperty("mode").GetString());
         Assert.Equal("30m", cacheOptions.GetProperty("ttl").GetString());
         var content = root.GetProperty("input")[0].GetProperty("content");
         Assert.Equal(
@@ -122,6 +125,65 @@ public sealed class PromptCacheSerializationTests
         Assert.Equal("developer", root.GetProperty("input")[0].GetProperty("role").GetString());
         Assert.Equal("developer", root.GetProperty("input")[1].GetProperty("role").GetString());
         Assert.Equal("user", root.GetProperty("input")[2].GetProperty("role").GetString());
+        if (mode == WorldAutonomyPromptCacheMode.Hybrid)
+        {
+            var stableText = root.GetProperty("input")[0].GetProperty("content")[0].GetProperty("text").GetString()!;
+            Assert.True(stableText.Length > 6000);
+            Assert.DoesNotContain("Mood: gloating.", stableText);
+            Assert.DoesNotContain("01900000-0000-7000-8000-000000000001", stableText);
+            var combined = root.GetProperty("input")[0].GetProperty("content")[0].GetProperty("text").GetString() +
+                root.GetProperty("input")[1].GetProperty("content")[0].GetProperty("text").GetString();
+            Assert.Equal(WorldAutonomyPrompt.BuildInstructions(context, true), combined);
+        }
+    }
+
+    [Theory]
+    [InlineData(WorldAutonomyPromptCacheMode.Hybrid)]
+    [InlineData(WorldAutonomyPromptCacheMode.Explicit)]
+    public async Task CachedContinuation_DoesNotResendDeveloperInstructions(WorldAutonomyPromptCacheMode mode)
+    {
+        var prefix = $"http://127.0.0.1:{ReserveLoopbackPort()}/";
+        using var listener = new HttpListener();
+        listener.Prefixes.Add(prefix);
+        listener.Start();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var capture = CaptureRequestAsync(listener);
+        var openAi = new OpenAIClient(new System.ClientModel.ApiKeyCredential("not-a-real-key"), new OpenAIClientOptions { Endpoint = new Uri(prefix) });
+        using var client = WorldAutonomyPromptCache.Wrap(openAi.GetResponsesClient().AsIChatClient("gpt-6-astra"));
+        var context = new WorldAutonomyRunContext("run", 4001, "message", "5001", null, null,
+            "gpt-6-astra", "profile", "manifest", [], SourceChannelId: 6001);
+        var options = new ChatOptions();
+        WorldAutonomyPromptCache.Configure(options, context, true, mode: mode);
+        options.ConversationId = "resp-prior";
+        try
+        {
+            await client.GetResponseAsync([new ChatMessage(ChatRole.User, "continue")], options, timeout.Token);
+        }
+        catch (System.ClientModel.ClientResultException exception) when (exception.Status == 400) { }
+        using var document = JsonDocument.Parse(await capture.WaitAsync(timeout.Token));
+        Assert.Equal("resp-prior", document.RootElement.GetProperty("previous_response_id").GetString());
+        var input = Assert.Single(document.RootElement.GetProperty("input").EnumerateArray());
+        Assert.Equal("user", input.GetProperty("role").GetString());
+        var initial = Assert.IsType<CreateResponseOptions>(options.RawRepresentationFactory!(client));
+        Assert.Equal(2, initial.InputItems.Count);
+    }
+
+    [Fact]
+    public void HybridCohorts_AreStableAcrossRunsAndDisabledForOtherProviders()
+    {
+        var configuration = WorldAutonomyConfiguration.FromOptions(new WorldAutonomyOptions
+        { PromptCacheMode = WorldAutonomyPromptCacheMode.Hybrid, PromptCacheCanaryPercent = 50 });
+        var context = new WorldAutonomyRunContext("run", 4001, "message", "5001", null, null,
+            "gpt-6-astra", "profile", "manifest", []);
+        var first = WorldAutonomyPromptCache.SelectMode(configuration, context, "OpenAI");
+        Assert.Equal(first, WorldAutonomyPromptCache.SelectMode(configuration, context with { RunId = "another-run" }, "OpenAI"));
+        Assert.Equal(WorldAutonomyPromptCacheMode.Off, WorldAutonomyPromptCache.SelectMode(configuration, context, "xAI"));
+        Assert.Equal(WorldAutonomyPromptCacheMode.Off, WorldAutonomyPromptCache.SelectMode(configuration, context with { Model = "grok-4.7" }, "OpenAI"));
+        var groups = Enumerable.Range(1, 200).Select(index => WorldAutonomyPromptCache.SelectMode(configuration,
+            context with { SourceMessageId = index.ToString() }, "OpenAI")).ToHashSet();
+        Assert.Contains(WorldAutonomyPromptCacheMode.Off, groups);
+        Assert.Contains(WorldAutonomyPromptCacheMode.Hybrid, groups);
+        Assert.Throws<InvalidOperationException>(() => WorldAutonomyConfiguration.FromOptions(new WorldAutonomyOptions { PromptCacheCanaryPercent = 101 }));
     }
 
     private static async Task<string> CaptureRequestAsync(HttpListener listener)
