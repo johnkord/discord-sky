@@ -284,20 +284,17 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         {
             _providerGuard.RecordFailure(new TimeoutException("World autonomy provider probe timed out."));
             var completedAt = _timeProvider.GetUtcNow();
+            var result = BuildInterruptedRunResult(opportunity, context.RunId,
+                WorldAutonomyRunStatuses.TimedOut, "session_timeout", runState?.ActivitySnapshot);
             await _ledger.CompleteRunAsync(
                 context.RunId,
                 WorldAutonomyRunStatuses.TimedOut,
-                finalText: null,
+                finalText: result.FinalText,
                 failureReason: "session_timeout",
                 completedAt,
                 CancellationToken.None).ConfigureAwait(false);
             EmitRunEvent(opportunity, context, model, WorldAutonomyRunStatuses.TimedOut, "session_timeout", startedAt, completedAt, runState, usageAccumulator);
-            return new WorldAutonomyRunResult(
-                context.RunId,
-                opportunity.GuildId,
-                WorldAutonomyRunStatuses.TimedOut,
-                FinalText: null,
-                FailureReason: "session_timeout");
+            return result;
         }
         catch (OperationCanceledException)
         {
@@ -333,24 +330,45 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
                 : circuitOpened
                     ? _providerGuard.Snapshot().Reason ?? exception.GetType().Name
                     : exception.GetType().Name;
+            var result = BuildInterruptedRunResult(opportunity, context.RunId,
+                WorldAutonomyRunStatuses.Failed, failureReason, runState?.ActivitySnapshot,
+                providerUnavailable: circuitOpened || exception is LlmProviderBlockedException);
             await _ledger.CompleteRunAsync(
                 context.RunId,
                 WorldAutonomyRunStatuses.Failed,
-                finalText: null,
+                finalText: result.FinalText,
                 failureReason,
                 completedAt,
                 CancellationToken.None).ConfigureAwait(false);
             EmitRunEvent(opportunity, context, model, WorldAutonomyRunStatuses.Failed, failureReason, startedAt, completedAt, runState, usageAccumulator);
-            return new WorldAutonomyRunResult(
-                context.RunId,
-                opportunity.GuildId,
-                WorldAutonomyRunStatuses.Failed,
-                FinalText: opportunity.IsDirectAddress &&
-                    (circuitOpened || exception is LlmProviderBlockedException)
-                        ? BuildProviderUnavailableDecree(failureReason)
-                        : null,
-                FailureReason: failureReason);
+            return result;
         }
+    }
+
+    internal static WorldAutonomyRunResult BuildInterruptedRunResult(
+        WorldAutonomyOpportunity opportunity,
+        string runId,
+        string status,
+        string failureReason,
+        WorldAutonomyRunActivitySnapshot? activity,
+        bool providerUnavailable = false)
+    {
+        var delivered = activity?.DiscordDelivered == true || activity?.VisualDelivered == true;
+        string? finalText = null;
+        if (opportunity.IsDirectAddress && !delivered)
+        {
+            finalText = providerUnavailable
+                ? BuildProviderUnavailableDecree(failureReason)
+                : status == WorldAutonomyRunStatuses.TimedOut
+                    ? "The Imperial control room ran out of time during this audience."
+                    : "The Imperial control room failed during this audience.";
+            if (activity?.NativeWriteCount > 0)
+                finalText += " Some server changes may already have occurred; I will not repeat them blindly.";
+            else if (!providerUnavailable)
+                finalText += " No server changes were attempted.";
+        }
+
+        return new WorldAutonomyRunResult(runId, opportunity.GuildId, status, finalText, failureReason, delivered);
     }
 
     private void EmitCircuitEvent(WorldAutonomyOpportunity opportunity, string outcome, string? reason) =>

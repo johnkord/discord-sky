@@ -1,7 +1,11 @@
 #pragma warning disable MEAI001
 
+using System.Net;
+using System.Net.Sockets;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
+using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Orchestration.Autonomy;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -74,6 +78,94 @@ public sealed class StewardMcpSupervisorIntegrationTests
         Assert.NotSame(first, recreated);
         Assert.Equal(first.Catalog.Capabilities.ProfileDigest, recreated.Catalog.Capabilities.ProfileDigest);
         Assert.True(supervisor.GetHealthSnapshot().IsHealthy);
+    }
+
+    [Fact]
+    public async Task SiblingSteward_AutonomyProviderRejectionReturnsTruthfulFailure()
+    {
+        var stewardRoot = GetSiblingStewardRoot();
+        var assemblyPath = Path.Combine(stewardRoot, "src", "DiscordSteward", "bin", "Debug", "net10.0", "DiscordSteward.dll");
+        if (!File.Exists(assemblyPath)) return;
+        var profilePath = Path.Combine(stewardRoot, "config", "profiles", "unrestricted-autonomy.example.json");
+        using var profile = JsonDocument.Parse(File.ReadAllText(profilePath));
+        var guildId = ulong.Parse(profile.RootElement.GetProperty("Discord").GetProperty("GuildId").GetString()!);
+        var directory = Directory.CreateTempSubdirectory("sky-provider-rejection-").FullName;
+        try
+        {
+            using var socket = new TcpListener(IPAddress.Loopback, 0);
+            socket.Start();
+            var endpoint = $"http://127.0.0.1:{((IPEndPoint)socket.LocalEndpoint).Port}/";
+            socket.Stop();
+            using var listener = new HttpListener();
+            listener.Prefixes.Add(endpoint);
+            listener.Start();
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var options = new WorldAutonomyOptions
+            {
+                LedgerPath = Path.Combine(directory, "autonomy.json"),
+                StewardCommand = "dotnet",
+                StewardArguments = [assemblyPath],
+                StewardWorkingDirectory = stewardRoot,
+                PromptCacheMode = WorldAutonomyPromptCacheMode.Hybrid,
+                PromptCacheCanaryPercent = 100,
+                EnabledGuilds = new Dictionary<string, WorldAutonomyGuildOptions>
+                {
+                    [guildId.ToString()] = new() { ProfilePath = profilePath }
+                }
+            };
+            var configuration = WorldAutonomyConfiguration.FromOptions(options);
+            await using var supervisor = new StewardMcpSupervisor(configuration,
+                NullLoggerFactory.Instance, NullLogger<StewardMcpSupervisor>.Instance);
+            using var ledger = new FileBackedWorldAutonomyLedger(options);
+            var llm = new TestOptionsMonitor<LlmOptions>(new LlmOptions
+            {
+                Providers = new Dictionary<string, LlmProviderOptions>
+                {
+                    ["OpenAI"] = new()
+                    {
+                        ApiKey = "not-a-real-key", Endpoint = endpoint,
+                        ChatModel = "gpt-6.2-astra", ReasoningEffort = "ExtraHigh", UseResponsesApi = true
+                    }
+                }
+            });
+            var guard = new LlmProviderGuard(NullLogger<LlmProviderGuard>.Instance,
+                options: new LlmProviderGuardOptions { Enabled = false, StatePath = Path.Combine(directory, "guard.json") });
+            var orchestrator = new WorldAutonomyOrchestrator(configuration, llm, supervisor,
+                new WorldAutonomyAgentFactory(), ledger, NullLogger<WorldAutonomyOrchestrator>.Instance,
+                providerGuard: guard);
+            var opportunity = new WorldAutonomyOpportunity(guildId, "message", "Change my nickname.",
+                SourceMessageId: "5001", IsDirectAddress: true, SourceChannelId: 6001);
+
+            var run = orchestrator.RunAsync(opportunity, deadline.Token);
+            var request = await listener.GetContextAsync().WaitAsync(deadline.Token);
+            using var reader = new StreamReader(request.Request.InputStream, Encoding.UTF8);
+            var body = await reader.ReadToEndAsync(deadline.Token);
+            request.Response.StatusCode = 400;
+            request.Response.ContentType = "application/json";
+            var error = Encoding.UTF8.GetBytes("""{"error":{"message":"Synthetic provider rejection","type":"invalid_request_error"}}""");
+            await request.Response.OutputStream.WriteAsync(error, deadline.Token);
+            request.Response.Close();
+            var result = await run;
+
+            using var document = JsonDocument.Parse(body);
+            Assert.Equal(64, document.RootElement.GetProperty("prompt_cache_key").GetString()!.Length);
+            Assert.Contains("set_member_nickname", body, StringComparison.Ordinal);
+            Assert.Equal(WorldAutonomyRunStatuses.Failed, result.Status);
+            Assert.Equal("ClientResultException", result.FailureReason);
+            Assert.False(result.SpokeInChannel);
+            Assert.Contains("failed during this audience", result.FinalText, StringComparison.Ordinal);
+            Assert.Contains("No server changes were attempted.", result.FinalText, StringComparison.Ordinal);
+            Assert.Empty(await ledger.ListToolCallsAsync(result.RunId!, deadline.Token));
+            var recorded = await ledger.GetRunAsync(result.RunId!, deadline.Token);
+            Assert.NotNull(recorded);
+            Assert.Equal(64, recorded!.ManifestDigest.Length);
+            Assert.Equal(result.FinalText, recorded.FinalText);
+            Assert.Equal(result.FailureReason, recorded.FailureReason);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
     }
 
     private static string GetSiblingStewardRoot([CallerFilePath] string? sourceFile = null)

@@ -70,6 +70,12 @@ Live compatibility probes on 2026-11-17 passed xhigh/Hybrid and low/Off, includi
 continuations. The Hybrid continuation reused 2,132 of 2,187 input tokens. Both probes together cost an estimated
 $0.037865 in a separate local ledger, used no real memories, and made no Discord mutations.
 
+Those initial cache probes used short fixture digests and missed a production-only length failure: real manifests
+produced a 110-character prompt_cache_key, above OpenAI's 64-character maximum. Keys now hash the complete stable
+identity to exactly 64 characters, and the smoke fixture uses full-length digests. A 2026-11-18 UTC repair probe
+with all 173 native schemas, xhigh, and Hybrid passed; its continuation reused 2,303/2,358 input tokens. It cost an
+estimated $0.026499 in a separate local ledger. Only the local validator was executable, not Discord mutations.
+
 ## Cache And Recall Rollout
 
 Current controls:
@@ -86,6 +92,15 @@ be substituted for Hybrid. Unsupported providers/models bypass custom cache sett
 Set the cache mode to Off or canary percentage to zero to stop the cache experiment. Set MemoryRecallEnabled
 to false to remove the direct-petition recall tool. Neither switch alters the Astra model/effort, full-autonomy
 ownership, voice, or stored memory. Apply changes through the normal deployment workflow.
+
+For request-format errors, compare cohort and exact provider error before diagnosing tool permissions. A full
+run marked succeeded may still contain rejected writes: inspect native_write_count, succeeded_write_count,
+failed_write_count, and the write journal. Owner nicknames and assignable role titles are different operations.
+
+Direct model/tool-loop failures now end with a host-authored execution-failure reply, not another model call that
+lacks Steward tools. The reply distinguishes zero write attempts from possible partial changes, and a late error
+after speech/visual delivery does not cause a second reply. No automatic mutation retry is introduced. Inspect
+the run ledger and host fallback transcript before deciding whether any action should be tried again.
 
 The private telemetry now records the feature selection per run. For exported daily JSONL files, join by run ID:
 

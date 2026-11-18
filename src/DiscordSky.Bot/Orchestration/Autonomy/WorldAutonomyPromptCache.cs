@@ -56,9 +56,15 @@ internal static class WorldAutonomyPromptCache
             stablePrefix = WorldAutonomyPrompt.BuildStableCachePrefix(context.SourceChannelId.HasValue, terminalDeliveryEnabled, useHostedToolSearch);
             dynamicSuffix = WorldAutonomyPrompt.BuildDynamicCacheSuffix(context);
         }
-        var prefixDigest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(stablePrefix)))
-            .ToLowerInvariant()[..16];
-        var cacheKey = $"world-autonomy:{context.Model}:{context.ManifestDigest}:{prefixDigest}";
+        var cacheIdentity = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            Scope = "world-autonomy",
+            Version = 2,
+            context.Model,
+            context.ManifestDigest,
+            StableInstructions = stablePrefix,
+        });
+        var cacheKey = Convert.ToHexString(SHA256.HashData(cacheIdentity)).ToLowerInvariant();
         options.Instructions = null;
         var factory = new NativeOptionsFactory(cacheKey, stablePrefix, dynamicSuffix, mode);
         options.RawRepresentationFactory = factory.Create;

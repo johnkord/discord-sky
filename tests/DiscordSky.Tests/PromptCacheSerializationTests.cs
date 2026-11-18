@@ -90,8 +90,8 @@ public sealed class PromptCacheSerializationTests
             "episode-1",
             "trace-1",
             model,
-            "profile-digest",
-            "manifest-digest",
+            new string('a', 64),
+            new string('b', 64),
             ["01900000-0000-7000-8000-000000000001"],
             PersonaDirective: "Mood: gloating.",
             SourceChannelId: 6001,
@@ -115,6 +115,7 @@ public sealed class PromptCacheSerializationTests
         using var document = JsonDocument.Parse(await capturedRequest.WaitAsync(timeout.Token));
         var root = document.RootElement;
         Assert.Equal(cacheKey, root.GetProperty("prompt_cache_key").GetString());
+        Assert.Equal(64, root.GetProperty("prompt_cache_key").GetString()!.Length);
         var cacheOptions = root.GetProperty("prompt_cache_options");
         Assert.Equal(mode == WorldAutonomyPromptCacheMode.Hybrid ? "implicit" : "explicit", cacheOptions.GetProperty("mode").GetString());
         Assert.Equal("30m", cacheOptions.GetProperty("ttl").GetString());
@@ -141,6 +142,33 @@ public sealed class PromptCacheSerializationTests
     }
 
     [Theory]
+    [InlineData(WorldAutonomyPromptCacheMode.Hybrid)]
+    [InlineData(WorldAutonomyPromptCacheMode.Explicit)]
+    public void CacheKey_IsBoundedStableAndSeparatesInstructionIdentity(WorldAutonomyPromptCacheMode mode)
+    {
+        var context = new WorldAutonomyRunContext("run", 4001, "message", "5001", null, null,
+            "gpt-6.2-astra-" + new string('x', 96), new string('a', 64), new string('b', 64), [],
+            SourceChannelId: 6001);
+        string Key(WorldAutonomyRunContext candidate, bool terminal = true, bool hosted = true) =>
+            WorldAutonomyPromptCache.Configure(new ChatOptions(), candidate, terminal, hosted, mode);
+
+        var key = Key(context);
+
+        Assert.Matches("^[a-f0-9]{64}$", key);
+        Assert.Equal(key, Key(context));
+        Assert.Equal(key, Key(context with
+        {
+            RunId = "another-run",
+            SourceMessageId = "5002",
+            PersonaDirective = "Mood: gloating.",
+        }));
+        Assert.NotEqual(key, Key(context with { Model = "gpt-6.2-astra" }));
+        Assert.NotEqual(key, Key(context with { ManifestDigest = new string('b', 63) + "c" }));
+        Assert.NotEqual(key, Key(context, terminal: false));
+        Assert.NotEqual(key, Key(context, hosted: false));
+    }
+
+    [Theory]
     [InlineData("gpt-6-astra", WorldAutonomyPromptCacheMode.Hybrid)]
     [InlineData("gpt-6-astra", WorldAutonomyPromptCacheMode.Explicit)]
     [InlineData("gpt-6.2-astra", WorldAutonomyPromptCacheMode.Hybrid)]
@@ -156,7 +184,7 @@ public sealed class PromptCacheSerializationTests
         var openAi = new OpenAIClient(new System.ClientModel.ApiKeyCredential("not-a-real-key"), new OpenAIClientOptions { Endpoint = new Uri(prefix) });
         using var client = WorldAutonomyPromptCache.Wrap(openAi.GetResponsesClient().AsIChatClient(model));
         var context = new WorldAutonomyRunContext("run", 4001, "message", "5001", null, null,
-            model, "profile", "manifest", [], SourceChannelId: 6001);
+            model, new string('a', 64), new string('b', 64), [], SourceChannelId: 6001);
         var options = new ChatOptions();
         WorldAutonomyPromptCache.Configure(options, context, true, mode: mode);
         options.ConversationId = "resp-prior";

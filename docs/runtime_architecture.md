@@ -146,6 +146,18 @@ The full agent receives:
 Terminal Sky speech or visual delivery stops the loop when no unsettled write remains. Tool calls and run outcomes
 are journaled for recovery. A failed or interrupted write is reconciled against Steward's durable operation state.
 
+Model/tool-loop failures and session timeouts return a deterministic, in-character final failure reply for direct
+petitions instead of falling through to a second, tool-poor persona call. With no native write attempts, the reply
+says no server changes were attempted; after write attempts it warns that changes may already have occurred.
+Already-delivered speech or visuals remain marked delivered, preventing a second reply after a late failure.
+Ambient failures remain silent. Provider-budget/auth explanations retain their existing specific wording.
+The host failure text and reason are persisted in the run ledger. No failed mutation is automatically replayed.
+
+The operational prompt treats errors as evidence about the reported target and action, not the entire catalog.
+A protected owner nickname does not imply that a lower-position role title is unavailable. Spoken titles,
+Discord nicknames, assigned roles, and stored Empire ranks are distinct state. This changes neither native
+authority nor Robotnik's ability to decline a petition.
+
 With the custom terminal function client, the agent framework may request approval for read-only peers in a
 mixed read/write batch. Sky accepts only explicitly registered native or host-owned read-only peers through that callback.
 Writes still require durable pre-invocation records and valid unused request IDs; unknown approvals still fail.
@@ -193,6 +205,12 @@ Hybrid uses one full, uncondensed stable instruction prefix shared with Off. Gui
 inspiration, and request IDs follow it. Hybrid splits the same text into developer messages and marks the end of
 the stable prefix; it retains `mode=implicit` and a 30-minute lifetime. The older Explicit mode remains available
 for compatibility but uses its legacy condensed prompt and explicit-only behavior; it is not the production canary.
+
+Cache keys are 64-character SHA-256 hex digests of a versioned identity containing the model, full manifest
+digest, and stable instructions. Run-specific data is excluded. Do not concatenate the full manifest into a
+readable key: production manifests are already 64 characters, which previously produced 110-character keys
+rejected by OpenAI before tools ran. Wire tests use production-sized digests, including long model IDs and
+identity-separation checks. The local full-runtime rejection test also exercises the actual Steward catalog.
 
 Linked continuations retain the cache settings without reinserting developer messages when ConversationId is
 present. Stateless continuations can resend the full prefix. The adapter clones options before changing the

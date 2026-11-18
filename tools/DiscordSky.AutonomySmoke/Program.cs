@@ -117,7 +117,7 @@ profile.ApplyReasoning(chatOptions);
 if (cacheMode != WorldAutonomyPromptCacheMode.Off)
 {
     if (providerName != "OpenAI") throw new ArgumentException("Cache smoke requires the OpenAI provider.");
-    var cacheContext = WorldAutonomyRunContext.Create(4001, "cache_smoke", model, "smoke-profile", "smoke-manifest", 1);
+    var cacheContext = WorldAutonomyRunContext.Create(4001, "cache_smoke", model, new string('a', 64), new string('b', 64), 1);
     chatOptions.Instructions = WorldAutonomyPrompt.BuildInstructions(cacheContext, useHostedToolSearch: useHostedToolSearch) +
         "\nThis is a trusted deployment self-test, not a Discord member petition. " + chatOptions.Instructions;
     WorldAutonomyPromptCache.Configure(chatOptions, cacheContext, false, useHostedToolSearch, cacheMode);

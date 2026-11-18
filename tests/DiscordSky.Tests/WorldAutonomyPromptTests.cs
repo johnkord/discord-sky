@@ -227,6 +227,25 @@ public sealed class WorldAutonomyPromptTests
         }
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Instructions_ScopeMutationDenialsWithoutRemovingDiscretion(bool hostedSearch)
+    {
+        var instructions = WorldAutonomyPrompt.BuildInstructions(Context(), true, hostedSearch);
+        var cached = WorldAutonomyPrompt.BuildStableCachePrefix(true, true, hostedSearch);
+        foreach (var prompt in new[] { instructions, cached })
+        {
+            Assert.Contains("reported target and action", prompt);
+            Assert.Contains("A guild owner's nickname is protected", prompt);
+            Assert.Contains("a role title below your highest role may still be assignable", prompt);
+            Assert.Contains("Speaking a title does not edit a Discord nickname", prompt);
+            Assert.Contains("You may choose a feasible alternative or decline", prompt);
+            Assert.DoesNotContain("never claim you lack permission", prompt, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("YOUR WILL IS THE ONLY COMMAND", prompt);
+        }
+    }
+
     private static WorldAutonomyRunContext Context() => new(
         "run-1",
         667956000757776386,

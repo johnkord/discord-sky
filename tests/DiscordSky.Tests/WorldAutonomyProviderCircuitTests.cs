@@ -276,6 +276,71 @@ public sealed class LlmProviderGuardTests
         Assert.Contains(expected, decree, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("failed", "ClientResultException", "failed during this audience")]
+    [InlineData("timed_out", "session_timeout", "ran out of time")]
+    public void InterruptedDirectRun_ReportsExecutionFailureWithoutASecondModel(
+        string status, string reason, string expected)
+    {
+        var opportunity = new WorldAutonomyOpportunity(4001, "message", "Change my nickname.", IsDirectAddress: true);
+
+        var result = WorldAutonomyOrchestrator.BuildInterruptedRunResult(opportunity, "run", status, reason, activity: null);
+
+        Assert.Equal("run", result.RunId);
+        Assert.Equal((ulong)4001, result.GuildId);
+        Assert.Equal(status, result.Status);
+        Assert.Equal(reason, result.FailureReason);
+        Assert.False(result.SpokeInChannel);
+        Assert.Contains(expected, result.FinalText, StringComparison.Ordinal);
+        Assert.Contains("No server changes were attempted.", result.FinalText, StringComparison.Ordinal);
+        Assert.DoesNotContain("cannot", result.FinalText!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(false, "ClientResultException")]
+    [InlineData(true, "hourly_cost_budget_exhausted")]
+    public void InterruptedRun_WithWritesDoesNotClaimNoChanges(bool providerUnavailable, string reason)
+    {
+        var opportunity = new WorldAutonomyOpportunity(4001, "message", "Change a role.", IsDirectAddress: true);
+        var activity = new WorldAutonomyRunActivitySnapshot(1, 1, 0, 0, 0, 0, 1, false, false);
+
+        var result = WorldAutonomyOrchestrator.BuildInterruptedRunResult(
+            opportunity, "run", WorldAutonomyRunStatuses.Failed, reason, activity, providerUnavailable);
+
+        Assert.Contains("Some server changes may already have occurred", result.FinalText, StringComparison.Ordinal);
+        Assert.DoesNotContain("No server changes", result.FinalText!, StringComparison.Ordinal);
+        if (providerUnavailable)
+            Assert.Contains("hourly spending decree", result.FinalText, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public void InterruptedRun_AfterDeliveryPreservesHandledState(bool speechDelivered, bool visualDelivered)
+    {
+        var opportunity = new WorldAutonomyOpportunity(4001, "message", "A petition.", IsDirectAddress: true);
+        var activity = new WorldAutonomyRunActivitySnapshot(0, 0, 0, 0, 0, 0, 0, speechDelivered, visualDelivered);
+
+        var result = WorldAutonomyOrchestrator.BuildInterruptedRunResult(
+            opportunity, "run", WorldAutonomyRunStatuses.Failed, "ClientResultException", activity);
+
+        Assert.True(result.SpokeInChannel);
+        Assert.Null(result.FinalText);
+    }
+
+    [Fact]
+    public void InterruptedAmbientRun_DoesNotProduceAnUnsolicitedFailureReply()
+    {
+        var opportunity = new WorldAutonomyOpportunity(4001, "message", "An ambient opportunity.");
+
+        var result = WorldAutonomyOrchestrator.BuildInterruptedRunResult(
+            opportunity, "run", WorldAutonomyRunStatuses.Failed, "ClientResultException", activity: null);
+
+        Assert.Null(result.FinalText);
+        Assert.False(result.SpokeInChannel);
+    }
+
     private static ChatResponse Response(
         long input,
         long output,
