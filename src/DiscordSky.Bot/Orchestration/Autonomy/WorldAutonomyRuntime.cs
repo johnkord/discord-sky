@@ -24,7 +24,8 @@ public sealed record WorldAutonomyOpportunity(
     ulong? SourceAuthorId = null,
     string? SourceAuthorDisplayName = null,
     VisualRequestIntent VisualIntent = VisualRequestIntent.None,
-    string? SourceMessageText = null);
+    string? SourceMessageText = null,
+    AutonomyImageSelection? ImageSelection = null);
 
 public sealed record WorldAutonomyRunResult(
     string? RunId,
@@ -56,6 +57,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
     private readonly TimeProvider _timeProvider;
     private readonly WorldAutonomyContinuityObserver? _continuityObserver;
     private readonly WorldAutonomyRecallTool? _recallTool;
+    private readonly WorldAutonomyVision? _vision;
 
     public WorldAutonomyOrchestrator(
         WorldAutonomyConfiguration configuration,
@@ -70,7 +72,8 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         LlmProviderGuard? providerGuard = null,
         TimeProvider? timeProvider = null,
         WorldAutonomyContinuityObserver? continuityObserver = null,
-        WorldAutonomyRecallTool? recallTool = null)
+        WorldAutonomyRecallTool? recallTool = null,
+        WorldAutonomyVision? vision = null)
     {
         _configuration = configuration;
         _llmOptions = llmOptions;
@@ -87,6 +90,7 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
             _timeProvider);
         _continuityObserver = continuityObserver;
         _recallTool = recallTool;
+        _vision = vision;
     }
 
     public async Task<WorldAutonomyRunResult> RunAsync(
@@ -243,7 +247,12 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
             Microsoft.Agents.AI.AgentResponse response;
             try
             {
-                response = await agent.RunAsync(opportunity.Prompt, agentSession, cancellationToken: timeout.Token).ConfigureAwait(false);
+                var userMessage = _vision is not null && opportunity.SourceChannelId is { } channelId
+                    ? await _vision.BuildUserMessageAsync(opportunity.Prompt, opportunity.ImageSelection, channelId,
+                        ulong.TryParse(opportunity.SourceMessageId, out var triggerId) ? triggerId : null,
+                        context.RunId, "full", timeout.Token).ConfigureAwait(false)
+                    : new ChatMessage(ChatRole.User, opportunity.Prompt);
+                response = await agent.RunAsync(userMessage, agentSession, cancellationToken: timeout.Token).ConfigureAwait(false);
             }
             finally
             {

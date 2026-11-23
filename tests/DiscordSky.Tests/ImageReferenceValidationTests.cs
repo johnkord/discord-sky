@@ -41,7 +41,7 @@ public sealed class ImageReferenceValidationTests
         Assert.Throws<ArgumentException>(() => ImageReferenceValidation.ValidateMask(new ImageReferenceSet([], mask)));
     }
 
-    private static byte[] Png(int width, int height, PngColorType colorType = PngColorType.RgbWithAlpha)
+    internal static byte[] Png(int width, int height, PngColorType colorType = PngColorType.RgbWithAlpha)
     {
         using var image = new Image<Rgba32>(width, height);
         using var buffer = new MemoryStream();

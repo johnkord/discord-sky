@@ -316,8 +316,10 @@ builder.Services.AddSingleton<IImageGenerator>(sp =>
 // Shared generation core used by both the !sky(image) command and the model-decided generate_image tool.
 builder.Services.AddSingleton<ImageToolService>();
 builder.Services.AddHttpClient(DiscordImageReferenceResolver.HttpClientName)
+	.RemoveAllLoggers()
 	.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddSingleton<IImageReferenceResolver, DiscordImageReferenceResolver>();
+builder.Services.AddSingleton<WorldAutonomyVision>();
 // LLM auth self-test: surfaces silent 401 incidents as pod crashes instead of healthy-but-broken state.
 // See docs/recall_feature_review_2026-05-26.md §7.2.
 builder.Services.AddHttpClient();

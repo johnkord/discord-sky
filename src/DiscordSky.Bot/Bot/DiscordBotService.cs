@@ -580,6 +580,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             {
                 var delivered = await HandleWorldAutonomyConversationAsync(
                     BuildDirectConversationRequest(autonomyChannel, message, content),
+                    message,
                     cancellationToken: _shutdownCts.Token);
                 if (!delivered)
                 {
@@ -2263,6 +2264,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             {
                 await HandleWorldAutonomyConversationAsync(
                     BuildConversationRequest(audienceRequest, isDirectAddress: false),
+                    message,
                     cancellationToken);
                 return;
             }
@@ -2294,6 +2296,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 episode?.MessageCount ?? 1);
             await HandleWorldAutonomyConversationAsync(
                 BuildConversationRequest(fallback, isDirectAddress: false),
+                message,
                 cancellationToken);
             return;
         }
@@ -2308,6 +2311,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
     private async Task<bool> HandleWorldAutonomyConversationAsync(
         WorldAutonomyConversationRequest request,
+        SocketUserMessage message,
         CancellationToken cancellationToken)
     {
         if (_worldAutonomyConversation is null)
@@ -2324,7 +2328,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             return false;
         }
 
-        var result = await _worldAutonomyConversation.RespondAsync(request, cancellationToken);
+        var selection = await SelectAutonomyImagesAsync(message, request.MessageText, request.IsDirectAddress, cancellationToken);
+        var result = await _worldAutonomyConversation.RespondAsync(request with { ImageSelection = selection }, cancellationToken);
         if (result is null)
         {
             return false;
@@ -2437,12 +2442,13 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         string? sourceEpisodeId,
         CancellationToken cancellationToken)
     {
+        var selection = await SelectAutonomyImagesAsync(message, content, isDirectAddress, cancellationToken);
         var opportunity = BuildAutonomyOpportunity(
             guildChannel,
             message,
             content,
             isDirectAddress,
-            sourceEpisodeId);
+            sourceEpisodeId) with { ImageSelection = selection };
         if (!isDirectAddress)
         {
             _ = _worldAutonomyRouter!.TryRunAsync(opportunity, cancellationToken);
@@ -2599,14 +2605,15 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 "with a visual_prompt; it uses the OpenAI image models. Your subject and treatment remain yours to choose. " +
                 "ASCII and text art are not substitutes. If you decline, or rendering is unavailable or refused, " +
                 "say so in plain text rather than pretending an attachment exists.");
-        }
-            if (HasImageAttachments(message) || (message.ReferencedMessage is { } referenced && HasImageAttachments(referenced)))
+            if (HasImageAttachments(message) || (message.ReferencedMessage is { } referenced &&
+                referenced.Channel.Id == message.Channel.Id && HasImageAttachments(referenced)))
             {
                 prompt.Append("\n\nImage attachments on this message and its same-channel reply are available to create_visual as actual reference pixels. " +
                 "Use image_options.action=edit for revisions, auto to use those references, or generate for a fresh image. " +
                 "Honor requested transparency, format, dimensions, compression, and preview count via image_options. " +
                 "Default to medium quality; request higher image quality only when the user asks. Editing defaults to Sunburst; new images to Flare.");
             }
+        }
 
         return new WorldAutonomyOpportunity(
             guildChannel.Guild.Id,
@@ -2626,6 +2633,52 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             SourceAuthorDisplayName: GetDisplayName(message.Author),
             VisualIntent: visualIntent,
             SourceMessageText: content);
+    }
+
+    private async Task<AutonomyImageSelection?> SelectAutonomyImagesAsync(SocketUserMessage trigger,
+        string text, bool direct, CancellationToken cancellationToken)
+    {
+        if (!_options.AllowImageContext || _options.HistoryImageLimit == 0 || trigger.Channel is not SocketGuildChannel guildChannel ||
+            _options.IsGuildDisabled(guildChannel.Guild.Id, guildChannel.Guild.Name)) return null;
+
+        static AutonomyImageAttachment[] Images(IMessage source, AutonomyImageOrigin origin) => source.Attachments
+            .Where(item => DiscordImageReferenceResolver.IsImageAttachment(item.Filename, item.ContentType))
+            .Select(item => new AutonomyImageAttachment(source.Id, item.Url, item.Size, origin)).ToArray();
+
+        var current = Images(trigger, AutonomyImageOrigin.Trigger);
+        var origin = WorldAutonomyVision.SelectOrigin(current.Length > 0, direct && trigger.Attachments.Count == 0,
+            trigger.Type, trigger.Reference, trigger.Channel.Id, text);
+        if (origin is null) return null;
+        if (origin == AutonomyImageOrigin.Trigger) return new(current);
+        if (origin == AutonomyImageOrigin.Reply)
+        {
+            var messageId = trigger.Reference!.MessageId.Value;
+            IMessage? replied = trigger.ReferencedMessage;
+            if (replied is null)
+            {
+                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                deadline.CancelAfter(TimeSpan.FromSeconds(3));
+                try
+                {
+                    replied = await trigger.Channel.GetMessageAsync(messageId, options: new RequestOptions { CancelToken = deadline.Token });
+                }
+                catch (Exception error) when (error is Discord.Net.HttpException or HttpRequestException ||
+                    error is OperationCanceledException && !cancellationToken.IsCancellationRequested)
+                {
+                    return new([], MissingReply: true);
+                }
+            }
+            if (replied is null || replied.Id != messageId || replied.Channel.Id != trigger.Channel.Id)
+                return new([], MissingReply: true);
+            return new(Images(replied, AutonomyImageOrigin.Reply));
+        }
+        var history = trigger.Channel.GetCachedMessages(AutonomyHistoryLimit)
+            .Where(item => item.Channel.Id == trigger.Channel.Id && item.Id < trigger.Id)
+            .OrderByDescending(item => item.Id)
+            .Select(item => (item.Author.Id, item.Timestamp, (IReadOnlyList<AutonomyImageAttachment>)
+                (!item.Author.IsBot && string.IsNullOrWhiteSpace(item.Content) ? Images(item, AutonomyImageOrigin.Recent) : [])));
+        var recent = WorldAutonomyVision.RecentImages(history, trigger.Timestamp).ToArray();
+        return recent.Length == 0 ? null : new(recent);
     }
 
     private string? BuildAutonomyAudienceContext(

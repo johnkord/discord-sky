@@ -101,6 +101,11 @@ with `change the background to green`, or attach reference images to a new reque
 `!sky(image) change the background --edit --format png`. See
 [docs/image_generation_2_5.md](docs/image_generation_2_5.md) for sizes, masks, previews, cost accounting, and limits.
 
+To read a screenshot, attach it to the question or reply directly to its message and mention the bot. No
+`!sky(image)` command is needed: in autonomy guilds the chat model receives the image itself. A direct question
+such as "what does this say?" can also refer to immediately preceding image-only posts in the same channel.
+An upload on the question takes precedence. A `.png` filename and a WebP metadata label do not require re-exporting.
+
 ## Model Routing
 
 Model names and reasoning effort are configuration, not hard-coded behavior. Production uses typed workload

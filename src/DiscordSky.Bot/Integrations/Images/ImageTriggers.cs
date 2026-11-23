@@ -13,10 +13,17 @@ public static class ImageIntentDetector
 {
     private static readonly Regex Pattern = new(
         @"\b(?:draw|sketch|paint|render|illustrate)\s+(?!(?:money|cash|cards|lots|blood|breath|conclusions?|attention|from)\b|(?:a|the|my|your)\s+(?:breath|conclusion|attention)\b)(?:[\p{L}\p{N}]|<@)" +
-        @"|\b(?:make|generate|create|send|give|show) (?:me |us )?(?:a |an )?(?:picture|image|photo|photograph|drawing|portrait|poster|painting)\b" +
-        @"|\b(?:picture|photo|photograph|portrait|poster|painting|drawing|image)\s+of\b" +
+        @"|\b(?:make|generate|create|send|give|show) (?:me |us )?(?:a |an )?(?:picture|image|photo|photograph|drawing|portrait|poster|painting)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex Shorthand = new(
+        @"\b(?:picture|photo|photograph|portrait|poster|painting|drawing|image)\s+of\b" +
         @"|\bshow (?:me|us)\s+(?:a|an|your|the)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex Inspection = new(
+        @"\b(?:read|transcribe|translate|describe|identify|explain|what(?:'s| (?:is|are|does))|show (?:me|us) the (?:words|text))\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
 
     private static readonly Regex EditPattern = new(
         @"\b(?:edit|modify|revise|rework|recolor|crop|resize|upscale|retouch)\b" +
@@ -30,13 +37,10 @@ public static class ImageIntentDetector
 
     public static VisualRequestIntent Classify(string? text, bool hasImageContext = false)
     {
-        if (hasImageContext && LooksLikeEditRequest(text)) return VisualRequestIntent.BitmapRequired;
-        if (string.IsNullOrWhiteSpace(text) || !Pattern.IsMatch(text))
-        {
-            return VisualRequestIntent.None;
-        }
-
-        return VisualRequestIntent.BitmapRequired;
+        if (string.IsNullOrWhiteSpace(text)) return VisualRequestIntent.None;
+        if (Pattern.IsMatch(text) || (hasImageContext && LooksLikeEditRequest(text))) return VisualRequestIntent.BitmapRequired;
+        return Shorthand.IsMatch(text) && !(hasImageContext && Inspection.IsMatch(text))
+            ? VisualRequestIntent.BitmapRequired : VisualRequestIntent.None;
     }
 }
 

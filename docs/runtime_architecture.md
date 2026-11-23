@@ -176,6 +176,26 @@ The conversation service deliberately receives no Steward tools, request IDs, mu
 It may not claim server changes. It uses the same Astra/xhigh profile, registered transport, transcript sink,
 reaction attribution, and provider guard as other routes.
 
+Both full autonomy and conversation can read Discord attachments without invoking the image generator or a
+second vision model. After route admission the gateway selects the trigger's own images first. Otherwise it
+uses the explicit same-channel reply target (fetching missing message metadata if necessary). Only a direct,
+unthreaded question referring to nearby images may select up to two immediately preceding, consecutive human
+image-only posts from one author within two minutes. A conversation break stops selection. Cross-channel or
+forwarded references do not fall back to channel history. Queued opportunities carry descriptors, not image bytes.
+
+The selected reply downloads from allow-listed Discord attachment URLs in the source channel, without redirects.
+`Bot:AllowImageContext` and `Bot:HistoryImageLimit` apply. Input is also capped by `Image:MaxReferenceImages`,
+`MaxReferenceBytes`, and `MaxTotalReferenceBytes`; PNG, JPEG, and WebP input must be at most 16 megapixels. The
+chat request carries validated bytes with their detected media type and a source label, not a filename-based
+type guess or a signed URL. An unavailable image is identified as missing evidence, not a reason to discard
+the text or attempt an edit. Reading is independent of `Image:Enabled`, which controls generation.
+
+`world_autonomy_image_input` records `kind=full|conversation`, `outcome=attached|partial|unavailable`, source
+kind in `reason_code`, source and trigger IDs, included and candidate counts, and truncation. Join `operation_id`
+to the run or conversation event. This records what was assembled, not whether the provider accepted the call or
+read every word correctly; check `llm_call` and the delivered reply too. The reader does not log bytes, extracted
+text, or signed URLs. The existing private reply transcript can still contain what the bot actually said.
+
 ### 5.4 Deliberate recall
 
 `WorldAutonomy:MemoryRecallEnabled` offers `recall_about_user` on full-autonomy direct petitions only, subject to

@@ -130,11 +130,13 @@ public sealed class StewardMcpSupervisorIntegrationTests
             });
             var guard = new LlmProviderGuard(NullLogger<LlmProviderGuard>.Instance,
                 options: new LlmProviderGuardOptions { Enabled = false, StatePath = Path.Combine(directory, "guard.json") });
+            using var cdn = new VisionTestCdn();
             var orchestrator = new WorldAutonomyOrchestrator(configuration, llm, supervisor,
                 new WorldAutonomyAgentFactory(), ledger, NullLogger<WorldAutonomyOrchestrator>.Instance,
-                providerGuard: guard);
-            var opportunity = new WorldAutonomyOpportunity(guildId, "message", "Change my nickname.",
-                SourceMessageId: "5001", IsDirectAddress: true, SourceChannelId: 6001);
+                providerGuard: guard, vision: cdn.Reader());
+            var opportunity = new WorldAutonomyOpportunity(guildId, "message", "What does this say?",
+                SourceMessageId: "5001", IsDirectAddress: true, SourceChannelId: 6001,
+                ImageSelection: new([cdn.Attachment with { MessageId = 5001 }]));
 
             var run = orchestrator.RunAsync(opportunity, deadline.Token);
             var request = await listener.GetContextAsync().WaitAsync(deadline.Token);
@@ -149,6 +151,12 @@ public sealed class StewardMcpSupervisorIntegrationTests
 
             using var document = JsonDocument.Parse(body);
             Assert.Equal(64, document.RootElement.GetProperty("prompt_cache_key").GetString()!.Length);
+            var user = Assert.Single(document.RootElement.GetProperty("input").EnumerateArray(),
+                item => item.TryGetProperty("role", out var role) && role.GetString() == "user");
+            var pixels = Assert.Single(user.GetProperty("content").EnumerateArray(),
+                item => item.GetProperty("type").GetString() == "input_image");
+            Assert.Equal("data:image/png;base64," + Convert.ToBase64String(cdn.Png), pixels.GetProperty("image_url").GetString());
+            Assert.DoesNotContain("sensitive-signature", body);
             Assert.Contains("set_member_nickname", body, StringComparison.Ordinal);
             Assert.Equal(WorldAutonomyRunStatuses.Failed, result.Status);
             Assert.Equal("ClientResultException", result.FailureReason);

@@ -21,6 +21,7 @@ public sealed class WorldAutonomyConversationServiceTests
         var client = new StubChatClient("A single imperial remark.");
         var transport = new RecordingTransport();
         var registry = new SentMessageRegistry();
+        using var cdn = new VisionTestCdn();
         var transcripts = new RecordingTranscriptSink();
         var telemetry = new RecordingTelemetrySink();
         var service = new WorldAutonomyConversationService(
@@ -31,12 +32,16 @@ public sealed class WorldAutonomyConversationServiceTests
             transcripts,
             telemetry,
             Options.Create(new BotOptions { DefaultPersona = "Robotnik from AOSTH" }),
-            NullLogger<WorldAutonomyConversationService>.Instance);
+            NullLogger<WorldAutonomyConversationService>.Instance, vision: cdn.Reader());
 
-        var result = await service.RespondAsync(Request(direct), CancellationToken.None);
+        var result = await service.RespondAsync(Request(direct) with { ImageSelection = new([cdn.Attachment]) }, CancellationToken.None);
 
         Assert.NotNull(result);
         Assert.Equal(1, client.CallCount);
+        var user = Assert.Single(client.Messages);
+        var image = Assert.Single(user.Contents.OfType<DataContent>());
+        Assert.Equal("image/png", image.MediaType);
+        Assert.Equal(cdn.Png, image.Data.ToArray());
         Assert.NotNull(client.Options);
         Assert.Empty(client.Options!.Tools ?? []);
         Assert.Equal("gpt-5.6-sol", client.Options.ModelId);
@@ -47,6 +52,8 @@ public sealed class WorldAutonomyConversationServiceTests
         Assert.Equal("world_autonomy_conversation", sent.Source);
         Assert.Equal((ulong)5001, sent.TriggerMessageId);
         Assert.Equal(expectedInvocationKind, Assert.Single(transcripts.Entries).InvocationKind);
+        Assert.DoesNotContain("sensitive-signature", transcripts.Entries[0].Prompt);
+        Assert.DoesNotContain(Convert.ToBase64String(cdn.Png), transcripts.Entries[0].Prompt);
         var metric = Assert.Single(telemetry.Events);
         Assert.Equal(TelemetryEventTypes.WorldAutonomyConversation, metric.EventType);
         Assert.Equal("delivered", metric.Outcome);
@@ -130,6 +137,7 @@ public sealed class WorldAutonomyConversationServiceTests
         public int CallCount { get; private set; }
 
         public ChatOptions? Options { get; private set; }
+        public IReadOnlyList<ChatMessage> Messages { get; private set; } = [];
 
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
@@ -138,6 +146,7 @@ public sealed class WorldAutonomyConversationServiceTests
         {
             CallCount++;
             Options = options;
+            Messages = messages.ToArray();
             return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, response)));
         }
 

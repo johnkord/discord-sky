@@ -213,6 +213,7 @@ public static class TelemetryEventTypes
     public const string LlmProviderGuard = "llm_provider_guard";
     public const string WorldAutonomyContinuity = "world_autonomy_continuity";
     public const string WorldAutonomyFeatures = "world_autonomy_features";
+    public const string WorldAutonomyImageInput = "world_autonomy_image_input";
     public const string WorldAutonomyRecall = "world_autonomy_recall";
 }
 

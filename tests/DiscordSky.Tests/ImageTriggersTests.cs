@@ -63,6 +63,16 @@ public sealed class ImageTriggersTests
         Assert.Equal(expected, ImageIntentDetector.Classify(text));
     }
 
+    [Theory]
+    [InlineData("What does this say?", VisualRequestIntent.None)]
+    [InlineData("What is this a picture of?", VisualRequestIntent.None)]
+    [InlineData("Can you read this image of a sign?", VisualRequestIntent.None)]
+    [InlineData("Show me the text in this screenshot", VisualRequestIntent.None)]
+    [InlineData("Read the sign and then draw a poster", VisualRequestIntent.BitmapRequired)]
+    [InlineData("Recolor the text on this sign", VisualRequestIntent.BitmapRequired)]
+    public void AttachedImage_InspectionIsNotACommission(string text, VisualRequestIntent expected) =>
+        Assert.Equal(expected, ImageIntentDetector.Classify(text, hasImageContext: true));
+
     [Fact]
     public void FromConfig_Commissioned_UsesPrimaryModelAndQuality()
     {

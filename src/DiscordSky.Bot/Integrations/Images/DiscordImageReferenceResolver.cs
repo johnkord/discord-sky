@@ -63,35 +63,43 @@ public sealed class DiscordImageReferenceResolver(
         foreach (var candidate in candidates)
         {
             var attachment = candidate.Attachment;
-            if (!IsSafeAttachmentUrl(attachment.Url, channel.Id))
-                throw new ArgumentException("Reference images must be Discord attachments in this channel.");
-            if (attachment.Size > options.MaxReferenceBytes)
-                throw new ArgumentException("A reference image exceeds the configured upload limit.");
-            using var response = await http.GetAsync(attachment.Url, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-            if (response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.NotFound)
-                throw new ArgumentException("A source image has expired or was deleted. Attach it again to edit it.");
-            if (!response.IsSuccessStatusCode)
-                throw new ArgumentException("The source image could not be downloaded. Please attach it again.");
-            if (response.Content.Headers.ContentLength > options.MaxReferenceBytes)
-                throw new ArgumentException("A reference image exceeds the configured upload limit.");
-            await using var source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-            using var buffer = new MemoryStream();
-            var chunk = new byte[64 * 1024];
-            int read;
-            while ((read = await source.ReadAsync(chunk, cancellationToken).ConfigureAwait(false)) > 0)
-            {
-                totalBytes += read;
-                if (buffer.Length + read > options.MaxReferenceBytes || totalBytes > options.MaxTotalReferenceBytes)
-                    throw new ArgumentException("The reference images exceed the configured upload limit.");
-                buffer.Write(chunk, 0, read);
-            }
-            var image = ImageReferenceValidation.Create(buffer.ToArray(), candidate.MessageId, IsMask(attachment.Filename));
+            var image = await DownloadAsync(http, attachment.Url, attachment.Size, channel.Id, candidate.MessageId,
+                Math.Min(options.MaxReferenceBytes, options.MaxTotalReferenceBytes - totalBytes),
+                IsMask(attachment.Filename), cancellationToken).ConfigureAwait(false);
+            totalBytes += image.Bytes.Length;
             if (IsMask(attachment.Filename)) mask = image;
             else images.Add(image);
         }
         var result = new ImageReferenceSet(images, mask);
         ImageReferenceValidation.ValidateMask(result);
         return result;
+    }
+
+    internal static async Task<ImageReference> DownloadAsync(HttpClient http, string url, long declaredSize,
+        ulong channelId, ulong messageId, int byteLimit, bool mask, CancellationToken cancellationToken)
+    {
+        if (!IsSafeAttachmentUrl(url, channelId))
+            throw new ArgumentException("Reference images must be Discord attachments in this channel.");
+        if (byteLimit <= 0 || declaredSize > byteLimit)
+            throw new ArgumentException("A reference image exceeds the configured upload limit.");
+        using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+        if (response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.NotFound)
+            throw new ArgumentException("A source image has expired or was deleted. Please attach it again.");
+        if (!response.IsSuccessStatusCode)
+            throw new ArgumentException("The source image could not be downloaded. Please attach it again.");
+        if (response.Content.Headers.ContentLength > byteLimit)
+            throw new ArgumentException("A reference image exceeds the configured upload limit.");
+        await using var source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        using var buffer = new MemoryStream();
+        var chunk = new byte[64 * 1024];
+        int read;
+        while ((read = await source.ReadAsync(chunk, cancellationToken).ConfigureAwait(false)) > 0)
+        {
+            if (buffer.Length + read > byteLimit)
+                throw new ArgumentException("The reference images exceed the configured upload limit.");
+            buffer.Write(chunk, 0, read);
+        }
+        return ImageReferenceValidation.Create(buffer.ToArray(), messageId, mask);
     }
 
     internal static bool IsSafeAttachmentUrl(string url, ulong channelId) =>
