@@ -34,7 +34,7 @@ This directory contains the Kubernetes resources required to run the Discord Sky
    kubectl rollout restart deploy/discord-sky-bot -n discord-sky
    ```
 
-2. For production run `bash scripts/validate-release.sh` against the [pinned Steward checkout](../../scripts/steward-ref). PRs run that same credential-free gate. On main the deploy job cannot start until the Release build, audit and tests, including both real-Steward cases, pass. The hardened script renders Kustomize, validates private bindings, builds and probes the combined image, applies it, waits for readiness and restores the prior configuration/revision on rollout failure.
+2. For production run `bash scripts/validate-release.sh` against the [pinned Steward checkout](../../scripts/steward-ref). PRs run that same credential-free gate. On main the deploy job cannot start until the Release build, audit, offline rollout matrix and real-child integration tests pass. The hardened script renders Kustomize, validates private bindings, builds and probes the combined image, applies it, waits for readiness and restores the prior release-owned configuration/revision on rollout failure.
 
 3. Use raw `kubectl apply -k` only for client-side validation or deliberate dark/local experiments. Do not use
    `kubectl set image` as the normal production path; it bypasses combined-runtime and private-binding checks.
@@ -166,7 +166,7 @@ both tool orderings. A successful single-tool provider smoke does not cover thes
 In the private autonomy ledger, `run_ended_before_invocation` is a failed approval that never reached a tool.
 `steward_operation_missing` is different: the receipt is absent and the outcome remains unknown. These unknown
 records stop automatic lookups and require operator review; do not replay the original mutation to find out
-what happened. Other recovery errors retain normal retries and identity validation. Use the request ID to
+what happened. Earlier-process reservations and claims can be reconciled after Steward's two-minute grace period. Explicitly inconclusive observations are revisited at 15-minute intervals; a failed lookup is not evidence of a failed write. Neither path repeats the mutation. Use the request ID to
 inspect Steward's journal and Discord state before making a deliberate corrective operation.
 
 Sky runs on .NET 10 LTS. Bounded image metadata inspection uses SkiaSharp's Linux native assets; ImageSharp is no longer shipped. The optional local SQLite ledger uses distro SQLite, not a bundled native binary; do not move the live file ledger to SQLite on the share. Run the release gate and keep native packages and the base image patched independently of the NuGet audit.

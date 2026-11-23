@@ -26,7 +26,8 @@ from xml.etree import ElementTree
 root = ElementTree.parse(sys.argv[1])
 cases = root.findall('.//{*}UnitTestResult')
 required = {'SiblingSteward_UnrestrictedProfileExposesOneReusableCompleteNativeCatalog',
-            'SiblingSteward_AutonomyProviderRejectionReturnsTruthfulFailure'}
+            'SiblingSteward_AutonomyProviderRejectionReturnsTruthfulFailure',
+            'SiblingSteward_AbandonedCallsReconcileWithoutReplayingDiscordWrites'}
 passed = {case.get('testName', '').split('.')[-1] for case in cases if case.get('outcome') == 'Passed'}
 if not required <= passed:
     sys.exit('Required Steward test missing or not passed: ' + ', '.join(sorted(required - passed)))

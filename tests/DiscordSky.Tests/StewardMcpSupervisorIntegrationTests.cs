@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Orchestration.Autonomy;
 using Microsoft.Extensions.AI;
@@ -171,6 +172,100 @@ public sealed class StewardMcpSupervisorIntegrationTests
         {
             Directory.Delete(directory, recursive: true);
         }
+    }
+
+    [StewardFact]
+    public async Task SiblingSteward_AbandonedCallsReconcileWithoutReplayingDiscordWrites()
+    {
+        var stewardRoot = GetSiblingStewardRoot();
+        var assembly = Path.Combine(stewardRoot, "src/DiscordSteward/bin/Debug/net10.0/DiscordSteward.dll");
+        var directory = Directory.CreateTempSubdirectory("sky-steward-recovery-");
+        try
+        {
+            var profile = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(stewardRoot, "config/profiles/unrestricted-autonomy.example.json")))!;
+            var guild = profile["Discord"]!["GuildId"]!.GetValue<string>();
+            var childJournal = Path.Combine(directory.FullName, "child.json");
+            var profilePath = Path.Combine(directory.FullName, "profile.json");
+            profile["Steward"]!["JournalBackend"] = "File";
+            profile["Steward"]!["DataPath"] = childJournal;
+            await File.WriteAllTextAsync(profilePath, profile.ToJsonString());
+            var options = new WorldAutonomyOptions
+            {
+                LedgerPath = Path.Combine(directory.FullName, "sky.json"),
+                StewardCommand = "env",
+                StewardArguments = ["-i", $"PATH={Environment.GetEnvironmentVariable("PATH")}", $"HOME={directory.FullName}", $"Steward__ProfilePath={profilePath}", "dotnet", assembly],
+                StewardWorkingDirectory = directory.FullName,
+                EnabledGuilds = new() { [guild] = new() { ProfilePath = profilePath } }
+            };
+            var now = DateTimeOffset.UtcNow;
+            var boundary = now.AddMinutes(-1);
+            var old = now.AddMinutes(-5);
+            var cases = new[]
+            {
+                new RecoveryCase("reservation", "reserved", old, old, null, "failed", "state_conflict"),
+                new RecoveryCase("lost_ack", "executing", old, old, null, "unknown", "outcome_unknown"),
+                new RecoveryCase("lost_role_id", "executing", old, old, null, "unknown", "outcome_unknown", "create_role"),
+                new RecoveryCase("lost_channel_id", "executing", old, old, null, "unknown", "outcome_unknown", "create_text_channel"),
+                new RecoveryCase("lost_message_id", "executing", old, old, null, "unknown", "outcome_unknown", "send_message"),
+                new RecoveryCase("found_ack", "unknown", old, old, "{\"accepted\":true}", "succeeded", null),
+                new RecoveryCase("terminal", "failed", old, old, null, "failed", "discord_permission_denied"),
+                new RecoveryCase("young_claim", "executing", old, now, null, "dispatch_pending", null),
+                new RecoveryCase("active_owner", "reserved", now, old, null, "dispatch_pending", null),
+                new RecoveryCase("missing", null, old, old, null, "unknown", WorldAutonomyRecoveryService.MissingOperationReason)
+            };
+            var operations = new Dictionary<string, object>();
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            using (var firstProcess = new FileBackedWorldAutonomyLedger(options))
+            {
+                foreach (var item in cases)
+                {
+                    var id = item.RequestId;
+                    var tool = item.Tool;
+                    await firstProcess.StartRunAsync(new(item.Run, ulong.Parse(guild), "fixture", null, null, "fixture", "profile", "manifest", item.RunStart), deadline.Token);
+                    var args = WorldAutonomyCanonicalizer.SerializeArguments(new Dictionary<string, object?> { ["request_id"] = id, ["reason"] = "fixture", ["channel_id"] = "6001" });
+                    await firstProcess.RecordDispatchPendingAsync(new(item.Run, item.Run, 1, tool, id, args, WorldAutonomyCanonicalizer.ComputeDigest(args), "schema", item.RunStart), deadline.Token);
+                    if (item.Initial is null) continue;
+                    var invocation = JsonSerializer.Serialize(new { schemaVersion = 1, kind = tool, requestId = id, resourceId = "6001", reason = "fixture", arguments = new { channelId = "6001" } });
+                    operations[id] = new { schemaVersion = 1, requestId = id, kind = tool, guildId = guild, resourceId = "6001", reason = "fixture", risk = "R3", policyDigest = "profile", manifestDigest = "manifest",
+                        invocationDigest = WorldAutonomyCanonicalizer.ComputeDigest(invocation), invocationJson = invocation, createdAt = item.Since, status = item.Initial,
+                        executionStartedAt = item.Initial == "reserved" ? (DateTimeOffset?)null : item.Since, completedAt = item.Initial is "unknown" or "failed" ? item.Since : (DateTimeOffset?)null,
+                        outcome = item.Initial switch { "unknown" => "write_outcome_unresolved", "failed" => "write_rejected", _ => null },
+                        errorCode = item.Initial switch { "unknown" => "outcome_unknown", "failed" => "discord_permission_denied", _ => null },
+                        beforeStateJson = "{}", desiredStateJson = "{\"accepted\":true}", observedStateJson = item.Receipt };
+                }
+            }
+            await File.WriteAllTextAsync(childJournal, JsonSerializer.Serialize(new { version = 1, operations }));
+            var config = WorldAutonomyConfiguration.FromOptions(options);
+            await using var supervisor = new StewardMcpSupervisor(config, NullLoggerFactory.Instance, NullLogger<StewardMcpSupervisor>.Instance);
+            using var ledger = new FileBackedWorldAutonomyLedger(options);
+            using var recovery = new WorldAutonomyRecoveryService(config, ledger, supervisor, NullLogger<WorldAutonomyRecoveryService>.Instance);
+            await recovery.RunRecoveryCycleAsync(boundary, deadline.Token);
+            var skyAfter = await File.ReadAllTextAsync(options.LedgerPath);
+            var childAfter = await File.ReadAllTextAsync(childJournal);
+            using var snapshot = JsonDocument.Parse(childAfter);
+            var records = snapshot.RootElement.GetProperty("operations");
+            Assert.Equal(operations.Count, records.EnumerateObject().Count());
+            foreach (var item in cases)
+            {
+                var call = Assert.Single(await ledger.ListToolCallsAsync(item.Run, deadline.Token));
+                Assert.True(call.DispatchStatus == item.Expected, $"{item.Run}: expected {item.Expected}, got {call.DispatchStatus}");
+                Assert.Equal(item.Error, call.ErrorMessage);
+                var parent = await ledger.GetRunAsync(item.Run, deadline.Token);
+                Assert.Equal(item.Expected == "dispatch_pending" ? "running" : "failed", parent?.Status);
+                if (item.Initial is null) { Assert.False(records.TryGetProperty(item.RequestId, out _)); continue; }
+                var actual = records.GetProperty(item.RequestId).GetProperty("status").GetString();
+                Assert.Equal(item.Expected == "dispatch_pending" ? item.Initial : item.Expected, actual);
+            }
+            await recovery.RunRecoveryCycleAsync(boundary, deadline.Token);
+            Assert.Equal(skyAfter, await File.ReadAllTextAsync(options.LedgerPath));
+            Assert.Equal(childAfter, await File.ReadAllTextAsync(childJournal));
+        }
+        finally { directory.Delete(recursive: true); }
+    }
+
+    private sealed record RecoveryCase(string Run, string? Initial, DateTimeOffset RunStart, DateTimeOffset Since, string? Receipt, string Expected, string? Error, string Tool = "trigger_typing_indicator")
+    {
+        public string RequestId { get; } = Guid.NewGuid().ToString("D");
     }
 
     private static string GetSiblingStewardRoot([CallerFilePath] string? sourceFile = null)

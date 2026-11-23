@@ -206,7 +206,7 @@ dotnet test tests/DiscordSky.Tests/DiscordSky.Tests.csproj
 bash scripts/validate-release.sh
 ```
 
-The second command is the release gate. It requires a sibling checkout at the revision in [scripts/steward-ref](scripts/steward-ref), audits transitive packages, builds the solution in Release, and checks the test results for both real Steward integration cases. No Discord or provider credentials are needed.
+The second command is the release gate. It requires a sibling checkout at the revision in [scripts/steward-ref](scripts/steward-ref), runs the offline rollout checks, audits transitive packages, builds the solution in Release, and requires the real Steward catalog, provider-failure and interrupted-operation tests to pass. No Discord or provider credentials are needed.
 
 ## Production Deployment
 

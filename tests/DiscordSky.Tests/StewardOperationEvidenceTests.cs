@@ -5,6 +5,39 @@ namespace DiscordSky.Tests;
 
 public sealed class StewardOperationEvidenceTests
 {
+  [Theory]
+  [InlineData("guild")]
+  [InlineData("request")]
+  [InlineData("record_request")]
+  [InlineData("kind")]
+  [InlineData("resource")]
+  [InlineData("outcome")]
+  [InlineData("error")]
+  [InlineData("success_with_error")]
+  public void ReconciliationRejectsMismatchedIdentityOrDisposition(string mismatch)
+  {
+    var first = new StewardOperationEvidence("fixture", "create_role", "unknown", "outcome_unknown", "{}", "{}") { ResourceId = "6001" };
+    var envelope = JsonSerializer.SerializeToElement(new
+    {
+      guild = new { id = mismatch == "guild" ? "4002" : "4001" },
+      requestId = mismatch == "request" ? "other" : first.RequestId,
+      outcome = mismatch == "outcome" ? "failed" : "succeeded",
+      error = mismatch is "error" or "success_with_error" ? new { code = "outcome_unknown" } : null,
+      data = new { requestId = mismatch == "record_request" ? "other" : first.RequestId, kind = mismatch == "kind" ? "other" : first.Kind,
+        resourceId = mismatch == "resource" ? "6002" : first.ResourceId, status = "succeeded", errorCode = mismatch == "success_with_error" ? "outcome_unknown" : null }
+    });
+    Assert.Throws<InvalidOperationException>(() => first.WithReconciliation(envelope, 4001));
+  }
+
+  [Theory]
+  [InlineData("4002")]
+  [InlineData(null)]
+  public void LookupRequiresTheRecordedGuildAsWellAsTheSessionGuild(string? recordedGuild)
+  {
+    var envelope = JsonSerializer.SerializeToElement(new { guild = new { id = "4001" }, data = new { guildId = recordedGuild } });
+    Assert.Throws<InvalidOperationException>(() => StewardOperationEvidence.RequireGuild(envelope, 4001, isOperationLookup: true));
+  }
+
     [Fact]
     public void Parse_VerifiesStewardOperationAgainstCanonicalSkyDispatch()
     {

@@ -170,8 +170,7 @@ On every agent exit, approvals that were never claimed for invocation are closed
 `run_ended_before_invocation`. Claimed operations keep their actual or unknown outcome. Recovery distinguishes
 an explicit missing Steward journal receipt from a tool/permission/identity failure. Missing receipts for ended
 or prior-process runs remain `unknown` with `steward_operation_missing`, and emit `recovery_unavailable` once.
-They are not replayed and do not enter automatic lookup loops. Active runs remain retryable because their
-receipts may not exist yet. Missing evidence is never interpreted as success.
+They are not replayed and do not enter automatic lookup loops. The recovery worker leaves current active runs alone. For an earlier process's `reserved` or `executing` Steward row, it waits at least two minutes from the reservation or execution claim, then calls `reconcile_operation`, never the mutation. A missing creation ID is not permission to search by display name. A proven rejection is a verified failure, not a successful effect. Sky stores the status and error from the same identity-checked receipt. Inconclusive observations remain `unknown` and are rechecked no more than once per 15 minutes per process; transient read errors can retry on the regular 30-second cycle.
 
 ### 5.3 Conversation route
 

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -15,6 +16,9 @@ public sealed record StewardOperationEvidence(
     string InvocationJson,
     string RawJson)
 {
+    internal string? ResourceId { get; init; }
+    internal DateTimeOffset? StateSince { get; init; }
+
     internal static bool IsMissingOperation(JsonElement envelope) =>
         envelope.ValueKind == JsonValueKind.Object &&
         envelope.TryGetProperty("outcome", out var outcome) && outcome.ValueKind == JsonValueKind.String && outcome.GetString() == "error" &&
@@ -30,13 +34,19 @@ public sealed record StewardOperationEvidence(
             throw new InvalidOperationException("Steward operation lookup did not return operation data.");
         }
 
+        var status = RequiredString(data, "status");
         var evidence = new StewardOperationEvidence(
             RequiredString(data, "requestId"),
             RequiredString(data, "kind"),
-            RequiredString(data, "status"),
+            status,
             OptionalString(data, "errorCode"),
             RequiredString(data, "invocationJson"),
-            envelope.GetRawText());
+            envelope.GetRawText())
+        {
+            ResourceId = OptionalString(data, "resourceId"),
+            StateSince = data.TryGetProperty(status == "executing" ? "executionStartedAt" : "createdAt", out var stamp) &&
+                stamp.ValueKind == JsonValueKind.String && stamp.TryGetDateTimeOffset(out var since) ? since : null
+        };
         if (!string.Equals(evidence.RequestId, expected.RequestId, StringComparison.Ordinal) ||
             !string.Equals(evidence.Kind, expected.ToolName, StringComparison.Ordinal))
         {
@@ -210,15 +220,30 @@ public sealed record StewardOperationEvidence(
         return builder.ToString();
     }
 
-    internal static string ParseReconciliationStatus(JsonElement envelope, string expectedRequestId)
+    internal static void RequireGuild(JsonElement envelope, ulong guildId, bool isOperationLookup = false)
     {
-        var data = RequiredProperty(envelope, "data");
-        if (!string.Equals(RequiredString(data, "requestId"), expectedRequestId, StringComparison.Ordinal))
+        var expected = guildId.ToString(CultureInfo.InvariantCulture);
+        var guild = RequiredProperty(envelope, "guild");
+        if (RequiredString(guild, "id") != expected ||
+            (isOperationLookup && envelope.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object &&
+             RequiredString(data, "guildId") != expected))
         {
-            throw new InvalidOperationException("Steward reconciliation returned a different request ID.");
+            throw new InvalidOperationException("Steward recovery returned evidence for a different guild.");
         }
+    }
 
-        return RequiredString(data, "status");
+    internal StewardOperationEvidence WithReconciliation(JsonElement envelope, ulong guildId)
+    {
+        RequireGuild(envelope, guildId);
+        var data = RequiredProperty(envelope, "data");
+        var status = RequiredString(data, "status");
+        var errorCode = OptionalString(data, "errorCode");
+        var envelopeError = envelope.TryGetProperty("error", out var error) && error.ValueKind != JsonValueKind.Null ? RequiredString(error, "code") : null;
+        if (RequiredString(envelope, "requestId") != RequestId || RequiredString(data, "requestId") != RequestId ||
+            RequiredString(data, "kind") != Kind || RequiredString(data, "resourceId") != ResourceId || RequiredString(envelope, "outcome") != status ||
+            errorCode != envelopeError || (status == WorldAutonomyDispatchStatuses.Succeeded && errorCode is not null))
+            throw new InvalidOperationException("Steward reconciliation did not match the verified operation identity and disposition.");
+        return this with { Status = status, ErrorCode = errorCode, RawJson = envelope.GetRawText() };
     }
 
     private static JsonElement RequiredProperty(JsonElement root, string propertyName)
@@ -260,12 +285,9 @@ public sealed class WorldAutonomyRecoveryService : BackgroundService
 {
     internal const string MissingOperationReason = "steward_operation_missing";
     private static readonly TimeSpan ReconciliationInterval = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan[] RecoveryRetryDelays =
-    [
-        TimeSpan.FromSeconds(1),
-        TimeSpan.FromSeconds(5),
-        TimeSpan.FromSeconds(15)
-    ];
+    private static readonly TimeSpan StewardClaimGrace = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan InconclusiveReviewInterval = TimeSpan.FromMinutes(15);
+    private readonly Dictionary<string, DateTimeOffset> _inconclusiveUntil = new(StringComparer.Ordinal);
 
     private readonly WorldAutonomyConfiguration _configuration;
     private readonly IWorldAutonomyLedger _ledger;
@@ -297,7 +319,8 @@ public sealed class WorldAutonomyRecoveryService : BackgroundService
             return;
         }
 
-        var processStartedAt = _timeProvider.GetUtcNow();
+        using var process = Process.GetCurrentProcess();
+        var processStartedAt = new DateTimeOffset(process.StartTime.ToUniversalTime());
         while (!stoppingToken.IsCancellationRequested)
         {
             await RunRecoveryCycleAsync(processStartedAt, stoppingToken).ConfigureAwait(false);
@@ -315,53 +338,26 @@ public sealed class WorldAutonomyRecoveryService : BackgroundService
 
     private async Task ReconcileOutstandingCallsAsync(DateTimeOffset processStartedAt, CancellationToken cancellationToken)
     {
-        for (var attempt = 0; attempt <= RecoveryRetryDelays.Length; attempt++)
+        IReadOnlyList<WorldAutonomyToolCall> calls;
+        try
         {
-            IReadOnlyList<WorldAutonomyToolCall> calls;
-            try
-            {
-                calls = await _ledger.ListRecoverableCallsAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception exception)
-            {
-                _logger.LogError(exception, "Unable to load pending autonomy calls for recovery.");
-                if (attempt == RecoveryRetryDelays.Length)
-                {
-                    return;
-                }
+            calls = await _ledger.ListRecoverableCallsAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogError(exception, "Unable to load pending autonomy calls for recovery.");
+            return;
+        }
 
-                await Task.Delay(RecoveryRetryDelays[attempt], _timeProvider, cancellationToken).ConfigureAwait(false);
-                continue;
-            }
-
-            var journaledCalls = calls.Where(call => !string.IsNullOrWhiteSpace(call.RequestId) &&
-                !(call.DispatchStatus == WorldAutonomyDispatchStatuses.Unknown && call.ErrorMessage == MissingOperationReason)).ToArray();
-            if (attempt == 0)
-            {
-                foreach (var call in calls.Where(call =>
-                    string.IsNullOrWhiteSpace(call.RequestId) &&
-                    call.DispatchStatus != WorldAutonomyDispatchStatuses.Unknown))
-                {
-                    await MarkNonJournaledRecoveryUnavailableAsync(call, cancellationToken).ConfigureAwait(false);
-                }
-            }
-
-            if (journaledCalls.Length == 0)
-            {
-                return;
-            }
-
-            foreach (var call in journaledCalls)
-            {
-                await RecoverCallAsync(call, processStartedAt, cancellationToken).ConfigureAwait(false);
-            }
-
-            if (attempt == RecoveryRetryDelays.Length)
-            {
-                return;
-            }
-
-            await Task.Delay(RecoveryRetryDelays[attempt], _timeProvider, cancellationToken).ConfigureAwait(false);
+        var now = _timeProvider.GetUtcNow();
+        foreach (var expired in _inconclusiveUntil.Where(entry => entry.Value <= now).Select(entry => entry.Key).ToArray())
+            _inconclusiveUntil.Remove(expired);
+        foreach (var call in calls)
+        {
+            if (_inconclusiveUntil.ContainsKey(call.CallId)) continue;
+            if (call.DispatchStatus == WorldAutonomyDispatchStatuses.Unknown &&
+                (string.IsNullOrWhiteSpace(call.RequestId) || call.ErrorMessage == MissingOperationReason)) continue;
+            await RecoverCallAsync(call, processStartedAt, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -374,7 +370,7 @@ public sealed class WorldAutonomyRecoveryService : BackgroundService
         {
             runningRuns = await _ledger.ListRunningRunsAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception exception)
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
         {
             _logger.LogError(exception, "Unable to load running autonomy runs for interruption recovery.");
             return;
@@ -425,7 +421,7 @@ public sealed class WorldAutonomyRecoveryService : BackgroundService
                     run.RunId,
                     calls.Count);
             }
-            catch (Exception exception)
+            catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
             {
                 _logger.LogWarning(exception, "Could not terminalize interrupted autonomy run {RunId}.", run.RunId);
             }
@@ -472,7 +468,13 @@ public sealed class WorldAutonomyRecoveryService : BackgroundService
         try
         {
             var run = await _ledger.GetRunAsync(call.RunId, cancellationToken).ConfigureAwait(false);
-            if (run is null || !_configuration.TryGetBinding(run.GuildId, out _))
+            if (run is null || (run.Status == WorldAutonomyRunStatuses.Running && run.StartedAt >= processStartedAt)) return;
+            if (string.IsNullOrWhiteSpace(call.RequestId))
+            {
+                await MarkNonJournaledRecoveryUnavailableAsync(call, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            if (!_configuration.TryGetBinding(run.GuildId, out _))
             {
                 _logger.LogWarning(
                     "Cannot recover autonomy call {CallId}: its guild binding is unavailable.",
@@ -486,39 +488,33 @@ public sealed class WorldAutonomyRecoveryService : BackgroundService
                 .CallAsync(requestArguments, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
             var envelope = ExtractEnvelope(operationResult);
+            StewardOperationEvidence.RequireGuild(envelope, run.GuildId, isOperationLookup: true);
             if (StewardOperationEvidence.IsMissingOperation(envelope))
             {
                 await RecordMissingOperationAsync(call, run, processStartedAt, cancellationToken).ConfigureAwait(false);
                 return;
             }
             var evidence = StewardOperationEvidence.Parse(envelope, call);
-            var status = evidence.Status;
-            var rawEvidence = evidence.RawJson;
-            if (string.Equals(status, WorldAutonomyDispatchStatuses.Unknown, StringComparison.Ordinal))
+            if (evidence.Status is "reserved" or "executing" &&
+                (run.StartedAt >= processStartedAt || evidence.StateSince is not { } since || _timeProvider.GetUtcNow() - since < StewardClaimGrace)) return;
+            if (evidence.Status is "reserved" or "executing" or WorldAutonomyDispatchStatuses.Unknown)
             {
                 var reconciliationResult = await session.Catalog.GetNativeTool("reconcile_operation")
                     .CallAsync(requestArguments, cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
-                var reconciliationEnvelope = ExtractEnvelope(reconciliationResult);
-                status = StewardOperationEvidence.ParseReconciliationStatus(reconciliationEnvelope, call.RequestId!);
-                rawEvidence = reconciliationEnvelope.GetRawText();
+                evidence = evidence.WithReconciliation(ExtractEnvelope(reconciliationResult), run.GuildId);
+                if (evidence.Status == WorldAutonomyDispatchStatuses.Unknown)
+                    _inconclusiveUntil[call.CallId] = _timeProvider.GetUtcNow() + InconclusiveReviewInterval;
             }
 
-            if (TryMapTerminalStatus(status, out var terminalStatus))
-            {
-                await _ledger.CompleteToolCallAsync(
-                    call.CallId,
-                    terminalStatus,
-                    rawEvidence,
-                    evidence.ErrorCode,
-                    _timeProvider.GetUtcNow(),
-                    cancellationToken).ConfigureAwait(false);
-            }
-
+            if (!TryMapTerminalStatus(evidence.Status, out var terminalStatus) ||
+                (call.DispatchStatus == terminalStatus && call.ErrorMessage == evidence.ErrorCode && call.ResultJson == evidence.RawJson)) return;
+            await _ledger.CompleteToolCallAsync(call.CallId, terminalStatus, evidence.RawJson, evidence.ErrorCode,
+                _timeProvider.GetUtcNow(), cancellationToken).ConfigureAwait(false);
             await _ledger.RecordRunEventAsync(
                 call.RunId,
                 "recovery_checked",
-                JsonSerializer.Serialize(new { callId = call.CallId, status }),
+                JsonSerializer.Serialize(new { callId = call.CallId, status = terminalStatus }),
                 _timeProvider.GetUtcNow(),
                 cancellationToken).ConfigureAwait(false);
         }
