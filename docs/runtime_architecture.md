@@ -270,7 +270,7 @@ the body. The rewrite must pass a structural verifier before commit. Writes are 
 The current tick sees the prior body, mood, and recent participant names. It does not yet consume a durable queue of
 verified Discord actions or reception events.
 
-The separate [verified-deed trial](decisions/README.md#ds-008-trial-one-verified-guild-deed) applies to eligible direct full-agent turns, not Empire ticks. It can quote one same-room historical receipt in user content. It does not turn a role award into a formal Empire rank or inject the personal memory shadow brief.
+The separate [verified-deed trial](decisions/README.md#ds-008-trial-one-verified-guild-deed) is paused pending subject-level matching. No historical receipt is automatically added to the direct turn, Empire ticks, or the personal memory shadow brief in production.
 
 ## 8. Images
 
@@ -363,7 +363,7 @@ handlers, logs out, and disposes the client. Persistent route/guard/journal stat
 
 Production uses the hardened deploy script or serialized GitHub Actions workflow. The image includes a pinned
 Steward executable but no private profile. Private profile and binding resources are validated before apply. A failed
-rollout restores the prior deployment and private resources. Recreate strategy prevents concurrent writers on the
+rollout restores the prior deployment and release-owned resources; in preserve mode private bindings and profiles stay untouched. Recreate strategy prevents concurrent writers on the
 Azure Files-backed file journals.
 
 Use the [maintenance atlas](maintenance/atlas.md) for symptom-specific tests, release commands, and conditions that should stop a rollout.

@@ -293,9 +293,20 @@ if [[ "$(kubectl config current-context)" != "$AKS_CLUSTER" ]]; then
   exit 1
 fi
 
+read_optional_resource() {
+  local kind=$1 name=$2 object
+  object=$(kubectl get "$kind" "$name" -n discord-sky --ignore-not-found -o json) || {
+    printf 'Cannot establish prior state of %s/%s; refusing to apply manifests.\n' "$kind" "$name" >&2
+    return 1
+  }
+  if [[ -z $object ]]; then printf 'null\n'; return; fi
+  jq -sce --arg kind "$kind" --arg name "$name" 'select(length == 1) | .[0] |
+    select((.kind | ascii_downcase) == $kind and .metadata.name == $name and .metadata.namespace == "discord-sky" and
+      (.metadata.uid | type == "string" and length > 0))' <<< "$object"
+}
+
 if [[ $PRESERVE_STEWARD_PROFILES -ne 0 ]]; then
-  AUTONOMY_BINDINGS_JSON=$(kubectl get configmap discord-sky-autonomy-bindings -n discord-sky -o json 2>/dev/null \
-    || printf '{"data":{}}')
+  AUTONOMY_BINDINGS_JSON=$(read_optional_resource configmap discord-sky-autonomy-bindings)
   if ! jq -e '
       (.data // {}) | keys |
       all(.[]; test("^WorldAutonomy__EnabledGuilds__[1-9][0-9]*__ProfilePath$"))
@@ -314,10 +325,7 @@ if [[ $PRESERVE_STEWARD_PROFILES -ne 0 ]]; then
   fi
 
   if [[ $BINDING_COUNT -gt 0 ]]; then
-    STEWARD_PROFILES_SECRET_JSON=$(kubectl get secret discord-sky-steward-profiles -n discord-sky -o json 2>/dev/null) || {
-      echo "Autonomy bindings exist, but the private Steward profile Secret is missing." >&2
-      exit 1
-    }
+    STEWARD_PROFILES_SECRET_JSON=$(read_optional_resource secret discord-sky-steward-profiles)
     for guild_id in "${PRESERVED_STEWARD_GUILDS[@]}"; do
       binding_key="WorldAutonomy__EnabledGuilds__${guild_id}__ProfilePath"
       expected_path="/app/steward/profiles/${guild_id}.json"
@@ -337,8 +345,7 @@ if [[ $PRESERVE_STEWARD_PROFILES -ne 0 ]]; then
   echo "Verified $BINDING_COUNT preserved autonomy binding/profile pair(s)"
 fi
 
-RUNTIME_BINDINGS_JSON=$(kubectl get configmap discord-sky-runtime-bindings -n discord-sky -o json 2>/dev/null \
-  || printf '{"data":{}}')
+RUNTIME_BINDINGS_JSON=$(read_optional_resource configmap discord-sky-runtime-bindings)
 if ! jq -e '
     (.data // {}) | to_entries |
     all(.[];
@@ -464,41 +471,42 @@ for guild_id in "${INJECTED_STEWARD_GUILDS[@]}"; do
 done
 echo "Verified ${#INJECTED_STEWARD_GUILDS[@]} private autonomy binding(s) and profile key(s) in rendered manifest"
 
-PREVIOUS_REVISION=$(kubectl get deployment discord-sky-bot -n discord-sky \
-  -o jsonpath='{.metadata.annotations.deployment\.kubernetes\.io/revision}' 2>/dev/null || true)
+RENDERED_NAMES=$(kubectl create --dry-run=client --validate=false -f "$RENDERED_MANIFEST" -o name)
+if grep -Eq '^(secret/discord-sky-secrets|configmap/discord-sky-runtime-bindings)$' <<< "$RENDERED_NAMES" ||
+   { [[ $PRESERVE_STEWARD_PROFILES -ne 0 ]] && grep -Eq '^(secret/discord-sky-steward-profiles|configmap/discord-sky-autonomy-bindings)$' <<< "$RENDERED_NAMES"; }; then
+  echo 'Rendered manifest contains a private resource this release does not own.' >&2
+  exit 1
+fi
+
+PREVIOUS_REVISION=$(read_optional_resource deployment discord-sky-bot | jq -er '
+  if . == null then "absent" else .metadata.annotations["deployment.kubernetes.io/revision"] | select(type == "string" and test("^[1-9][0-9]*$")) end')
 BACKUP_CONFIG="$TEMP_DIR/discord-sky-config-before.json"
 BACKUP_BINDINGS="$TEMP_DIR/discord-sky-autonomy-bindings-before.json"
 BACKUP_PROFILES="$TEMP_DIR/discord-sky-steward-profiles-before.json"
-BACKED_UP_CONFIG=0
-BACKED_UP_BINDINGS=0
-BACKED_UP_PROFILES=0
-sanitize_resource='del(
-  .metadata.annotations."kubectl.kubernetes.io/last-applied-configuration",
-  .metadata.creationTimestamp,
-  .metadata.generation,
-  .metadata.managedFields,
-  .metadata.resourceVersion,
-  .metadata.uid
-)'
-if kubectl get configmap discord-sky-config -n discord-sky -o json 2>/dev/null \
-    | jq "$sanitize_resource" > "$BACKUP_CONFIG"; then
-  BACKED_UP_CONFIG=1
-fi
-if kubectl get configmap discord-sky-autonomy-bindings -n discord-sky -o json 2>/dev/null \
-    | jq "$sanitize_resource" > "$BACKUP_BINDINGS"; then
-  BACKED_UP_BINDINGS=1
-fi
-if kubectl get secret discord-sky-steward-profiles -n discord-sky -o json 2>/dev/null \
-    | jq "$sanitize_resource" > "$BACKUP_PROFILES"; then
-  BACKED_UP_PROFILES=1
+snapshot_owned() {
+  read_optional_resource "$1" "$2" | jq 'if . == null then null else del(
+    .metadata.annotations."kubectl.kubernetes.io/last-applied-configuration", .metadata.creationTimestamp,
+    .metadata.generation, .metadata.managedFields, .metadata.resourceVersion, .metadata.uid) end' > "$3"
+}
+restore_owned() {
+  if jq -e '. == null' "$3" > /dev/null; then
+    kubectl delete "$1" "$2" -n discord-sky --ignore-not-found
+  else
+    kubectl apply -f "$3"
+  fi
+}
+snapshot_owned configmap discord-sky-config "$BACKUP_CONFIG"
+if [[ $PRESERVE_STEWARD_PROFILES -eq 0 ]]; then
+  snapshot_owned configmap discord-sky-autonomy-bindings "$BACKUP_BINDINGS"
+  snapshot_owned secret discord-sky-steward-profiles "$BACKUP_PROFILES"
 fi
 
 echo "Applying manifests"
 DEPLOY_FAILED=0
 kubectl apply -f "$RENDERED_MANIFEST" || DEPLOY_FAILED=1
 if [[ $DEPLOY_FAILED -eq 0 && ${#INJECTED_STEWARD_GUILDS[@]} -eq 0 && $PRESERVE_STEWARD_PROFILES -eq 0 ]]; then
-  kubectl delete configmap discord-sky-autonomy-bindings -n discord-sky --ignore-not-found
-  kubectl delete secret discord-sky-steward-profiles -n discord-sky --ignore-not-found
+  kubectl delete configmap discord-sky-autonomy-bindings -n discord-sky --ignore-not-found || DEPLOY_FAILED=1
+  kubectl delete secret discord-sky-steward-profiles -n discord-sky --ignore-not-found || DEPLOY_FAILED=1
 fi
 
 if [[ $DEPLOY_FAILED -eq 0 ]]; then
@@ -509,27 +517,12 @@ fi
 if [[ $DEPLOY_FAILED -ne 0 ]]; then
   echo "Deployment failed; restoring the previous runtime configuration and revision." >&2
   ROLLBACK_ERRORS=0
-  if [[ $BACKED_UP_CONFIG -ne 0 ]] && ! kubectl apply -f "$BACKUP_CONFIG"; then
-    echo "Failed to restore the previous Sky ConfigMap." >&2
-    ROLLBACK_ERRORS=1
+  restore_owned configmap discord-sky-config "$BACKUP_CONFIG" || ROLLBACK_ERRORS=1
+  if [[ $PRESERVE_STEWARD_PROFILES -eq 0 ]]; then
+    restore_owned configmap discord-sky-autonomy-bindings "$BACKUP_BINDINGS" || ROLLBACK_ERRORS=1
+    restore_owned secret discord-sky-steward-profiles "$BACKUP_PROFILES" || ROLLBACK_ERRORS=1
   fi
-  if [[ $BACKED_UP_BINDINGS -ne 0 ]]; then
-    if ! kubectl apply -f "$BACKUP_BINDINGS"; then
-      echo "Failed to restore the previous autonomy bindings ConfigMap." >&2
-      ROLLBACK_ERRORS=1
-    fi
-  else
-    kubectl delete configmap discord-sky-autonomy-bindings -n discord-sky --ignore-not-found || ROLLBACK_ERRORS=1
-  fi
-  if [[ $BACKED_UP_PROFILES -ne 0 ]]; then
-    if ! kubectl apply -f "$BACKUP_PROFILES"; then
-      echo "Failed to restore the previous Steward profile Secret." >&2
-      ROLLBACK_ERRORS=1
-    fi
-  else
-    kubectl delete secret discord-sky-steward-profiles -n discord-sky --ignore-not-found || ROLLBACK_ERRORS=1
-  fi
-  if [[ -n "$PREVIOUS_REVISION" ]]; then
+  if [[ $PREVIOUS_REVISION != absent ]]; then
     if ! kubectl rollout undo deployment/discord-sky-bot -n discord-sky --to-revision="$PREVIOUS_REVISION"; then
       echo "Failed to restore deployment revision $PREVIOUS_REVISION; manual intervention is required." >&2
       ROLLBACK_ERRORS=1

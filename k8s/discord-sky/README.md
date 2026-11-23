@@ -133,7 +133,7 @@ Recall is lazy, bound to the direct requester, and subject to the existing memor
 budget exhaustion. These are selection/evidence signals, not proof the response used a returned fact well.
 The shadow continuity brief remains non-injecting.
 
-The independent verified-deed trial is controlled by `WorldAutonomy__VerifiedDeeds__Percent` and `WorldAutonomy__VerifiedDeeds__UntilUtc`. An eligible direct turn can see one recent verified same-guild, same-channel effect. `world_autonomy_deed` identifies `offered` vs `control`; `Percent=0` stops it, and expiry stops it without a rollout. See [DS-008](../../docs/decisions/README.md#ds-008-trial-one-verified-guild-deed) before extending it.
+The verified-deed trial is paused (`WorldAutonomy__VerifiedDeeds__Percent=0`): a same-room receipt can still concern the wrong member. Keep the original expiry and see [DS-008](../../docs/decisions/README.md#ds-008-trial-one-verified-guild-deed) before considering a subject-bound replacement.
 
 The original GPT-6 Astra cache-canary checks verified first-call reuse of 1,757/2,190 input tokens across fresh run contexts,
 and continuation reuse of 2,187/2,242 tokens. A persona-only breakpoint initially missed the minimum cacheable
@@ -211,7 +211,7 @@ smoke and disposable-guild R0 through R5 validation have passed.
 Automated production deployment checks out a pinned public Discord Steward revision and calls the same deploy
 script with `--preserve-steward-profiles`. That mode requires every existing private binding to have a matching
 Secret key before applying a new Deployment, verifies the image contains the executable and no profiles, and
-restores the prior revision and private resources if rollout fails.
+restores the prior revision and release-owned configuration if rollout fails. In preserve mode neither apply nor rollback writes the private bindings or profiles. An unreadable baseline aborts before apply; only a confirmed NotFound counts as absence. Run `bash scripts/test-rollout.sh` to exercise the rollback paths offline.
 
 The default dark deployment sets `WorldAutonomy__ValidateStewardOnStartup=true`, which runs
 `/app/steward/DiscordSteward --probe` during Sky startup. It validates the bundled executable and its

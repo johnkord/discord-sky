@@ -120,8 +120,14 @@ jobs:
             --preserve-steward-profiles
 
       - name: Verify deployment
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ needs.validate.outputs.image_tag }}
         run: |
-          echo "Deployment completed successfully!"
-          kubectl get pods -n ${{ env.K8S_NAMESPACE }}
-          echo ""
-          echo "Image deployed: ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ needs.validate.outputs.image_tag }}"
+          set -euo pipefail
+          expected=$(kubectl create --dry-run=client --validate=false -f k8s/discord-sky/configmap.yaml -o json | jq -cSe '.data | objects')
+          actual=$(kubectl -n "$K8S_NAMESPACE" get configmap discord-sky-config -o json | jq -cSe '.data | objects')
+          [[ "$actual" == "$expected" ]] || { echo 'Live public configuration differs from the validated tree.' >&2; exit 1; }
+          digest=$(az acr repository show --name "$ACR_NAME" --image "$IMAGE_NAME:$IMAGE_TAG" --query digest -o tsv)
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          kubectl -n "$K8S_NAMESPACE" get pods -l app=discord-sky-bot -o json | jq -e --arg digest "$digest" --arg image "$ACR_LOGIN_SERVER/$IMAGE_NAME:$IMAGE_TAG" '[.items[] | select(.metadata.deletionTimestamp==null) | .status.containerStatuses[]? | select(.name=="bot")] | length==1 and all(.ready and .image==$image and (.imageID|endswith($digest)))'
