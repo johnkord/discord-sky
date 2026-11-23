@@ -1,3 +1,4 @@
+using System.Text.Json;
 using DiscordSky.Bot.Orchestration.Autonomy;
 
 namespace DiscordSky.Tests;
@@ -92,25 +93,95 @@ public sealed class WorldAutonomyLedgerTests
     }
 
     [Fact]
-    public async Task DeedTrialUsesOnlyRecentVerifiedEvidenceFromTheSameRoom()
+    public async Task AppealFollowsExactDeliveredChunkAndNamedSubjectAcrossRestart()
     {
         using var directory = new TemporaryDirectory();
         var path = Path.Combine(directory.Path, "ledger.json");
         var now = DateTimeOffset.UtcNow;
-        using var ledger = CreateLedger(path);
-        await ledger.StartRunAsync(new("run", 4001, "message", "1", null, "model", "profile", "manifest", now, 5001), default);
-        var id = Guid.NewGuid().ToString();
-        await ledger.RecordDispatchPendingAsync(new("call", "run", 1, "create_role", id, "{}", "digest", "schema", now), default);
-        var envelope = System.Text.Json.JsonSerializer.Serialize(new { outcome = "succeeded", requestId = id, guild = new { id = "4001" },
-            data = new { requestId = id, toolName = "create_role", status = "succeeded", verified = true, observed = new { id = "701", name = "Ceremonial fixture" } } });
-        var reader = (IVerifiedDeedReader)ledger;
-        Assert.Null(await reader.ReadDeedAsync(4001, 5001, "that title", now, default));
-        await ledger.CompleteToolCallAsync("call", "succeeded", System.Text.Json.JsonSerializer.Serialize(new { Text = envelope }), null, now, default);
-        Assert.Equal("Ceremonial fixture", (await reader.ReadDeedAsync(4001, 5001, "that title", now, default))?.Value);
-        Assert.Null(await reader.ReadDeedAsync(4001, 5002, "that title", now, default));
-        Assert.Null(await reader.ReadDeedAsync(4002, 5001, "that title", now, default));
-        Assert.Null(await reader.ReadDeedAsync(4001, 5001, "that title", now.AddDays(3), default));
-        Assert.Null(await reader.ReadDeedAsync(4001, 5001, "unrelated", now, default));
+        const string decree = "<@111>, your nickname is Copper.";
+        const string petition = "Appeal: <@!111> objects.";
+        static async Task WriteAsync(FileBackedWorldAutonomyLedger ledger, string run, string id, string name, DateTimeOffset at, int sequence = 1)
+        {
+            await ledger.RecordDispatchPendingAsync(new(id, run, sequence, "set_member_nickname", id, "{}", "digest", "schema", at), default);
+            var envelope = NicknameReceipt(id, "4001", "111", name);
+            await ledger.CompleteToolCallAsync(id, "succeeded", JsonSerializer.Serialize(new { Text = envelope }), null, at, default);
+        }
+        using (var ledger = CreateLedger(path))
+        {
+            await ledger.StartRunAsync(new("original", 4001, "fixture", "1", null, "model", "profile", "manifest", now.AddMinutes(-4), 5001), default);
+            await ledger.StartRunAsync(new("later", 4001, "fixture", "2", null, "model", "profile", "manifest", now.AddMinutes(-2), 5001), default);
+            await WriteAsync(ledger, "original", "first", "Copper", now.AddMinutes(-3));
+            await WriteAsync(ledger, "later", "second", "Silver", now.AddMinutes(-1));
+            await ledger.RecordRunEventAsync("original", "discord_delivery", """{"channelId":"5001","messageIds":["7001","7002"],"outcome":"partial_delivery"}""", now.AddMinutes(-2), default);
+            await ledger.RecordRunEventAsync("later", "discord_delivery", """{"channelId":"5001","messageIds":["7003"],"outcome":"delivered"}""", now, default);
+        }
+        using var reopened = CreateLedger(path);
+        var reader = (IVerifiedDeedReader)reopened;
+        Assert.Equal("first", (await reader.ReadAppealedDeedAsync(4001, 5001, 7002, decree, petition, now, default))?.RequestId);
+        Assert.Null(await reader.ReadAppealedDeedAsync(4001, 5001, 7002, decree, "appeal: <@222>", now, default));
+        Assert.Null(await reader.ReadAppealedDeedAsync(4001, 5001, 7002, decree, "appeal: <@111> and <@222>", now, default));
+        Assert.Null(await reader.ReadAppealedDeedAsync(4001, 5001, 7003, decree, petition, now, default));
+        Assert.Null(await reader.ReadAppealedDeedAsync(4001, 5002, 7002, decree, petition, now, default));
+        Assert.Null(await reader.ReadAppealedDeedAsync(4002, 5001, 7002, decree, petition, now, default));
+        Assert.Null(await reader.ReadAppealedDeedAsync(4001, 5001, 7002, decree, petition, now.AddDays(3), default));
+        Assert.Null(await reader.ReadAppealedDeedAsync(4001, 5001, 7002, "<@111> meet <@222>, Copper", petition, now, default));
+        Assert.Null(await reader.ReadAppealedDeedAsync(4001, 5001, 7002, "<@111> is Copperfield", petition, now, default));
+        await WriteAsync(reopened, "original", "after-speech", "Copper", now, 2);
+        Assert.Equal("first", (await reader.ReadAppealedDeedAsync(4001, 5001, 7002, decree, petition, now, default))?.RequestId);
+        await WriteAsync(reopened, "original", "second-match", "Copper", now.AddMinutes(-2.5), 3);
+        Assert.Null(await reader.ReadAppealedDeedAsync(4001, 5001, 7002, decree, petition, now, default));
+    }
+
+    internal static string NicknameReceipt(string requestId, string guild, string member, string name) => JsonSerializer.Serialize(new
+    {
+        outcome = "succeeded", requestId, guild = new { id = guild },
+        data = new { requestId, toolName = "set_member_nickname", resourceId = member, status = "succeeded", outcome = "verified_desired_state", verified = true,
+            before = new { userId = member, nickname = "prior" }, desired = new { userId = member, nickname = name }, observed = new { userId = member, nickname = name } }
+    });
+
+    [Theory]
+    [InlineData("succeeded", true, "111", "Copper", true)]
+    [InlineData("failed", true, "111", "Copper", false)]
+    [InlineData("succeeded", false, "111", "Copper", false)]
+    [InlineData("succeeded", true, "222", "Copper", false)]
+    [InlineData("succeeded", true, "111", "Silver", false)]
+    public void DeedRequiresAConsistentConfirmedOperation(string status, bool verified, string observedMember, string observedName, bool qualifies)
+    {
+        var json = System.Text.Json.Nodes.JsonNode.Parse(NicknameReceipt("req", "4001", "111", "Copper"))!;
+        var data = json["data"]!;
+        data["verified"] = verified;
+        data["observed"]!["userId"] = observedMember;
+        data["observed"]!["nickname"] = observedName;
+        var now = DateTimeOffset.UtcNow;
+        var call = new WorldAutonomyToolCall("call", "run", 1, "set_member_nickname", "req", "{}", "digest", "schema", status, now, now, json.ToJsonString(), null);
+        Assert.Equal(qualifies, VerifiedDeed.From(call, 4001, 5001) is not null);
+    }
+
+    [Fact]
+    public void PublicEffectsRequireTheCorrectDiscordMentionTypeAndAProvenTransition()
+    {
+        static VerifiedDeed? Project(string tool, string resource, object before, object desired, object observed)
+        {
+            var now = DateTimeOffset.UtcNow;
+            var receipt = JsonSerializer.Serialize(new { outcome = "succeeded", requestId = "req", guild = new { id = "4001" },
+                data = new { requestId = "req", toolName = tool, resourceId = resource, status = "succeeded", outcome = "verified_desired_state", verified = true, before, desired, observed } });
+            return VerifiedDeed.From(new("call", "run", 1, tool, "req", "{}", "digest", "schema", "succeeded", now, now, receipt, null), 4001, 5001);
+        }
+        var role = new { id = "777", exists = true, name = "Treasurer" };
+        var created = Project("create_role", "4001", new { }, role, role);
+        Assert.True(created?.IsPubliclyNamedIn("<@&777>: Treasurer", "<@&777>"));
+        Assert.False(created?.IsPubliclyNamedIn("<@&777>: Treasurer", "<@777>"));
+        var oldChannel = new { id = "5001", name = "general" };
+        var channel = new { id = "5001", name = "treasury" };
+        Assert.True(Project("update_channel", "5001", oldChannel, channel, channel)?.IsPubliclyNamedIn("<#5001> is treasury", "<#5001>"));
+        Assert.Null(Project("update_channel", "5002", oldChannel, channel, channel));
+        var before = new { userId = "111", roleIds = new[] { "1" } };
+        var after = new { userId = "111", roleIds = new[] { "1", "777" } };
+        var award = Project("set_member_role", "111", before, after, after);
+        Assert.True(award?.IsPubliclyNamedIn("<@111> now holds <@&777>", "<@&777> for <@111>"));
+        Assert.False(award?.IsPubliclyNamedIn("<@111> now holds <@&777>", "<@111>"));
+        Assert.Null(Project("set_member_role", "111", before, before, after));
+        Assert.Null(Project("set_member_role", "111", after, before, before));
     }
 
     [Fact]

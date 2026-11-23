@@ -22,7 +22,10 @@ public sealed record WorldAutonomyConversationRequest(
     string? MoodLabel,
     string? EpisodeId,
     bool IsDirectAddress,
-    AutonomyImageSelection? ImageSelection = null);
+    AutonomyImageSelection? ImageSelection = null)
+{
+    internal DecreeAppeal? Appeal { get; init; }
+}
 
 public sealed record WorldAutonomyConversationResult(
     string OperationId,
@@ -42,6 +45,7 @@ public sealed class WorldAutonomyConversationService
     private readonly TimeProvider _timeProvider;
     private readonly WorldAutonomyContinuityObserver? _continuityObserver;
     private readonly WorldAutonomyVision? _vision;
+    private readonly WorldAutonomyConfiguration? _configuration;
 
     public WorldAutonomyConversationService(
         IChatClient chatClient,
@@ -54,7 +58,8 @@ public sealed class WorldAutonomyConversationService
         ILogger<WorldAutonomyConversationService> logger,
         TimeProvider? timeProvider = null,
         WorldAutonomyContinuityObserver? continuityObserver = null,
-        WorldAutonomyVision? vision = null)
+        WorldAutonomyVision? vision = null,
+        WorldAutonomyConfiguration? configuration = null)
     {
         _chatClient = chatClient;
         _llmOptions = llmOptions;
@@ -67,6 +72,7 @@ public sealed class WorldAutonomyConversationService
         _timeProvider = timeProvider ?? TimeProvider.System;
         _continuityObserver = continuityObserver;
         _vision = vision;
+        _configuration = configuration;
     }
 
     public async Task<WorldAutonomyConversationResult?> RespondAsync(
@@ -104,6 +110,13 @@ public sealed class WorldAutonomyConversationService
 
         ChatResponse response;
         var prompt = BuildUserMessage(request);
+        if (_configuration is { DecreeAppealsEnabled: true } && _configuration.TryGetBinding(request.GuildId, out _) &&
+            request.Appeal is { } appeal && appeal.IsFor(request.IsDirectAddress, request.GuildId, request.ChannelId, request.TriggerMessageId))
+        {
+            prompt += appeal.Brief(null, speechOnly: true);
+            _telemetry.Emit(new TelemetryEvent(_timeProvider.GetUtcNow(), TelemetryEventTypes.WorldAutonomyAppeal, OperationId: operationId,
+                MessageId: request.TriggerMessageId, ReferentMessageId: appeal.MessageId, Kind: "conversation", Stage: "brief", Outcome: "quote_only"));
+        }
         try
         {
             var userMessage = _vision is null ? new ChatMessage(ChatRole.User, prompt) :

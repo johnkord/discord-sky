@@ -269,7 +269,9 @@ the body. The rewrite must pass a structural verifier before commit. Writes are 
 The current tick sees the prior body, mood, and recent participant names. It does not yet consume a durable queue of
 verified Discord actions or reception events.
 
-The separate [verified-deed trial](decisions/README.md#ds-008-trial-one-verified-guild-deed) is paused pending subject-level matching. No historical receipt is automatically added to the direct turn, Empire ticks, or the personal memory shadow brief in production.
+The old room-wide verified-deed trial is retired. The [Court of Appeals](decisions/README.md#ds-009-let-the-room-appeal-a-decree) uses the reply parent already resolved for routing. It accepts only a genuine same-channel reference to this bot's text and an explicit filing at the start of the petition. The original message is quoted as untrusted user-turn evidence, not added to the cached instructions. The quote is capped at 600 UTF-16 code units and web links are omitted. Text-only fallback can hear the appeal, never consults the ledger, and has no tools. Empire ticks and personal recall are unchanged.
+
+An on-record filing can read one public effect from the file ledger, with a 400 ms local lookup budget. It requires an exact delivered message ID, same room and guild, a qualifying observed change before delivery within 48 hours, and unambiguous typed mentions. Role creation, role award, nickname assignment and source-channel rename are the only eligible effect types. Missing, contradictory, late or ambiguous evidence yields no effect. A decree can be heard on its words even without a retained receipt. `world_autonomy_appeal` records brief preparation, not delivery, an actual reversal or a human quality verdict.
 
 ## 8. Images
 

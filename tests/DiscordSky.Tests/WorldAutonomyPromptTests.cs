@@ -1,9 +1,84 @@
+using Discord;
 using DiscordSky.Bot.Orchestration.Autonomy;
 
 namespace DiscordSky.Tests;
 
 public sealed class WorldAutonomyPromptTests
 {
+    [Theory]
+    [InlineData("Appeal: the seal is upside down", false)]
+    [InlineData("<@42> appeal on the record: <@111> objects", true)]
+    [InlineData("OBJECTION! That's my Thursday.", false)]
+    [InlineData("appeal", false)]
+    public void CourtAcceptsOnlyAnInvitedReplyToTheSelectedBotMessage(string text, bool onRecord)
+    {
+        var reference = new MessageReference(7001, 5001);
+        var exhibit = new AppealExhibit(7001, 5001, 42, "Thursday now answers to me.");
+        var appeal = DecreeAppeal.TryOpen(text, MessageType.Reply, reference, 4001, 5001, 42, exhibit);
+        Assert.NotNull(appeal);
+        Assert.Equal(onRecord, appeal!.OnRecord);
+        Assert.Contains(exhibit.Text, appeal.Brief(null));
+        Assert.Null(DecreeAppeal.TryOpen(text, MessageType.Default, reference, 4001, 5001, 42, exhibit));
+        Assert.Null(DecreeAppeal.TryOpen(text, MessageType.Reply, reference, 4001, 5001, 42, exhibit with { AuthorId = 111 }));
+        Assert.Null(DecreeAppeal.TryOpen(text, MessageType.Reply, reference, 4001, 5001, 42, exhibit with { MessageId = 7002 }));
+        Assert.Null(DecreeAppeal.TryOpen(text, MessageType.Reply, reference, 4001, 5001, 42, exhibit with { ChannelId = 5002 }));
+        Assert.Null(DecreeAppeal.TryOpen(text, MessageType.Reply, reference, 4001, 5001, 42, null));
+        Assert.Null(DecreeAppeal.TryOpen(text, MessageType.Reply, new MessageReference(7001, 5001, 4002), 4001, 5001, 42, exhibit));
+        Assert.Null(DecreeAppeal.TryOpen(text, MessageType.Reply, new MessageReference(7001, 5001, 4001, null, MessageReferenceType.Forward), 4001, 5001, 42, exhibit));
+    }
+
+    [Theory]
+    [InlineData("That was an appealing idea.")]
+    [InlineData("I saw an appeal: it was denied.")]
+    [InlineData("appeal to authority")]
+    [InlineData("objectionable")]
+    [InlineData("appeal on the record says what?")]
+    public void OrdinaryConversationIsNotACourtFiling(string text) => Assert.Null(DecreeAppeal.TryOpen(text, MessageType.Reply,
+        new MessageReference(7001, 5001), 4001, 5001, 42, new(7001, 5001, 42, "A ruling.")));
+
+    [Fact]
+    public void CourtExhibitsAreBoundedQuotedTextNotLinksOrPrivateReceipts()
+    {
+        var appeal = DecreeAppeal.TryOpen("appeal: reconsider", MessageType.Reply, new MessageReference(7001, 5001), 4001, 5001, 42,
+            new(7001, 5001, 42, "The\nline https://example.invalid/private?signature=fixture \"objection\" " + new string('s', 620)))!;
+        Assert.True(appeal.Excerpted);
+        Assert.Equal(DecreeAppeal.QuoteLimit, appeal.Quotation.Length);
+        var deed = new VerifiedDeed("set_nickname", "111", "Unpublished", DateTimeOffset.UnixEpoch, "private-id");
+        var brief = appeal.Brief(deed);
+        Assert.DoesNotContain("signature=", brief);
+        Assert.DoesNotContain("Unpublished", brief);
+        Assert.DoesNotContain("private-id", brief);
+        Assert.Contains("spoken ruling only", (appeal with { OnRecord = true }).Brief(deed, speechOnly: true));
+        Assert.DoesNotContain("Unpublished", (appeal with { OnRecord = true }).Brief(deed, speechOnly: true));
+    }
+
+    [Fact]
+    public async Task OptionalEvidenceIsNeverReadOnOrdinaryOrAmbiguousFilings()
+    {
+        var reader = new UnavailableRecords();
+        var appeal = new DecreeAppeal(4001, 5001, 7001, "<@111> is Copper", false, "<@111> objects", false);
+        var now = DateTimeOffset.UtcNow;
+        Assert.Equal("quote_only", (await appeal.PrepareAsync(reader, now, default)).Outcome);
+        Assert.Equal("no_named_subject", (await (appeal with { OnRecord = true, Grounds = "this is unjust" }).PrepareAsync(reader, now, default)).Outcome);
+        Assert.Equal("excerpt_only", (await (appeal with { OnRecord = true, Excerpted = true }).PrepareAsync(reader, now, default)).Outcome);
+        Assert.Equal(0, reader.Calls);
+        var unavailable = await (appeal with { OnRecord = true }).PrepareAsync(reader, now, default);
+        Assert.Equal("evidence_unavailable", unavailable.Outcome);
+        Assert.Contains("does not prove nothing happened", unavailable.Prompt);
+        Assert.Equal(1, reader.Calls);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => appeal.PrepareAsync(reader, now, new CancellationToken(true)));
+    }
+
+    private sealed class UnavailableRecords : IVerifiedDeedReader
+    {
+        public int Calls { get; private set; }
+        public Task<VerifiedDeed?> ReadAppealedDeedAsync(ulong guild, ulong channel, ulong messageId, string decree, string petition, DateTimeOffset now, CancellationToken token)
+        {
+            Calls++;
+            throw new IOException("Unavailable fixture");
+        }
+    }
+
     [Fact]
     public void Instructions_CarryTheRobotnikCharacterIntoTheToolEnabledAgent()
     {

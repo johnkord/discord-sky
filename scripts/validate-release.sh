@@ -12,6 +12,7 @@ results=${RESULTS_DIRECTORY:-$(mktemp -d)}
 mkdir -p "$results"
 [[ ! -e "$results/release.trx" ]] || { echo 'Use a fresh results directory for this release.' >&2; exit 1; }
 bash scripts/test-rollout.sh
+python3 -B -m unittest discover -s scripts -p 'test_inspect_turn.py'
 audit=(-p:NuGetAudit=true -p:NuGetAuditMode=all '-p:WarningsAsErrors=NU1900%3BNU1903%3BNU1904%3BNU1905')
 dotnet build "$STEWARD_TEST_ROOT/src/DiscordSteward/DiscordSteward.csproj" -c Debug "${audit[@]}"
 test -s "$STEWARD_TEST_ROOT/src/DiscordSteward/bin/Debug/net10.0/DiscordSteward.dll"
@@ -27,7 +28,8 @@ root = ElementTree.parse(sys.argv[1])
 cases = root.findall('.//{*}UnitTestResult')
 required = {'SiblingSteward_UnrestrictedProfileExposesOneReusableCompleteNativeCatalog',
             'SiblingSteward_AutonomyProviderRejectionReturnsTruthfulFailure',
-            'SiblingSteward_AbandonedCallsReconcileWithoutReplayingDiscordWrites'}
+            'SiblingSteward_AbandonedCallsReconcileWithoutReplayingDiscordWrites',
+            'SiblingSteward_CourtFilingChangesOnlyTheInvitedUserTurn'}
 passed = {case.get('testName', '').split('.')[-1] for case in cases if case.get('outcome') == 'Passed'}
 if not required <= passed:
     sys.exit('Required Steward test missing or not passed: ' + ', '.join(sorted(required - passed)))

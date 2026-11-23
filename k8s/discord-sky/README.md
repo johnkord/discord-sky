@@ -133,7 +133,7 @@ Recall is lazy, bound to the direct requester, and subject to the existing memor
 budget exhaustion. These are selection/evidence signals, not proof the response used a returned fact well.
 The shadow continuity brief remains non-injecting.
 
-The verified-deed trial is paused (`WorldAutonomy__VerifiedDeeds__Percent=0`): a same-room receipt can still concern the wrong member. Keep the original expiry and see [DS-008](../../docs/decisions/README.md#ds-008-trial-one-verified-guild-deed) before considering a subject-bound replacement.
+The room-wide verified-deed trial is retired. `WorldAutonomy__DecreeAppealsEnabled=true` enables the explicit Court of Appeals only in already-bound guilds; the local default is false. Roll back court independently by setting the new switch to false and using the normal release path. The old trial knobs no longer have a runtime consumer. A `world_autonomy_appeal` row has `stage=brief`, `kind=full|conversation`, trigger ID, cited message ID and operation ID. Outcomes distinguish `quote_only`, `excerpt_only`, `no_named_subject`, `no_matching_receipt`, `verified_effect`, and `evidence_unavailable`. They say what the model was offered, not what Discord delivered. [Decision and review criteria](../../docs/decisions/README.md#ds-009-let-the-room-appeal-a-decree).
 
 The original GPT-6 Astra cache-canary checks verified first-call reuse of 1,757/2,190 input tokens across fresh run contexts,
 and continuation reuse of 2,187/2,242 tokens. A persona-only breakpoint initially missed the minimum cacheable

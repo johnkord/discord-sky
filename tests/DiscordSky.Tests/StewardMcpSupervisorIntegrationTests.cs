@@ -7,8 +7,10 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using DiscordSky.Bot.Configuration;
+using DiscordSky.Bot.Memory.Logging;
 using DiscordSky.Bot.Orchestration.Autonomy;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DiscordSky.Tests;
@@ -90,13 +92,7 @@ public sealed class StewardMcpSupervisorIntegrationTests
         var directory = Directory.CreateTempSubdirectory("sky-provider-rejection-").FullName;
         try
         {
-            using var socket = new TcpListener(IPAddress.Loopback, 0);
-            socket.Start();
-            var endpoint = $"http://127.0.0.1:{((IPEndPoint)socket.LocalEndpoint).Port}/";
-            socket.Stop();
-            using var listener = new HttpListener();
-            listener.Prefixes.Add(endpoint);
-            listener.Start();
+            using var listener = StartLocalProvider(out var endpoint);
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             var options = new WorldAutonomyOptions
             {
@@ -266,6 +262,135 @@ public sealed class StewardMcpSupervisorIntegrationTests
     private sealed record RecoveryCase(string Run, string? Initial, DateTimeOffset RunStart, DateTimeOffset Since, string? Receipt, string Expected, string? Error, string Tool = "trigger_typing_indicator")
     {
         public string RequestId { get; } = Guid.NewGuid().ToString("D");
+    }
+
+    [StewardFact]
+    public async Task SiblingSteward_CourtFilingChangesOnlyTheInvitedUserTurn()
+    {
+        var steward = GetSiblingStewardRoot();
+        var profile = Path.Combine(steward, "config/profiles/unrestricted-autonomy.example.json");
+        using var profileJson = JsonDocument.Parse(await File.ReadAllTextAsync(profile));
+        var guild = profileJson.RootElement.GetProperty("Discord").GetProperty("GuildId").GetString()!;
+        var guildId = ulong.Parse(guild);
+        var directory = Directory.CreateTempSubdirectory("sky-court-");
+        try
+        {
+            WorldAutonomyOptions Options(bool enabled) => new()
+            {
+                DecreeAppealsEnabled = enabled, LedgerPath = Path.Combine(directory.FullName, "ledger.json"),
+                StewardCommand = "env", StewardWorkingDirectory = directory.FullName,
+                StewardArguments = ["-i", $"PATH={Environment.GetEnvironmentVariable("PATH")}", $"HOME={directory.FullName}", $"Steward__ProfilePath={profile}",
+                    "dotnet", Path.Combine(steward, "src/DiscordSteward/bin/Debug/net10.0/DiscordSteward.dll")],
+                EnabledGuilds = new() { [guild] = new() { ProfilePath = profile } }
+            };
+            using var listener = StartLocalProvider(out var endpoint);
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var opts = Options(true);
+            await using var supervisor = new StewardMcpSupervisor(WorldAutonomyConfiguration.FromOptions(opts), NullLoggerFactory.Instance, NullLogger<StewardMcpSupervisor>.Instance);
+            using var ledger = new FileBackedWorldAutonomyLedger(opts);
+            var prior = WorldAutonomyRunContext.Create(guildId, "fixture", "fixture", "profile", "manifest", 1, sourceChannelId: 6001);
+            var before = DateTimeOffset.UtcNow.AddMinutes(-2);
+            await ledger.StartRunAsync(prior.ToRunStart(before), deadline.Token);
+            var requestId = prior.RequestIdPool.Single();
+            await ledger.RecordDispatchPendingAsync(new("prior-call", prior.RunId, 1, "set_member_nickname", requestId, "{\"private\":\"omitted-args\"}", "digest", "schema", before), deadline.Token);
+            await ledger.CompleteToolCallAsync("prior-call", "succeeded", WorldAutonomyLedgerTests.NicknameReceipt(requestId, guild, "111", "Copper"), null, before, deadline.Token);
+            await new WorldAutonomyRunState(prior, ledger, []).RecordDiscordDeliveryAsync(6001, [4900], 4800, 30);
+            await ledger.CompleteRunAsync(prior.RunId, "succeeded", "omitted-prior-final", null, DateTimeOffset.UtcNow, deadline.Token);
+            var llm = new TestOptionsMonitor<LlmOptions>(new LlmOptions { Providers = new() { ["OpenAI"] = new()
+            { ApiKey = "test-only", Endpoint = endpoint, ChatModel = "gpt-6.2-astra", ReasoningEffort = "ExtraHigh", UseResponsesApi = true } } });
+            var guard = new LlmProviderGuard(NullLogger<LlmProviderGuard>.Instance, options: new LlmProviderGuardOptions
+            { Enabled = false, StatePath = Path.Combine(directory.FullName, "guard.json") });
+            var cases = new (bool Enabled, bool Direct, string Filing, string? Outcome)[]
+            {
+                (true, true, "Objection! I want Thursday back", "quote_only"),
+                (true, true, "appeal on the record: <@111> objects", "verified_effect"),
+                (true, true, "appeal on the record: <@222> objects", "no_matching_receipt"),
+                (true, false, "appeal: from the gallery", null),
+                (false, true, "appeal: the court is closed", null)
+            };
+            foreach (var item in cases)
+            {
+                var telemetry = new InMemoryTelemetrySink();
+                var errors = new FixtureErrorLog();
+                var runner = new WorldAutonomyOrchestrator(WorldAutonomyConfiguration.FromOptions(Options(item.Enabled)), llm,
+                    supervisor, new WorldAutonomyAgentFactory(), ledger, errors, telemetry: telemetry, providerGuard: guard);
+                var exhibit = DecreeAppeal.TryOpen(item.Filing, Discord.MessageType.Reply, new Discord.MessageReference(4900, 6001), guildId, 6001, 42,
+                    new(4900, 6001, 42, "<@111>, your nickname is Copper. https://example.invalid/not-for-the-record"));
+                var run = runner.RunAsync(new WorldAutonomyOpportunity(guildId, "discord_message", item.Filing, "5001", IsDirectAddress: item.Direct,
+                    SourceChannelId: 6001, SourceAuthorId: 8001) { Appeal = exhibit }, deadline.Token);
+                var request = await listener.GetContextAsync().WaitAsync(deadline.Token);
+                using var reader = new StreamReader(request.Request.InputStream, Encoding.UTF8);
+                var body = await reader.ReadToEndAsync(deadline.Token);
+                request.Response.ContentType = "application/json";
+                var response = JsonSerializer.SerializeToUtf8Bytes(new { id = "resp_fixture", @object = "response", created_at = 1, status = "completed", model = "gpt-6.2-astra",
+                    output = new[] { new { type = "message", id = "msg_fixture", status = "completed", role = "assistant",
+                        content = new[] { new { type = "output_text", text = "The calendar may counteroffer.", annotations = Array.Empty<object>() } } } }, parallel_tool_calls = false,
+                    tool_choice = "auto", tools = Array.Empty<object>(), usage = new { input_tokens = 40, input_tokens_details = new { cached_tokens = 0 },
+                        output_tokens = 6, output_tokens_details = new { reasoning_tokens = 0 }, total_tokens = 46 } });
+                request.Response.ContentLength64 = response.Length;
+                await request.Response.OutputStream.WriteAsync(response, deadline.Token);
+                request.Response.Close();
+                var result = await run;
+                Assert.True(result.Status == "succeeded", $"{item.Filing}: {result.FailureReason} {errors.Error}");
+                Assert.Equal("The calendar may counteroffer.", result.FinalText);
+                Assert.Empty(await ledger.ListToolCallsAsync(result.RunId!, deadline.Token));
+                using var document = JsonDocument.Parse(body);
+                var input = document.RootElement.GetProperty("input").EnumerateArray().ToArray();
+                var user = Assert.Single(input, entry => entry.TryGetProperty("role", out var role) && role.GetString() == "user");
+                var content = user.GetProperty("content");
+                var userText = content.ValueKind == JsonValueKind.String ? content.GetString()! : content.EnumerateArray().Single(part => part.GetProperty("type").GetString() == "input_text").GetProperty("text").GetString()!;
+                var events = telemetry.Events.Where(entry => entry.EventType == TelemetryEventTypes.WorldAutonomyAppeal);
+                if (item.Outcome is null)
+                {
+                    Assert.DoesNotContain("Court of Appeals", userText);
+                    Assert.Empty(events);
+                }
+                else
+                {
+                    var metric = Assert.Single(events);
+                    Assert.Equal(item.Outcome, metric.Outcome);
+                    Assert.Equal(4900UL, metric.ReferentMessageId);
+                    Assert.Equal(result.RunId, metric.OperationId);
+                    using var shown = JsonDocument.Parse(userText.Split("\nExhibit: ", StringSplitOptions.None).Last());
+                    Assert.Contains("your nickname is Copper", shown.RootElement.GetProperty("quotation").GetString());
+                    var effect = shown.RootElement.GetProperty("historicalEffect");
+                    if (item.Outcome == "verified_effect") Assert.Equal("111", effect.GetProperty("Subject").GetString());
+                    else Assert.Equal(JsonValueKind.Null, effect.ValueKind);
+                }
+                Assert.Contains("set_member_nickname", body);
+                Assert.DoesNotContain("omitted-args", body);
+                Assert.DoesNotContain("omitted-prior-final", body);
+                Assert.DoesNotContain("not-for-the-record", body);
+                Assert.DoesNotContain(requestId, body);
+                Assert.All(input.Where(entry => !entry.Equals(user)), entry => Assert.DoesNotContain("Court of Appeals", entry.GetRawText()));
+                if (document.RootElement.TryGetProperty("instructions", out var instructions)) Assert.DoesNotContain("Court of Appeals", instructions.GetRawText());
+                Assert.Single(telemetry.Events, entry => entry.EventType == TelemetryEventTypes.LlmCall);
+            }
+        }
+        finally { directory.Delete(recursive: true); }
+    }
+
+    private static HttpListener StartLocalProvider(out string endpoint)
+    {
+        using var socket = new TcpListener(IPAddress.Loopback, 0);
+        socket.Start();
+        endpoint = $"http://127.0.0.1:{((IPEndPoint)socket.LocalEndpoint).Port}/";
+        socket.Stop();
+        var listener = new HttpListener();
+        listener.Prefixes.Add(endpoint);
+        listener.Start();
+        return listener;
+    }
+
+    private sealed class FixtureErrorLog : ILogger<WorldAutonomyOrchestrator>
+    {
+        internal Exception? Error { get; private set; }
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel level) => level >= LogLevel.Error;
+        public void Log<TState>(LogLevel level, EventId id, TState state, Exception? error, Func<TState, Exception?, string> formatter)
+        {
+            if (level >= LogLevel.Error) Error = error;
+        }
     }
 
     private static string GetSiblingStewardRoot([CallerFilePath] string? sourceFile = null)

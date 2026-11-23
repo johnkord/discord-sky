@@ -537,9 +537,16 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             && autonomyGuildChannel is { } autonomyChannel
             && autonomyOwnsMessage)
         {
+            if (_worldAutonomyRouter!.DecreeAppealsEnabled && hasPrefix && payload.Equals("court-rules", StringComparison.OrdinalIgnoreCase))
+            {
+                await SendChunkedAsync(message.Channel, DecreeAppeal.Rules, new MessageReference(message.Id), _options.DefaultPersona,
+                    source: "world_autonomy_court_rules", triggerMessageId: message.Id, replyTargetMessageId: message.Id);
+                return;
+            }
             RecordMessageForContext(message);
             recordedForContext = true;
-            repliedToBot = await IsReplyToBotAsync(message);
+            var botReply = await ResolveBotReplyAsync(message, _shutdownCts.Token);
+            repliedToBot = botReply is not null;
             var isDirectAddress = repliedToBot.Value
                 || mentionsBotDirectly
                 || hasPrefix;
@@ -576,13 +583,16 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
             _worldAutonomyAmbientAdmission?.Cancel(autonomyChannel.Guild.Id);
             EmitWorldAutonomyVisualOffered(autonomyChannel, message, visualIntent, "direct");
+            var appeal = _worldAutonomyRouter.DecreeAppealsEnabled && botReply is { Type: MessageType.Default or MessageType.Reply } && _client.CurrentUser is { } self
+                ? DecreeAppeal.TryOpen(hasPrefix ? payload : content, message.Type, message.Reference, autonomyChannel.Guild.Id, message.Channel.Id, self.Id,
+                    new(botReply.Id, botReply.Channel.Id, botReply.Author.Id, botReply.Content)) : null;
             var directBudget = _worldAutonomyBudget?.TryConsume(WorldAutonomyBudgetKind.DirectFull);
             if (directBudget is { Allowed: false })
             {
                 var delivered = await HandleWorldAutonomyConversationAsync(
-                    BuildDirectConversationRequest(autonomyChannel, message, content),
+                    BuildDirectConversationRequest(autonomyChannel, message, content) with { Appeal = appeal },
                     message,
-                    cancellationToken: _shutdownCts.Token);
+                    cancellationToken: _shutdownCts.Token, knownReply: botReply);
                 if (!delivered)
                 {
                     const string fallback =
@@ -621,7 +631,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                     content,
                     isDirectAddress: true,
                     sourceEpisodeId: null,
-                    cancellationToken: _shutdownCts.Token))
+                    cancellationToken: _shutdownCts.Token, appeal: appeal, knownReply: botReply))
             {
                 return;
             }
@@ -653,7 +663,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             return;
         }
 
-        if (repliedToBot ?? await IsReplyToBotAsync(message))
+        if (repliedToBot ?? ((await ResolveBotReplyAsync(message, _shutdownCts.Token)) is not null))
         {
             _logger.LogDebug("Direct reply detected: {UserId} replied to a bot message.", message.Author.Id);
             await HandleDirectReplyAsync(context, message);
@@ -2120,14 +2130,13 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     }
 
     /// <summary>
-    /// True when this message is a reply to one of the bot's own messages. Resolved once per message because
-    /// an uncached reference costs a REST fetch.
+    /// Resolve the bot-authored parent once for routing, quotation and image selection.
     /// </summary>
-    private async Task<bool> IsReplyToBotAsync(SocketUserMessage message)
+    private async Task<IUserMessage?> ResolveBotReplyAsync(SocketUserMessage message, CancellationToken cancellationToken)
     {
-        if (message.Reference?.MessageId.IsSpecified != true || _client.CurrentUser is null)
+        if (message.Reference?.MessageId.IsSpecified != true || _client.CurrentUser is not { } self)
         {
-            return false;
+            return null;
         }
 
         var referenced = message.ReferencedMessage;
@@ -2135,15 +2144,16 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         {
             try
             {
-                referenced = await message.Channel.GetMessageAsync(message.Reference.MessageId.Value) as IUserMessage;
+                referenced = await message.Channel.GetMessageAsync(message.Reference.MessageId.Value,
+                    options: new RequestOptions { CancelToken = cancellationToken }) as IUserMessage;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
             {
                 _logger.LogDebug(ex, "Failed to fetch referenced message {MessageId}", message.Reference.MessageId.Value);
             }
         }
 
-        return referenced?.Author.Id == _client.CurrentUser.Id;
+        return referenced?.Author.Id == self.Id ? referenced : null;
     }
 
     /// <summary>
@@ -2313,7 +2323,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private async Task<bool> HandleWorldAutonomyConversationAsync(
         WorldAutonomyConversationRequest request,
         SocketUserMessage message,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IUserMessage? knownReply = null)
     {
         if (_worldAutonomyConversation is null)
         {
@@ -2329,7 +2340,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             return false;
         }
 
-        var selection = await SelectAutonomyImagesAsync(message, request.MessageText, request.IsDirectAddress, cancellationToken);
+        var selection = await SelectAutonomyImagesAsync(message, request.MessageText, request.IsDirectAddress, cancellationToken, knownReply);
         var result = await _worldAutonomyConversation.RespondAsync(request with { ImageSelection = selection }, cancellationToken);
         if (result is null)
         {
@@ -2441,15 +2452,17 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         string content,
         bool isDirectAddress,
         string? sourceEpisodeId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        DecreeAppeal? appeal = null,
+        IUserMessage? knownReply = null)
     {
-        var selection = await SelectAutonomyImagesAsync(message, content, isDirectAddress, cancellationToken);
+        var selection = await SelectAutonomyImagesAsync(message, content, isDirectAddress, cancellationToken, knownReply);
         var opportunity = BuildAutonomyOpportunity(
             guildChannel,
             message,
             content,
             isDirectAddress,
-            sourceEpisodeId) with { ImageSelection = selection };
+            sourceEpisodeId) with { ImageSelection = selection, Appeal = appeal };
         if (!isDirectAddress)
         {
             _ = _worldAutonomyRouter!.TryRunAsync(opportunity, cancellationToken);
@@ -2637,7 +2650,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     }
 
     private async Task<AutonomyImageSelection?> SelectAutonomyImagesAsync(SocketUserMessage trigger,
-        string text, bool direct, CancellationToken cancellationToken)
+        string text, bool direct, CancellationToken cancellationToken, IUserMessage? knownReply = null)
     {
         if (_options.ImageInputLimit == 0 || trigger.Channel is not SocketGuildChannel guildChannel ||
             _options.IsGuildDisabled(guildChannel.Guild.Id, guildChannel.Guild.Name)) return null;
@@ -2654,7 +2667,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         if (origin == AutonomyImageOrigin.Reply)
         {
             var messageId = trigger.Reference!.MessageId.Value;
-            IMessage? replied = trigger.ReferencedMessage;
+            IMessage? replied = knownReply ?? trigger.ReferencedMessage;
             if (replied is null)
             {
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
