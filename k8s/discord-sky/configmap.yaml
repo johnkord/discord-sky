@@ -17,6 +17,8 @@ data:
   WorldAutonomy__PromptCacheMode: "Hybrid"
   WorldAutonomy__PromptCacheCanaryPercent: "50"
   WorldAutonomy__MemoryRecallEnabled: "true"
+  WorldAutonomy__VerifiedDeeds__Percent: "50"
+  WorldAutonomy__VerifiedDeeds__UntilUtc: "2026-12-07T00:00:00Z"
   # Build and log bounded memory/rank briefs without injecting them. Promotion requires relevance review.
   WorldAutonomy__ContinuityBriefShadowEnabled: "true"
   WorldAutonomy__LedgerPath: "/app/data/user_memories/world-autonomy/world-autonomy.json"

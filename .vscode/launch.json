@@ -6,7 +6,7 @@
   "type": "coreclr",
       "request": "launch",
       "preLaunchTask": "dotnet: build",
-      "program": "${workspaceFolder}/src/DiscordSky.Bot/bin/Debug/net8.0/DiscordSky.Bot.dll",
+      "program": "${workspaceFolder}/src/DiscordSky.Bot/bin/Debug/net10.0/DiscordSky.Bot.dll",
       "args": [],
       "cwd": "${workspaceFolder}/src/DiscordSky.Bot",
       "env": {

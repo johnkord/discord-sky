@@ -103,14 +103,16 @@ public class PerUserMemoryLockTests : IAsyncDisposable
     private sealed class MemoryOperationChatClient : IChatClient
     {
         private readonly bool _includeEvidence;
+        public Func<CancellationToken, Task>? BeforeResponse { get; init; }
 
         public MemoryOperationChatClient(bool includeEvidence) => _includeEvidence = includeEvidence;
 
-        public Task<ChatResponse> GetResponseAsync(
+        public async Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> chatMessages,
             ChatOptions? options = null,
             CancellationToken cancellationToken = default)
         {
+            if (BeforeResponse is not null) await BeforeResponse(cancellationToken);
             var arguments = new Dictionary<string, object?>
             {
                 ["user_id"] = "100",
@@ -127,9 +129,9 @@ public class PerUserMemoryLockTests : IAsyncDisposable
                 "call-memory",
                 CreativeOrchestrator.UpdateUserMemoryConversationToolName,
                 arguments);
-            return Task.FromResult(new ChatResponse(new ChatMessage(
+            return new ChatResponse(new ChatMessage(
                 ChatRole.Assistant,
-                new List<AIContent> { call })));
+                new List<AIContent> { call }));
         }
 
         public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
@@ -425,6 +427,47 @@ public class PerUserMemoryLockTests : IAsyncDisposable
         await cts.CancelAsync();
 
         Assert.Equal(task, completed); // Would timeout if semaphore wasn't released
+    }
+
+    [Fact]
+    public async Task EraseWaitsForAlreadyDispatchedExtractionAndRemovesItsWrite()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new ReplaceTrackingMemoryStore();
+        var telemetry = new InMemoryTelemetrySink();
+        var service = BuildService(new MemoryOperationChatClient(true) { BeforeResponse = async token =>
+        {
+            entered.TrySetResult();
+            await release.Task.WaitAsync(TimeSpan.FromSeconds(5), token);
+        } }, store, telemetry);
+        PopulateChannelBuffer(service, 1, [new(11, 100, "Member", "I love meteor showers", DateTimeOffset.UtcNow)]);
+        var extraction = service.ProcessConversationWindowAsync(1);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var erase = service.EraseSavedNotesAsync(100, 12, default);
+        try { Assert.False(erase.IsCompleted); }
+        finally { release.TrySetResult(); }
+        await Task.WhenAll(erase, extraction).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Contains(telemetry.Events, entry => entry.AppliedCount > 0);
+        Assert.Empty(await store.GetMemoriesAsync(100));
+    }
+
+    [Fact]
+    public async Task EraseSeparatesPendingEvidenceFromLaterLearning()
+    {
+        var chat = new StubChatClient(TimeSpan.Zero);
+        var telemetry = new InMemoryTelemetrySink();
+        var service = BuildService(chat, new ReplaceTrackingMemoryStore(), telemetry);
+        var now = DateTimeOffset.UtcNow;
+        PopulateChannelBuffer(service, 1, [new(10, 42, "Member", "before", now)]);
+        await service.EraseSavedNotesAsync(42, 20, default);
+        await service.ProcessConversationWindowAsync(1);
+        Assert.Equal(0, chat.CallCount);
+        Assert.Contains(telemetry.Events, evt => evt.Outcome == "erased_window");
+        PopulateChannelBuffer(service, 2, [new(19, 42, "Member", "late arrival", now), new(21, 42, "Member", "after", now)]);
+        await service.ProcessConversationWindowAsync(2);
+        Assert.Equal(1, chat.CallCount);
+        Assert.Contains(telemetry.Events, evt => evt.EventType == TelemetryEventTypes.MemoryExtraction && evt.ContextMessageCount == 1 && evt.Outcome == "ok_no_operations");
     }
 
     [Fact]

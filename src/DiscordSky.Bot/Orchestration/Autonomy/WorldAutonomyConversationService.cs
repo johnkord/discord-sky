@@ -141,12 +141,13 @@ public sealed class WorldAutonomyConversationService
         }
 
         ulong? replyTarget = request.IsDirectAddress ? request.TriggerMessageId : null;
-        var delivered = await _transport.SendAsync(
+        var receipt = await _transport.SendAsync(
             request.GuildId,
             request.ChannelId,
             text,
             replyTarget,
             cancellationToken).ConfigureAwait(false);
+        var delivered = receipt.Messages;
         if (delivered.Count == 0)
         {
             Emit(request, operationId, "delivery_failed", null, text.Length);
@@ -161,7 +162,7 @@ public sealed class WorldAutonomyConversationService
                 "world_autonomy_conversation",
                 request.TriggerMessageId,
                 operationId,
-                replyTarget);
+                message.MessageId == delivered[0].MessageId ? replyTarget : null);
         }
 
         var now = _timeProvider.GetUtcNow();
@@ -176,17 +177,17 @@ public sealed class WorldAutonomyConversationService
                 ? "WorldAutonomyDirectConversation"
                 : "WorldAutonomyAmbientConversation",
             Prompt: prompt,
-            Reply: text,
+            Reply: receipt.ConfirmedText,
             TranscriptSchemaVersion: FileBackedTranscriptSink.CurrentSchemaVersion,
             EpisodeId: operationId,
             TriggerMessageId: request.TriggerMessageId,
             ReplyTargetMessageId: replyTarget,
-            Outcome: "delivered",
+            Outcome: receipt.Outcome,
             ModelInvoked: true));
-        Emit(request, operationId, "delivered", null, text.Length);
+        Emit(request, operationId, receipt.Outcome, receipt.Failure, receipt.ConfirmedText.Length);
         return new WorldAutonomyConversationResult(
             operationId,
-            text,
+            receipt.ConfirmedText,
             delivered.Select(message => message.MessageId).ToArray());
     }
 

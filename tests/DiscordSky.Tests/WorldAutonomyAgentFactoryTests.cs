@@ -514,6 +514,27 @@ public sealed class WorldAutonomyAgentFactoryTests
     }
 
     [Fact]
+    [Trait("Contract", "Delivery")]
+    public async Task Agent_CrossChannelVerifiedSendDoesNotAnswerTheSourceChannel()
+    {
+        foreach (var destination in new[] { "6001", "6002" })
+        {
+            const string requestId = "01900000-0000-7000-8000-000000000001";
+            var context = new WorldAutonomyRunContext("run", 4001, "message", "5001", null, null, "model", "profile", "manifest", [requestId], SourceChannelId: 6001);
+            var ledger = new RecordingLedger();
+            await ledger.StartRunAsync(context.ToRunStart(DateTimeOffset.UtcNow), default);
+            var descriptor = new WorldAutonomyToolDescriptor(AIFunctionFactory.Create((string request_id) =>
+                new TextContent(JsonSerializer.Serialize(new { outcome = "succeeded", data = new { verified = true, observed = new { messageId = "7001", channelId = destination } } })),
+                name: "send_message", description: "Record a fixture delivery."), true, true, "schema");
+            var run = new WorldAutonomyRunState(context, ledger, [descriptor]);
+            var agent = new WorldAutonomyAgentFactory().Create(new ScriptedChatClient(requestId, "send_message", includeValue: false), run, [descriptor]);
+            await agent.RunAsync("fixture", await agent.CreateSessionAsync());
+            Assert.Equal(WorldAutonomyDispatchStatuses.Succeeded, Assert.Single(ledger.PendingDispatches).DispatchStatus);
+            Assert.Equal(destination == "6001", run.SpokeInChannel);
+        }
+    }
+
+    [Fact]
     public async Task Agent_RecordsSuccessfulNativeReadOutcome()
     {
         var context = new WorldAutonomyRunContext(

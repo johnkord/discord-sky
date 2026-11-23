@@ -53,10 +53,8 @@ public sealed class ContextAggregator
         var bot = botOptions.Value;
         _commandPrefix = bot.CommandPrefix ?? string.Empty;
         _historyLimit = bot.HistoryMessageLimit > 0 ? Math.Clamp(bot.HistoryMessageLimit, 1, 100) : 20;
-        _allowImageContext = bot.AllowImageContext;
-        _historyImageLimit = !_allowImageContext
-            ? 0
-            : Math.Clamp(bot.HistoryImageLimit >= 0 ? bot.HistoryImageLimit : 3, 0, 12);
+        _historyImageLimit = bot.ImageInputLimit;
+        _allowImageContext = _historyImageLimit > 0;
 
         _imageHostAllowList = new HashSet<string>(
             (bot.ImageHostAllowList ?? new List<string>()).Where(h => !string.IsNullOrWhiteSpace(h))
@@ -101,11 +99,12 @@ public sealed class ContextAggregator
         }
         var links = MergeUnfurledLinks(httpLinks, embedLinks);
         var deterministicContext = BuildJudgeMediaContext(message.Attachments, links, images);
-        var visualImages = images
+        var visualImages = !_allowImageContext ? [] : images
             .Concat(links.SelectMany(link => link.Images))
             .DistinctBy(image => image.Url.ToString(), StringComparer.OrdinalIgnoreCase)
+            .Take(_historyImageLimit)
             .ToArray();
-        var visual = _mediaSemantics is null
+        var visual = !_allowImageContext || _mediaSemantics is null
             ? MediaSemanticResult.None
             : await _mediaSemantics.DescribeAsync(
                 message.Id, message.Timestamp, deterministicContext, visualImages, cancellationToken);

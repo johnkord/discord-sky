@@ -60,6 +60,27 @@ public sealed class WorldAutonomyConversationServiceTests
     }
 
     [Fact]
+    public async Task PartialDeliveryRemainsHandledWithOnlyConfirmedText()
+    {
+        var client = new StubChatClient("First. Unconfirmed remainder.");
+        var transport = new RecordingTransport(new([new(7001, 6001)], "First.", "partial_delivery", "IOException"));
+        var transcripts = new RecordingTranscriptSink();
+        var telemetry = new RecordingTelemetrySink();
+        var registry = new SentMessageRegistry();
+        var service = new WorldAutonomyConversationService(client, OptionsMonitor(), transport, registry, transcripts,
+            telemetry, Options.Create(new BotOptions()), NullLogger<WorldAutonomyConversationService>.Instance);
+        var result = await service.RespondAsync(Request(true), default);
+        Assert.Equal("First.", result?.Text);
+        Assert.Single(transport.Calls);
+        Assert.Equal(1, client.CallCount);
+        Assert.True(registry.TryGet(7001, out _));
+        var transcript = Assert.Single(transcripts.Entries);
+        Assert.Equal("First.", transcript.Reply);
+        Assert.Equal("partial_delivery", transcript.Outcome);
+        Assert.Equal("partial_delivery", Assert.Single(telemetry.Events).Outcome);
+    }
+
+    [Fact]
     public async Task Respond_EmptyModelOutputDoesNotSendOrRetry()
     {
         var client = new StubChatClient("   ");
@@ -162,11 +183,11 @@ public sealed class WorldAutonomyConversationServiceTests
         }
     }
 
-    private sealed class RecordingTransport : IWorldAutonomyMessageTransport
+    private sealed class RecordingTransport(WorldAutonomyDeliveryReceipt? receipt = null) : IWorldAutonomyMessageTransport
     {
         public List<TransportCall> Calls { get; } = [];
 
-        public Task<IReadOnlyList<WorldAutonomyDeliveredMessage>> SendAsync(
+        public Task<WorldAutonomyDeliveryReceipt> SendAsync(
             ulong guildId,
             ulong channelId,
             string content,
@@ -174,8 +195,7 @@ public sealed class WorldAutonomyConversationServiceTests
             CancellationToken cancellationToken)
         {
             Calls.Add(new TransportCall(content, replyTargetMessageId));
-            return Task.FromResult<IReadOnlyList<WorldAutonomyDeliveredMessage>>(
-                [new WorldAutonomyDeliveredMessage(7001, channelId)]);
+            return Task.FromResult(receipt ?? new WorldAutonomyDeliveryReceipt([new WorldAutonomyDeliveredMessage(7001, channelId)], content, "delivered"));
         }
     }
 

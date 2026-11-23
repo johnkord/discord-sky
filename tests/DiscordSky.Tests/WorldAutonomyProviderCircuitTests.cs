@@ -31,6 +31,30 @@ public sealed class LlmProviderGuardTests
     }
 
     [Fact]
+    public async Task RejectedWrappedCallCannotPostponeRecoveryOrConsumeProbe()
+    {
+        var clock = new MutableTimeProvider(DateTimeOffset.Parse("2026-08-02T12:00:00Z"));
+        var guard = new LlmProviderGuard(NullLogger<LlmProviderGuard>.Instance, clock,
+            options: new LlmProviderGuardOptions { StatePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json") });
+        var inner = new NoDispatchClient();
+        using var wrapped = new DiscordSky.Bot.Memory.Logging.TelemetryChatClient(inner, "test", new DiscordSky.Bot.Memory.Logging.NoOpTelemetrySink(), guard);
+        guard.RecordFailure(new InvalidOperationException("insufficient_quota"));
+        var deadline = guard.Snapshot().NextProbeAt;
+        clock.Advance(TimeSpan.FromMinutes(4));
+        await Assert.ThrowsAsync<LlmProviderBlockedException>(() => wrapped.GetResponseAsync("fixture"));
+        Assert.Equal(deadline, guard.Snapshot().NextProbeAt);
+        Assert.Equal("credit_balance_exhausted", guard.Snapshot().Reason);
+        clock.Advance(TimeSpan.FromMinutes(1));
+        Assert.True(guard.CanAttempt(out _));
+        Assert.True(guard.CanAttempt(out _));
+        Assert.True(guard.TryBeginCall("gpt-6.2-astra", true, out var probe, out _));
+        Assert.False(guard.TryBeginCall("gpt-6.2-astra", true, out var refused, out _));
+        Assert.Null(refused);
+        guard.RecordCallFailure(probe!, new TimeoutException());
+        Assert.False(guard.CanAttempt(out _));
+    }
+
+    [Fact]
     public void FailedHalfOpenProbe_ReleasesProbeAndSchedulesAnother()
     {
         var clock = new MutableTimeProvider(DateTimeOffset.Parse("2026-08-02T12:00:00Z"));
@@ -359,6 +383,16 @@ public sealed class LlmProviderGuardTests
                 },
             },
         };
+
+    private sealed class NoDispatchClient : IChatClient
+    {
+        public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            CancellationToken cancellationToken = default) => throw new InvalidOperationException("Unexpected provider dispatch");
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
+    }
 
     private sealed class MutableTimeProvider(DateTimeOffset now) : TimeProvider
     {

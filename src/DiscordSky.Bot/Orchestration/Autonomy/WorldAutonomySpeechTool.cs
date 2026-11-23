@@ -15,9 +15,12 @@ namespace DiscordSky.Bot.Orchestration.Autonomy;
 
 public sealed record WorldAutonomyDeliveredMessage(ulong MessageId, ulong ChannelId);
 
+public sealed record WorldAutonomyDeliveryReceipt(IReadOnlyList<WorldAutonomyDeliveredMessage> Messages,
+    string ConfirmedText, string Outcome, string? Failure = null);
+
 public interface IWorldAutonomyMessageTransport
 {
-    Task<IReadOnlyList<WorldAutonomyDeliveredMessage>> SendAsync(
+    Task<WorldAutonomyDeliveryReceipt> SendAsync(
         ulong guildId,
         ulong channelId,
         string content,
@@ -28,7 +31,7 @@ public interface IWorldAutonomyMessageTransport
 public sealed class DiscordWorldAutonomyMessageTransport(DiscordSocketClient client)
     : IWorldAutonomyMessageTransport
 {
-    public async Task<IReadOnlyList<WorldAutonomyDeliveredMessage>> SendAsync(
+    public Task<WorldAutonomyDeliveryReceipt> SendAsync(
         ulong guildId,
         ulong channelId,
         string content,
@@ -43,21 +46,32 @@ public sealed class DiscordWorldAutonomyMessageTransport(DiscordSocketClient cli
                 $"Robotnik cannot find message channel '{channelId}' in guild '{guildId}'.");
         }
 
+        return SendChunksAsync(content, replyTargetMessageId, async (chunk, target, token) =>
+        {
+            var message = await channel.SendMessageAsync(chunk, options: new RequestOptions { CancelToken = token },
+                messageReference: target.HasValue ? new MessageReference(target.Value) : null).ConfigureAwait(false);
+            return new WorldAutonomyDeliveredMessage(message.Id, channelId);
+        }, cancellationToken);
+    }
+
+    internal static async Task<WorldAutonomyDeliveryReceipt> SendChunksAsync(string content, ulong? replyTargetMessageId,
+        Func<string, ulong?, CancellationToken, Task<WorldAutonomyDeliveredMessage>> send, CancellationToken cancellationToken)
+    {
         var chunks = DiscordBotService.ChunkMessage(content, DiscordBotService.DiscordMaxMessageLength);
         var delivered = new List<WorldAutonomyDeliveredMessage>(chunks.Count);
-        for (var index = 0; index < chunks.Count; index++)
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var reference = index == 0 && replyTargetMessageId.HasValue
-                ? new MessageReference(replyTargetMessageId.Value)
-                : null;
-            var message = await channel.SendMessageAsync(
-                chunks[index],
-                messageReference: reference).ConfigureAwait(false);
-            delivered.Add(new WorldAutonomyDeliveredMessage(message.Id, channelId));
+            foreach (var chunk in chunks)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                delivered.Add(await send(chunk, delivered.Count == 0 ? replyTargetMessageId : null, cancellationToken).ConfigureAwait(false));
+            }
         }
-
-        return delivered;
+        catch (Exception error) when (delivered.Count > 0)
+        {
+            return new(delivered, string.Join("\n", chunks.Take(delivered.Count)), "partial_delivery", error.GetType().Name);
+        }
+        return new(delivered, content, "delivered");
     }
 }
 
@@ -140,12 +154,13 @@ public sealed class WorldAutonomySpeechTool
         var channelId = opportunity.SourceChannelId!.Value;
         var replyTarget = ParseMessageId(replyToMessageId) ??
             (opportunity.IsDirectAddress ? ParseMessageId(opportunity.SourceMessageId) : null);
-        var delivered = await _transport.SendAsync(
+        var receipt = await _transport.SendAsync(
             opportunity.GuildId,
             channelId,
             content.Trim(),
             replyTarget,
             cancellationToken).ConfigureAwait(false);
+        var delivered = receipt.Messages;
         if (delivered.Count == 0)
         {
             throw new InvalidOperationException("Discord accepted no Robotnik messages.");
@@ -159,7 +174,7 @@ public sealed class WorldAutonomySpeechTool
                 "world_autonomy",
                 ParseMessageId(opportunity.SourceMessageId),
                 context.RunId,
-                replyTarget);
+                message.MessageId == delivered[0].MessageId ? replyTarget : null);
         }
 
         try
@@ -168,7 +183,7 @@ public sealed class WorldAutonomySpeechTool
                 channelId,
                 delivered.Select(message => message.MessageId).ToArray(),
                 replyTarget,
-                content.Trim().Length).ConfigureAwait(false);
+                receipt.ConfirmedText.Length, receipt.Outcome).ConfigureAwait(false);
         }
         catch (Exception exception)
         {
@@ -190,12 +205,12 @@ public sealed class WorldAutonomySpeechTool
             Persona: _botOptions.DefaultPersona,
             InvocationKind: opportunity.IsDirectAddress ? "WorldAutonomyDirect" : "WorldAutonomyAmbient",
             Prompt: opportunity.Prompt,
-            Reply: content.Trim(),
+            Reply: receipt.ConfirmedText,
             TranscriptSchemaVersion: FileBackedTranscriptSink.CurrentSchemaVersion,
             EpisodeId: context.RunId,
             TriggerMessageId: ParseMessageId(opportunity.SourceMessageId),
             ReplyTargetMessageId: replyTarget,
-            Outcome: "delivered",
+            Outcome: receipt.Outcome,
             ModelInvoked: true));
         _telemetry.Emit(new TelemetryEvent(
             Timestamp: now,
@@ -203,15 +218,16 @@ public sealed class WorldAutonomySpeechTool
             UserHash: UserIdHash.Hash(opportunity.SourceAuthorId.Value),
             Channel: opportunity.SourceChannelName,
             Kind: opportunity.IsDirectAddress ? "direct" : "ambient",
-            Outcome: "delivered",
+            Outcome: receipt.Outcome,
+            Reason: receipt.Failure,
             Count: delivered.Count,
             MessageId: delivered[0].MessageId,
             OperationId: context.RunId,
             EpisodeId: opportunity.SourceEpisodeId,
-            CharacterCount: content.Trim().Length));
+            CharacterCount: receipt.ConfirmedText.Length));
 
         return new WorldAutonomySpeechResult(
-            "delivered",
+            receipt.Outcome,
             channelId.ToString(CultureInfo.InvariantCulture),
             delivered.Select(message => message.MessageId.ToString(CultureInfo.InvariantCulture)).ToArray(),
             replyTarget?.ToString(CultureInfo.InvariantCulture));

@@ -20,6 +20,16 @@ using OpenAI;
 //   OPENAI_API_KEY=sk-... dotnet run --project tools/DiscordSky.ImageSmoke
 //   OPENAI_API_KEY=sk-... dotnet run --project tools/DiscordSky.ImageSmoke -- --request "crown yourself emperor of Mobius"
 
+if (args is ["--check-native"])
+{
+    var pixel = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=");
+    var reference = ImageReferenceValidation.Create(pixel, 1, mask: false);
+    var mask = ImageReferenceValidation.Create(pixel, 2, mask: true);
+    ImageReferenceValidation.ValidateMask(new([reference], mask));
+    Console.WriteLine("Native reference and mask metadata verified offline.");
+    return 0;
+}
+
 var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
 if (string.IsNullOrWhiteSpace(apiKey))
 {

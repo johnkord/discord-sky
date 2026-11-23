@@ -284,7 +284,7 @@ public sealed class WorldAutonomyVisualToolTests
     {
         internal List<SpeechCall> Calls { get; } = [];
 
-        public Task<IReadOnlyList<WorldAutonomyDeliveredMessage>> SendAsync(
+        public Task<WorldAutonomyDeliveryReceipt> SendAsync(
             ulong guildId,
             ulong channelId,
             string content,
@@ -292,8 +292,7 @@ public sealed class WorldAutonomyVisualToolTests
             CancellationToken cancellationToken)
         {
             Calls.Add(new SpeechCall(content, replyTargetMessageId));
-            return Task.FromResult<IReadOnlyList<WorldAutonomyDeliveredMessage>>(
-                [new WorldAutonomyDeliveredMessage(7002, channelId)]);
+            return Task.FromResult(new WorldAutonomyDeliveryReceipt([new WorldAutonomyDeliveredMessage(7002, channelId)], content, "delivered"));
         }
     }
 

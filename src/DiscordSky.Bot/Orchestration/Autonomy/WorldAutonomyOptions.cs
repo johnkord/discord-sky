@@ -27,6 +27,7 @@ public sealed class WorldAutonomyOptions
     public int PromptCacheCanaryPercent { get; init; } = 100;
 
     public bool MemoryRecallEnabled { get; init; }
+    public VerifiedDeedTrialOptions VerifiedDeeds { get; init; } = new();
 
     public bool ContinuityBriefShadowEnabled { get; init; }
 
@@ -107,6 +108,7 @@ public sealed class WorldAutonomyConfiguration
         WorldAutonomyPromptCacheMode promptCacheMode,
         int promptCacheCanaryPercent,
         bool memoryRecallEnabled,
+        VerifiedDeedTrialOptions verifiedDeeds,
         WorldAutonomyAmbientGateMode ambientGateMode,
         double ambientFullThreshold,
         double ambientReactionThreshold,
@@ -135,6 +137,7 @@ public sealed class WorldAutonomyConfiguration
         PromptCacheMode = promptCacheMode;
         PromptCacheCanaryPercent = promptCacheCanaryPercent;
         MemoryRecallEnabled = memoryRecallEnabled;
+        VerifiedDeeds = verifiedDeeds;
         AmbientGateMode = ambientGateMode;
         AmbientFullThreshold = ambientFullThreshold;
         AmbientReactionThreshold = ambientReactionThreshold;
@@ -173,6 +176,7 @@ public sealed class WorldAutonomyConfiguration
     public int PromptCacheCanaryPercent { get; }
 
     public bool MemoryRecallEnabled { get; }
+    public VerifiedDeedTrialOptions VerifiedDeeds { get; }
 
     public WorldAutonomyAmbientGateMode AmbientGateMode { get; }
 
@@ -232,6 +236,8 @@ public sealed class WorldAutonomyConfiguration
             throw new InvalidOperationException("WorldAutonomy:PromptCacheMode is invalid.");
         if (options.PromptCacheCanaryPercent is < 0 or > 100)
             throw new InvalidOperationException("WorldAutonomy:PromptCacheCanaryPercent must be between 0 and 100.");
+        if (options.VerifiedDeeds.Percent is < 0 or > 100 || (options.VerifiedDeeds.Percent > 0 && options.VerifiedDeeds.UntilUtc is null))
+            throw new InvalidOperationException("The verified-deed trial needs a percentage from 0 to 100 and an expiry when enabled.");
 
         if (options.SessionTimeoutMinutes is < 1 or > 60)
         {
@@ -359,6 +365,7 @@ public sealed class WorldAutonomyConfiguration
             options.PromptCacheMode,
             options.PromptCacheCanaryPercent,
             options.MemoryRecallEnabled,
+            options.VerifiedDeeds,
             options.AmbientGateMode,
             options.AmbientFullThreshold,
             options.AmbientReactionThreshold,

@@ -178,11 +178,11 @@ builder.Services.AddSingleton<IChatClient>(sp =>
 		sp.GetRequiredService<LlmProviderGuard>());
 });
 
-builder.Services.AddHttpClient<TweetUnfurler>();
-builder.Services.AddHttpClient<RedditUnfurler>();
-builder.Services.AddHttpClient<HackerNewsUnfurler>();
-builder.Services.AddHttpClient<WikipediaUnfurler>();
-builder.Services.AddHttpClient<WebContentUnfurler>();
+builder.Services.AddHttpClient<TweetUnfurler>().RemoveAllLoggers().ConfigurePrimaryHttpMessageHandler(PublicPreviewTransport.Create);
+builder.Services.AddHttpClient<RedditUnfurler>().RemoveAllLoggers().ConfigurePrimaryHttpMessageHandler(PublicPreviewTransport.Create);
+builder.Services.AddHttpClient<HackerNewsUnfurler>().RemoveAllLoggers().ConfigurePrimaryHttpMessageHandler(PublicPreviewTransport.Create);
+builder.Services.AddHttpClient<WikipediaUnfurler>().RemoveAllLoggers().ConfigurePrimaryHttpMessageHandler(PublicPreviewTransport.Create);
+builder.Services.AddHttpClient<WebContentUnfurler>().RemoveAllLoggers().ConfigurePrimaryHttpMessageHandler(PublicPreviewTransport.Create);
 builder.Services.AddSingleton<ILinkUnfurler>(sp =>
 {
 	var unfurlers = new ILinkUnfurler[]
@@ -222,6 +222,7 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<FileBackedTranscri
 builder.Services.AddSingleton<FileBackedReactionSink>();
 builder.Services.AddSingleton<IReactionSink>(sp => sp.GetRequiredService<FileBackedReactionSink>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<FileBackedReactionSink>());
+builder.Services.AddHostedService<DailyEvidenceRetention>();
 // Shared ownership registry for every message the bot sends. Reception logging and reply-chain persona
 // continuity use this rather than a private cache, so background senders (cold opens, future minions) participate.
 builder.Services.AddSingleton<SentMessageRegistry>();
@@ -328,6 +329,7 @@ builder.Services.AddHostedService<DiscordBotService>();
 
 var app = builder.Build();
 
+app.MapGet("/livez", () => TypedResults.Ok()).WithName("ProcessLiveness");
 app.MapGet("/healthz", (DiscordSocketClient client, StewardMcpSupervisor stewardSupervisor) =>
 {
 	var discordConnected = client.ConnectionState == ConnectionState.Connected;

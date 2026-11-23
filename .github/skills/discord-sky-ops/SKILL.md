@@ -10,10 +10,12 @@ state of the Discord Sky bot: its container logs, its durable telemetry, the per
 memories it stores, the Discord traffic it processes, and the Azure / Kubernetes resources
 that host it.
 
-The bot is a single-replica .NET 8 worker. It holds one outbound Discord gateway WebSocket
-and makes HTTPS calls to an OpenAI-compatible LLM. It exposes no inbound app traffic except
-a `/healthz` endpoint on port 8080. It runs as one `Deployment` (`discord-sky-bot`) in the
+The bot is a single-replica .NET 10 worker. It holds one outbound Discord gateway WebSocket
+and makes HTTPS calls to an OpenAI-compatible LLM. Port 8080 serves `/livez` (process) and
+`/healthz` (dependency readiness). It runs as one `Deployment` (`discord-sky-bot`) in the
 `discord-sky` namespace on AKS, with a `PersistentVolumeClaim` for durable state.
+
+For the owning code, focused tests, release gate and rollback boundaries, use the [maintenance atlas](../../../docs/maintenance/atlas.md).
 
 ---
 
@@ -24,7 +26,7 @@ for data that does not exist.
 
 | Tier | Location | Durability | Contains | Raw message text? |
 |---|---|---|---|---|
-| **Container stdout logs** | `kubectl logs` (console) | **Ephemeral** - wiped on every pod restart / deploy | Structured metadata lines + Discord.Net gateway logs | No |
+| **Container stdout logs** | `kubectl logs` (console) | **Ephemeral** - lost on pod rotation unless collected | Runtime diagnostics and Discord.Net logs; treat as private | Do not assume content-free |
 | **Telemetry JSONL** | PVC: `/app/data/user_memories/telemetry/recall-YYYY-MM-DD.jsonl` | **Durable** (survives restarts; 30-day retention) | Event records, usually hashed IDs and metadata; selected owner-private features may store bounded room text | Sometimes |
 | **Transcript JSONL** | PVC: `/app/data/user_memories/transcripts/transcript-YYYY-MM-DD.jsonl` | **Durable** (14-day retention) when `Transcript:Enabled=true` | Full prompt the model saw + the reply it produced, raw user IDs, channel, persona | **Yes** (when enabled) |
 | **User memories** | PVC: `/app/data/user_memories/<discordUserId>.json` | **Durable** | LLM-extracted facts about users, plus short `context` snippets that may quote the user | Partial (derived snippets only) |
@@ -149,7 +151,7 @@ lifetime, use tier 2 (telemetry) or tier 3 (Azure Monitor).
 ## 2. Durable telemetry (PVC JSONL)
 
 The bot writes one JSON object per line to daily files on the PVC. These survive pod
-rotation. Files older than 30 days are pruned on startup.
+rotation. Expired whole UTC day files are pruned on startup and hourly using the configured retention.
 
 Path: `/app/data/user_memories/telemetry/recall-YYYY-MM-DD.jsonl`
 (The telemetry directory is nested inside the memory PVC mount on purpose, so it lands on

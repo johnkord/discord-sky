@@ -137,8 +137,8 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
                     if (lruIndex >= 0)
                     {
                         _logger.LogDebug(
-                            "User {UserId} at memory cap ({Cap}), evicting LRU memory at index {Index}: \"{Content}\"",
-                            userId, _maxMemoriesPerUser, lruIndex, memories[lruIndex].Content);
+                            "User {UserId} at memory cap ({Cap}), evicting LRU memory at index {Index}",
+                            userId, _maxMemoriesPerUser, lruIndex);
                         memories.RemoveAt(lruIndex);
                     }
                 }
@@ -156,7 +156,7 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
                 Importance: importance,
                 MemoryId: MemoryIdentity.NewId()));
             MarkDirty(userId);
-            _logger.LogInformation("Saved {Kind} memory for user {UserId}: \"{Content}\"", kind, userId, content);
+            _logger.LogInformation("Saved {Kind} memory for user {UserId}", kind, userId);
         }
         finally
         {
@@ -184,7 +184,7 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
                 LastReferencedAt = DateTimeOffset.UtcNow
             };
             MarkDirty(userId);
-            _logger.LogInformation("Updated memory for user {UserId} at index {Index}: \"{Content}\"", userId, index, content);
+            _logger.LogInformation("Updated memory for user {UserId} at index {Index}", userId, index);
         }
         finally
         {
@@ -205,10 +205,9 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
                 return;
             }
 
-            var removed = memories[index];
             memories.RemoveAt(index);
             MarkDirty(userId);
-            _logger.LogInformation("Forgot memory for user {UserId} at index {Index}: \"{Content}\"", userId, index, removed.Content);
+            _logger.LogInformation("Forgot memory for user {UserId} at index {Index}", userId, index);
         }
         finally
         {
@@ -222,22 +221,12 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
         await userLock.WaitAsync(ct);
         try
         {
+            var filePath = GetFilePath(userId);
+            File.Delete(filePath + ".tmp");
+            File.Delete(filePath);
             _cache.TryRemove(userId, out _);
             _dirty.TryRemove(userId, out _);
-
-            var filePath = GetFilePath(userId);
-            try
-            {
-                if (File.Exists(filePath))
-                {
-                    File.Delete(filePath);
-                    _logger.LogInformation("Forgot all memories for user {UserId} (deleted {File})", userId, filePath);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to delete memory file for user {UserId}", userId);
-            }
+            _logger.LogInformation("Deleted saved memories for user {UserId}", userId);
         }
         finally
         {
@@ -363,16 +352,12 @@ public sealed class FileBackedUserMemoryStore : IUserMemoryStore, IDisposable
 
         foreach (var userId in dirtyUsers)
         {
-            if (!_dirty.TryRemove(userId, out _))
-                continue;
-
-            if (!_cache.TryGetValue(userId, out var memories))
-                continue;
-
             var userLock = GetUserLock(userId);
             userLock.Wait();
             try
             {
+                if (!_dirty.TryRemove(userId, out _) || !_cache.TryGetValue(userId, out var memories))
+                    continue;
                 var json = JsonSerializer.Serialize(memories, JsonOptions);
 
                 var filePath = GetFilePath(userId);

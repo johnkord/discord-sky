@@ -14,15 +14,12 @@ namespace DiscordSky.Tests;
 
 public sealed class StewardMcpSupervisorIntegrationTests
 {
-    [Fact]
+    [StewardFact]
     public async Task SiblingSteward_UnrestrictedProfileExposesOneReusableCompleteNativeCatalog()
     {
         var stewardRoot = GetSiblingStewardRoot();
         var assemblyPath = Path.Combine(stewardRoot, "src", "DiscordSteward", "bin", "Debug", "net10.0", "DiscordSteward.dll");
-        if (!File.Exists(assemblyPath))
-        {
-            return;
-        }
+        Assert.True(File.Exists(assemblyPath), "Build the pinned Steward test fixture before release validation.");
 
         var profilePath = Path.Combine(stewardRoot, "config", "profiles", "unrestricted-autonomy.example.json");
         using var profile = JsonDocument.Parse(File.ReadAllText(profilePath));
@@ -80,12 +77,12 @@ public sealed class StewardMcpSupervisorIntegrationTests
         Assert.True(supervisor.GetHealthSnapshot().IsHealthy);
     }
 
-    [Fact]
+    [StewardFact]
     public async Task SiblingSteward_AutonomyProviderRejectionReturnsTruthfulFailure()
     {
         var stewardRoot = GetSiblingStewardRoot();
         var assemblyPath = Path.Combine(stewardRoot, "src", "DiscordSteward", "bin", "Debug", "net10.0", "DiscordSteward.dll");
-        if (!File.Exists(assemblyPath)) return;
+        Assert.True(File.Exists(assemblyPath), "Build the pinned Steward test fixture before release validation.");
         var profilePath = Path.Combine(stewardRoot, "config", "profiles", "unrestricted-autonomy.example.json");
         using var profile = JsonDocument.Parse(File.ReadAllText(profilePath));
         var guildId = ulong.Parse(profile.RootElement.GetProperty("Discord").GetProperty("GuildId").GetString()!);
@@ -178,8 +175,19 @@ public sealed class StewardMcpSupervisorIntegrationTests
 
     private static string GetSiblingStewardRoot([CallerFilePath] string? sourceFile = null)
     {
+        if (Environment.GetEnvironmentVariable("STEWARD_TEST_ROOT") is { Length: > 0 } root) return Path.GetFullPath(root);
         var skyRoot = new DirectoryInfo(Path.GetDirectoryName(sourceFile) ?? string.Empty).Parent?.Parent?.FullName
             ?? throw new InvalidOperationException("Could not locate the Discord Sky repository root.");
         return Path.GetFullPath(Path.Combine(skyRoot, "..", "discord-steward"));
+    }
+
+    private sealed class StewardFactAttribute : FactAttribute
+    {
+        public StewardFactAttribute()
+        {
+            if (Environment.GetEnvironmentVariable("SKY_REQUIRE_STEWARD") != "1" &&
+                !File.Exists(Path.Combine(GetSiblingStewardRoot(), "src/DiscordSteward/bin/Debug/net10.0/DiscordSteward.dll")))
+                Skip = "Pinned sibling Steward fixture is not built (required by scripts/validate-release.sh).";
+        }
     }
 }

@@ -138,6 +138,24 @@ public class FileBackedUserMemoryStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task ForgetAll_DeleteFailurePreservesPendingNotesAndDoesNotReportSuccess()
+    {
+        using var store = CreateStore();
+        await store.SaveMemoryAsync(42, "fixture", "test");
+        var path = Path.Combine(_tempDir, "42.json");
+        Directory.CreateDirectory(path);
+        var failure = await Record.ExceptionAsync(() => store.ForgetAllAsync(42));
+        Assert.True(failure is IOException or UnauthorizedAccessException);
+        Assert.Single(await store.GetMemoriesAsync(42));
+        Assert.True(store.IsDirty(42));
+        Directory.Delete(path);
+        await store.ForgetAllAsync(42);
+        store.FlushAll();
+        Assert.False(File.Exists(path));
+        Assert.False(store.IsDirty(42));
+    }
+
+    [Fact]
     public async Task TouchMemories_IsNoOp_DoesNotChangeReferenceCount()
     {
         using var store = CreateStore();

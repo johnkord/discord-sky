@@ -3,6 +3,9 @@
 # Build artifacts (the image does its own restore/publish)
 **/bin/
 **/obj/
+**/data/
+config/
+.env*
 
 # Local/dev config and secrets MUST NOT ship in the image.
 # appsettings.Development.json is gitignored but still present in the working tree,

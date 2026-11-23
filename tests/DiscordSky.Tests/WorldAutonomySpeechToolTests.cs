@@ -44,7 +44,7 @@ public sealed class WorldAutonomySpeechToolTests
         Assert.Equal("world_autonomy", first.Source);
         Assert.Equal((ulong)5001, first.TriggerMessageId);
         Assert.Equal("run-1", first.EpisodeId);
-        Assert.Equal(first with { CreatedAt = second.CreatedAt }, second);
+        Assert.Equal(first with { CreatedAt = second.CreatedAt, ReplyTargetMessageId = null }, second);
 
         var transcript = Assert.Single(transcripts.Entries);
         Assert.Equal("WorldAutonomyDirect", transcript.InvocationKind);
@@ -62,6 +62,34 @@ public sealed class WorldAutonomySpeechToolTests
         var delivery = Assert.Single(ledger.Events);
         Assert.Equal("discord_delivery", delivery.Kind);
         Assert.True(run.SpokeInChannel);
+    }
+
+    [Fact]
+    public async Task SecondChunkFailureKeepsConfirmedTextAndDoesNotReplay()
+    {
+        var text = new string('a', 2000) + "\nnot confirmed";
+        var targets = new List<ulong?>();
+        var receipt = await DiscordWorldAutonomyMessageTransport.SendChunksAsync(text, 5001, (_, target, _) =>
+        {
+            targets.Add(target);
+            return targets.Count == 1 ? Task.FromResult(new WorldAutonomyDeliveredMessage(7001, 6001)) : throw new IOException();
+        }, default);
+        Assert.Equal(new ulong?[] { 5001, null }, targets);
+        Assert.Equal("partial_delivery", receipt.Outcome);
+        Assert.Equal(new string('a', 2000), receipt.ConfirmedText);
+        Assert.Equal((ulong)7001, Assert.Single(receipt.Messages).MessageId);
+    }
+
+    [Theory]
+    [InlineData("succeeded", true, true)]
+    [InlineData("succeeded", false, false)]
+    [InlineData("unknown", true, false)]
+    public void NativeSpeechRequiresVerifiedObservedDestination(string outcome, bool verified, bool expected)
+    {
+        var envelope = System.Text.Json.JsonSerializer.SerializeToElement(new { outcome, data = new { verified,
+            observed = new { channelId = "6002", messageId = "7001" } } });
+        var delivery = WorldAutonomyRunState.VerifiedDelivery(envelope, outcome);
+        Assert.Equal(expected ? new WorldAutonomyDeliveredMessage(7001, 6002) : null, delivery);
     }
 
     [Fact]
@@ -202,7 +230,7 @@ public sealed class WorldAutonomySpeechToolTests
     {
         internal List<TransportCall> Calls { get; } = [];
 
-        public Task<IReadOnlyList<WorldAutonomyDeliveredMessage>> SendAsync(
+        public Task<WorldAutonomyDeliveryReceipt> SendAsync(
             ulong guildId,
             ulong channelId,
             string content,
@@ -210,7 +238,7 @@ public sealed class WorldAutonomySpeechToolTests
             CancellationToken cancellationToken)
         {
             Calls.Add(new TransportCall(guildId, channelId, content, replyTargetMessageId));
-            return Task.FromResult<IReadOnlyList<WorldAutonomyDeliveredMessage>>(delivered);
+            return Task.FromResult(new WorldAutonomyDeliveryReceipt(delivered, content, "delivered"));
         }
     }
 

@@ -53,7 +53,7 @@ public sealed class NoOpTranscriptSink : ITranscriptSink
 /// File-backed transcript sink. Writes daily JSONL files to
 /// <c>{BaseDirectory}/transcript-YYYY-MM-DD.jsonl</c>, synchronously fsynced per entry (durable across
 /// pod rotation, the same rationale as the telemetry sink). Prunes files older than the retention
-/// window on startup. When disabled, <see cref="Record"/> is a no-op and no files are created.
+/// window on startup and hourly. When disabled, <see cref="Record"/> is a no-op and no files are created.
 /// </summary>
 public sealed class FileBackedTranscriptSink : ITranscriptSink, IHostedService
 {
@@ -120,7 +120,7 @@ public sealed class FileBackedTranscriptSink : ITranscriptSink, IHostedService
         try
         {
             Directory.CreateDirectory(_options.BaseDirectory);
-            PruneOldFiles();
+            Prune(DateTimeOffset.UtcNow);
             _logger.LogInformation(
                 "Transcript logging ENABLED at \"{Dir}\" (retention {Days}d). Prompts and replies include raw user content.",
                 _options.BaseDirectory, _options.RetentionDays);
@@ -140,31 +140,9 @@ public sealed class FileBackedTranscriptSink : ITranscriptSink, IHostedService
         return Path.Combine(_options.BaseDirectory, $"transcript-{date}.jsonl");
     }
 
-    private void PruneOldFiles()
+    internal void Prune(DateTimeOffset now)
     {
-        if (!Directory.Exists(_options.BaseDirectory)) return;
-        var cutoff = DateTimeOffset.UtcNow.AddDays(-_options.RetentionDays);
-        var pruned = 0;
-        foreach (var file in Directory.EnumerateFiles(_options.BaseDirectory, "transcript-*.jsonl"))
-        {
-            var name = Path.GetFileNameWithoutExtension(file); // "transcript-YYYY-MM-DD"
-            if (name.Length < 21) continue; // "transcript-YYYY-MM-DD" = 21 chars
-            var datePart = name[11..]; // "YYYY-MM-DD"
-            if (DateOnly.TryParseExact(datePart, "yyyy-MM-dd", out var d)
-                && d.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc) < cutoff.UtcDateTime)
-            {
-                try { File.Delete(file); pruned++; }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Transcript prune: failed to delete {File}", file);
-                }
-            }
-        }
-        if (pruned > 0)
-        {
-            _logger.LogInformation("Transcript prune: deleted {Pruned} file(s) older than {Days} days.",
-                pruned, _options.RetentionDays);
-        }
+        if (_options.Enabled) DailyEvidenceRetention.Prune(_options.BaseDirectory, "transcript", _options.RetentionDays, now, _logger);
     }
 }
 
@@ -182,6 +160,6 @@ public sealed class TranscriptOptions
     /// <summary>Directory for daily JSONL files. Should sit on the PVC so it survives restarts.</summary>
     public string BaseDirectory { get; set; } = Path.Combine("data", "transcripts");
 
-    /// <summary>Days to retain transcript files. Older files are deleted on startup.</summary>
+    /// <summary>Days to retain transcript files. Expired UTC day files are deleted on startup and hourly.</summary>
     public int RetentionDays { get; set; } = 14;
 }

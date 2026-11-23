@@ -175,6 +175,25 @@ public sealed class LlmCallTelemetryTests
         var evt = Assert.Single(telemetry.Events);
         Assert.Equal("error", evt.Outcome);
         Assert.Equal(nameof(LlmProviderBlockedException), evt.FailureClass);
+        Assert.Equal("before_client_dispatch", evt.Stage);
+    }
+
+    [Fact]
+    public async Task CancelledBeforeDispatchNeverInvokesClientOrAccountsUsage()
+    {
+        var inner = new StubChatClient(new ChatResponse([]));
+        var telemetry = new InMemoryTelemetrySink();
+        using var client = new TelemetryChatClient(inner, "test", telemetry);
+        var totals = new LlmRunUsageAccumulator();
+        var options = new ChatOptions();
+        LlmCallTelemetry.Tag(options, new LlmCallMetadata("test", null, null, null, null, totals));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.GetResponseAsync([], options, new CancellationToken(true)));
+        await using var stream = client.GetStreamingResponseAsync([], options, new CancellationToken(true)).GetAsyncEnumerator();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => stream.MoveNextAsync().AsTask());
+        Assert.Equal(0, totals.Snapshot().ProviderCallCount);
+        Assert.Equal(0, inner.CallCount);
+        Assert.Equal(2, telemetry.Events.Count);
+        Assert.All(telemetry.Events, entry => { Assert.Equal("before_client_dispatch", entry.Stage); Assert.Null(entry.TotalTokens); });
     }
 
     [Fact]
@@ -188,10 +207,11 @@ public sealed class LlmCallTelemetryTests
                 DailyUsdLimit = 3.0,
                 StatePath = Path.Combine(Path.GetTempPath(), $"guard-{Guid.NewGuid():N}.json"),
             });
+        var telemetry = new InMemoryTelemetrySink();
         using var client = new TelemetryChatClient(
             new StreamingChatClient(),
             "OpenAI",
-            new InMemoryTelemetrySink(),
+            telemetry,
             guard);
         var options = new ChatOptions { ModelId = "gpt-5.6-sol" };
 
@@ -202,6 +222,9 @@ public sealed class LlmCallTelemetryTests
             Assert.True(await enumerator.MoveNextAsync());
         }
 
+        var cancelled = Assert.Single(telemetry.Events);
+        Assert.Equal("stream_ended_usage_unknown", cancelled.Stage);
+        Assert.Null(cancelled.TotalTokens);
         Assert.True(guard.TryBeginCall("gpt-5.6-sol", true, out var lease, out _));
         guard.RecordCallFailure(lease, new InvalidOperationException("test cleanup"));
     }

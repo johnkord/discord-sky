@@ -16,9 +16,9 @@ namespace DiscordSky.Tests;
 /// </summary>
 public class MemoryAvailabilityHintTests
 {
-    private static CreativeOrchestrator BuildOrchestrator(MemoryRelevanceOptions? relevance = null)
+    private static CreativeOrchestrator BuildOrchestrator(MemoryRelevanceOptions? relevance = null, bool allowImageContext = true)
     {
-        var botOptions = Options.Create(new BotOptions { EnableUserMemory = true, MaxMemoriesPerUser = 20 });
+        var botOptions = Options.Create(new BotOptions { EnableUserMemory = true, MaxMemoriesPerUser = 20, AllowImageContext = allowImageContext });
         var llmOptions = new TestOptionsMonitor<LlmOptions>(new LlmOptions
         {
             ActiveProvider = "OpenAI",
@@ -43,6 +43,24 @@ public class MemoryAvailabilityHintTests
 
     private static UserMemory Mem(string content, MemoryKind kind = MemoryKind.Factual) =>
         new(content, "pet chatter", DateTimeOffset.UtcNow.AddDays(-2), DateTimeOffset.UtcNow.AddDays(-2), 0, kind);
+
+    [Fact]
+    public void LinkAndTriggerImagesRespectFinalInputPolicyWithoutRemovingText()
+    {
+        var image = new ChannelImage { Url = new Uri("https://example.com/fixture.png") };
+        var link = new UnfurledLink { Text = "article text", Images = [image] };
+        var request = new CreativeRequest("Robotnik", "read", "member", 1, 2, null, DateTimeOffset.UtcNow,
+            TriggerImages: [image], UnfurledLinks: [link], TriggerMediaContext: "fixture visual caption");
+        foreach (var enabled in new[] { true, false })
+        {
+            var parts = BuildOrchestrator(allowImageContext: enabled).BuildUserContent(request,
+                [new ChannelMessage { Images = [image], UnfurledLinks = [link] }], true);
+            Assert.Equal(enabled ? 1 : 0, parts.OfType<UriContent>().Count());
+            var text = string.Join(" ", parts.OfType<TextContent>().Select(part => part.Text));
+            Assert.Contains("article text", text);
+            Assert.Equal(enabled, text.Contains("fixture visual caption"));
+        }
+    }
 
     [Fact]
     public void NoMemories_OmitsHintEntirely()

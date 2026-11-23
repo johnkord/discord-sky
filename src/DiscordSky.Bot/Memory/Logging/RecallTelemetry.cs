@@ -165,6 +165,10 @@ public sealed record TelemetryEvent(
     , [property: JsonPropertyName("estimated_cost_usd")] double? EstimatedCostUsd = null
     , [property: JsonPropertyName("hourly_cost_usd")] double? HourlyCostUsd = null
     , [property: JsonPropertyName("daily_cost_usd")] double? DailyCostUsd = null
+    , [property: JsonPropertyName("journal_bytes")] long? JournalBytes = null
+    , [property: JsonPropertyName("journal_writes")] long? JournalWrites = null
+    , [property: JsonPropertyName("journal_max_wait_ms")] double? JournalMaxWaitMs = null
+    , [property: JsonPropertyName("journal_max_write_ms")] double? JournalMaxWriteMs = null
 );
 
 /// <summary>Canonical event-type string constants. Use these instead of string literals at call sites.</summary>
@@ -215,6 +219,7 @@ public static class TelemetryEventTypes
     public const string WorldAutonomyFeatures = "world_autonomy_features";
     public const string WorldAutonomyImageInput = "world_autonomy_image_input";
     public const string WorldAutonomyRecall = "world_autonomy_recall";
+    public const string WorldAutonomyDeed = "world_autonomy_deed";
 }
 
 /// <summary>Writes one content-free deployment boundary after the durable telemetry sink has started.</summary>
@@ -258,7 +263,7 @@ public sealed class InMemoryTelemetrySink : IRecallTelemetrySink
 /// lost events when the pod was terminated mid-drain (observed on the 2026-05-26 rollover). At our
 /// volume (~10 events/day) the per-write disk cost is invisible; durability matters more than throughput.
 ///
-/// Retention: on startup, deletes any <c>recall-*.jsonl</c> older than <see cref="TelemetryOptions.RetentionDays"/>.
+/// Retention: on startup and hourly, deletes whole UTC files older than <see cref="TelemetryOptions.RetentionDays"/>.
 /// </summary>
 public sealed class FileBackedTelemetrySink : IRecallTelemetrySink, IHostedService
 {
@@ -308,7 +313,7 @@ public sealed class FileBackedTelemetrySink : IRecallTelemetrySink, IHostedServi
         try
         {
             Directory.CreateDirectory(_options.BaseDirectory);
-            PruneOldFiles();
+            Prune(DateTimeOffset.UtcNow);
         }
         catch (Exception ex)
         {
@@ -325,32 +330,7 @@ public sealed class FileBackedTelemetrySink : IRecallTelemetrySink, IHostedServi
         return Path.Combine(_options.BaseDirectory, $"recall-{date}.jsonl");
     }
 
-    private void PruneOldFiles()
-    {
-        if (!Directory.Exists(_options.BaseDirectory)) return;
-        var cutoff = DateTimeOffset.UtcNow.AddDays(-_options.RetentionDays);
-        var pruned = 0;
-        foreach (var file in Directory.EnumerateFiles(_options.BaseDirectory, "recall-*.jsonl"))
-        {
-            var name = Path.GetFileNameWithoutExtension(file); // "recall-YYYY-MM-DD"
-            if (name.Length < 17) continue; // "recall-YYYY-MM-DD" = 17 chars
-            var datePart = name[7..]; // "YYYY-MM-DD"
-            if (DateOnly.TryParseExact(datePart, "yyyy-MM-dd", out var d)
-                && d.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc) < cutoff.UtcDateTime)
-            {
-                try { File.Delete(file); pruned++; }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Telemetry prune: failed to delete {File}", file);
-                }
-            }
-        }
-        if (pruned > 0)
-        {
-            _logger.LogInformation("Telemetry prune: deleted {Pruned} file(s) older than {Days} days from {Dir}",
-                pruned, _options.RetentionDays, _options.BaseDirectory);
-        }
-    }
+    internal void Prune(DateTimeOffset now) => DailyEvidenceRetention.Prune(_options.BaseDirectory, "recall", _options.RetentionDays, now, _logger);
 }
 
 /// <summary>Configuration for <see cref="FileBackedTelemetrySink"/>. Bound from <c>Telemetry:</c> section.</summary>
@@ -361,7 +341,7 @@ public sealed class TelemetryOptions
     /// <summary>Directory for daily JSONL files. Defaults to <c>data/telemetry</c> resolved relative to CWD.</summary>
     public string BaseDirectory { get; set; } = Path.Combine("data", "telemetry");
 
-    /// <summary>Days to retain files. Older files are deleted on startup.</summary>
+    /// <summary>Days to retain files. Expired UTC day files are deleted on startup and hourly.</summary>
     public int RetentionDays { get; set; } = 30;
 
     public TimeSpan ResourceSampleInterval { get; set; } = TimeSpan.FromMinutes(5);

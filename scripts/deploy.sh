@@ -257,6 +257,13 @@ fi
 echo "Building container image $IMAGE_REF"
 docker build -f "$DOCKERFILE" -t "$IMAGE_REF" "$REPO_ROOT"
 
+smoke_project="$REPO_ROOT/tools/DiscordSky.ImageSmoke"
+dotnet build "$smoke_project/DiscordSky.ImageSmoke.csproj" -c Release
+docker run --rm --network none --read-only --tmpfs /tmp \
+  --mount "type=bind,src=$smoke_project/bin/Release/net10.0/DiscordSky.ImageSmoke.dll,dst=/app/DiscordSky.ImageSmoke.dll,readonly" \
+  --entrypoint dotnet "$IMAGE_REF" exec --depsfile /app/DiscordSky.Bot.deps.json \
+  --runtimeconfig /app/DiscordSky.Bot.runtimeconfig.json /app/DiscordSky.ImageSmoke.dll --check-native
+
 if [[ $INCLUDE_STEWARD -ne 0 ]]; then
   docker run --rm --entrypoint sh "$IMAGE_REF" -c '
     test -x /app/steward/DiscordSteward

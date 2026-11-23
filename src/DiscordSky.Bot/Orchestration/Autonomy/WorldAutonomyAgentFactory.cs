@@ -91,7 +91,8 @@ public sealed record WorldAutonomyRunContext(
         Model,
         ProfileDigest,
         ManifestDigest,
-        startedAt);
+        startedAt,
+        SourceChannelId);
 
     public JsonObject CreateMcpMetadata() => new()
     {
@@ -222,7 +223,8 @@ public sealed class WorldAutonomyRunState
         ulong channelId,
         IReadOnlyList<ulong> messageIds,
         ulong? replyTargetMessageId,
-        int characterCount)
+        int characterCount,
+        string outcome = "delivered")
     {
         Interlocked.Increment(ref _channelSpeechCount);
         return _ledger.RecordRunEventAsync(
@@ -233,7 +235,8 @@ public sealed class WorldAutonomyRunState
                 channelId = channelId.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 messageIds = messageIds.Select(id => id.ToString(System.Globalization.CultureInfo.InvariantCulture)),
                 replyTargetMessageId = replyTargetMessageId?.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                characterCount
+                characterCount,
+                outcome
             }),
             TimeProvider.GetUtcNow(),
             CancellationToken.None);
@@ -396,7 +399,8 @@ public sealed class WorldAutonomyRunState
     internal async Task RecordInvocationCompletedAsync(ApprovedDispatch dispatch, object? result)
     {
         var evidence = SummarizeReadResult(result);
-        if (IsChannelSpeechTool(dispatch.ToolName) && IsSuccessfulOutcome(evidence))
+        if (IsChannelSpeechTool(dispatch.ToolName) && evidence.Delivery is { } receipt &&
+            receipt.ChannelId == Context.SourceChannelId)
         {
             Interlocked.Increment(ref _channelSpeechCount);
         }
@@ -430,20 +434,6 @@ public sealed class WorldAutonomyRunState
 
     private static bool IsChannelSpeechTool(string toolName) =>
         toolName is "send_message" or "send_webhook_message";
-
-    /// <summary>
-    /// Native results arrive as <see cref="TextContent"/> carrying a Steward envelope, so an errored
-    /// mutation is not detectable from <see cref="IsMcpToolError"/> alone. Reuse the envelope summary so a
-    /// failed send is never mistaken for Robotnik having spoken.
-    /// </summary>
-    private static bool IsSuccessfulOutcome(ReadResultEvidence evidence) =>
-        evidence.ErrorCode is null &&
-            !evidence.Outcome.Equals("error", StringComparison.OrdinalIgnoreCase) &&
-            !evidence.Outcome.Equals("failed", StringComparison.OrdinalIgnoreCase) &&
-            !evidence.Outcome.Equals("failure", StringComparison.OrdinalIgnoreCase) &&
-            !evidence.Outcome.Equals("mcp_error", StringComparison.OrdinalIgnoreCase) &&
-            !evidence.Outcome.Equals("partial_failure", StringComparison.OrdinalIgnoreCase) &&
-            !evidence.Outcome.Equals("unknown", StringComparison.OrdinalIgnoreCase);
 
     internal async Task RecordInvocationUnknownAsync(ApprovedDispatch dispatch, Exception exception)
     {
@@ -686,10 +676,22 @@ public sealed class WorldAutonomyRunState
             outcome.ValueKind == JsonValueKind.String &&
             !string.IsNullOrWhiteSpace(outcome.GetString()))
         {
-            return new ReadResultEvidence(outcome.GetString()!, ReadErrorCode(root), HasOutcomeEnvelope: true);
+            var status = outcome.GetString()!;
+            return new ReadResultEvidence(status, ReadErrorCode(root), HasOutcomeEnvelope: true, VerifiedDelivery(root, status));
         }
 
         return new ReadResultEvidence("success", null, HasOutcomeEnvelope: false);
+    }
+
+    internal static WorldAutonomyDeliveredMessage? VerifiedDelivery(JsonElement root, string status)
+    {
+        if (MapJournaledDispatchStatus(status) != WorldAutonomyDispatchStatuses.Succeeded || ReadErrorCode(root) is not null ||
+            !TryGetProperty(root, "data", out var data) || !TryGetProperty(data, "verified", out var verified) ||
+            verified.ValueKind != JsonValueKind.True || !TryGetProperty(data, "observed", out var observed) ||
+            !TryGetProperty(observed, "channelId", out var channel) || !ulong.TryParse(channel.ToString(), out var channelId) ||
+            !TryGetProperty(observed, "messageId", out var message) || !ulong.TryParse(message.ToString(), out var messageId) ||
+            channelId == 0 || messageId == 0) return null;
+        return new WorldAutonomyDeliveredMessage(messageId, channelId);
     }
 
     private static string? ReadErrorCode(JsonElement root) => TryGetProperty(root, "error", out var error) &&
@@ -737,7 +739,8 @@ public sealed class WorldAutonomyRunState
     private readonly record struct ReadResultEvidence(
         string Outcome,
         string? ErrorCode,
-        bool HasOutcomeEnvelope);
+        bool HasOutcomeEnvelope,
+        WorldAutonomyDeliveredMessage? Delivery = null);
 }
 
 public sealed record WorldAutonomyRunActivitySnapshot(

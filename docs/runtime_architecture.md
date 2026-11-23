@@ -7,11 +7,12 @@ world autonomy, durable state, and the operational signals required to explain p
 
 | Component | Current implementation |
 | --- | --- |
-| Runtime | .NET 8, `Microsoft.NET.Sdk.Web` |
+| Runtime | .NET 10 LTS, `Microsoft.NET.Sdk.Web` |
 | Discord | Discord.Net 3.20.1 |
 | AI abstraction | Microsoft.Extensions.AI and OpenAI adapter 10.10.0; OpenAI SDK 2.13.0 |
 | Agent framework | Microsoft Agent Framework OpenAI adapter 1.15.0 |
 | MCP | ModelContextProtocol 1.4.1 |
+| Image metadata / alternate local ledger | SkiaSharp with Linux native assets / Microsoft.Data.Sqlite.Core with system SQLite. Production uses the file ledger. |
 | World-autonomy child | Discord Steward, .NET 10, pinned and bundled at deploy time |
 | Deployment | One AKS Deployment, one replica, Recreate strategy, Azure Files PVC |
 
@@ -38,7 +39,7 @@ Startup performs these material checks:
 6. Authenticate the active LLM provider with `GET /v1/models`; OpenAI and xAI also validate configured model access.
 7. Connect Discord and start one isolated Steward child per exact private guild binding.
 
-`GET /healthz` returns 200 only when:
+`GET /livez` only checks that the process can serve HTTP; losing Discord or a child does not by itself restart the pod. Readiness uses `GET /healthz`, which returns 200 only when:
 
 - the Discord gateway is Connected; and
 - every configured Steward child is healthy.
@@ -82,6 +83,8 @@ text, Discord embeds/attachments, cached media semantics, and bounded HTTP unfur
 - enforces target IDs against server-owned known-message state;
 - records prompt/reply transcript and provider telemetry;
 - returns text, reply target, and optional attachment bytes.
+
+`Bot:AllowImageContext` and the per-turn limit apply to image parts from the trigger, history, and unfurls; opting out also omits generated visual context, not article text. Article previews use public-destination HTTP(S) transport through validated addresses and bounded redirects. A denied fetch does not prevent a reply based on message text.
 
 `SendChunkedAsync` enforces Discord's 2,000-character limit. Only the first chunk carries a reply reference. Every
 sent chunk is registered in `SentMessageRegistry` with persona, source, trigger, episode, and reply-target metadata.
@@ -267,6 +270,8 @@ the body. The rewrite must pass a structural verifier before commit. Writes are 
 The current tick sees the prior body, mood, and recent participant names. It does not yet consume a durable queue of
 verified Discord actions or reception events.
 
+The separate [verified-deed trial](decisions/README.md#ds-008-trial-one-verified-guild-deed) applies to eligible direct full-agent turns, not Empire ticks. It can quote one same-room historical receipt in user content. It does not turn a role award into a formal Empire rank or inject the personal memory shadow brief.
+
 ## 8. Images
 
 Explicit commands, model-selected image tools, ambient visual choice, and world-autonomy visuals share
@@ -299,6 +304,8 @@ reject obvious text-art substitutes in speech and text-only fallbacks, while sti
 - persistent UTC hourly/daily estimated spend;
 - pre-provider blocking and durable guard telemetry.
 
+The autonomy preflight checks availability without acquiring a probe. Only the actual provider client acquires and settles a call lease; a local refusal cannot move the next recovery deadline. On chat cancellation `llm_call.stage` distinguishes local cancellation from a client dispatch with unknown or reported usage. Unknown usage is not an invoice or a zero-cost measurement.
+
 Known Grok, GPT, image, and unknown models use separate reservations. On success, the reservation is released
 and replaced with a usage-based cost estimate. Image reservations depend on quality, dimensions, reference count,
 and previews; missing usage or interrupted dispatched renders retain that estimate. Corrupt persisted state fails
@@ -321,6 +328,8 @@ emoji reactions are rejected before this read path.
 Deterministic no-model autonomy fallbacks are recorded in the transcript sink with `model_invoked=false`, concrete
 reason, trigger, and reply target. Successful full-agent final-text fallbacks are marked model-invoked.
 
+Sky speech and one-call conversation retain confirmed Discord IDs and text when a later chunk fails. The outcome is `partial_delivery`; the first visible chunk is not replayed. A verified native send to another channel remains a recorded write but does not satisfy source-channel speech.
+
 ## 11. Durable Observability
 
 Primary durable sources:
@@ -340,8 +349,12 @@ Primary durable sources:
 fragmentation, collection counts, threads, and bounded memory/media/sent-message cache counts. Warning and critical
 bands are 80 and 90 percent of the cgroup limit.
 
+On `stage=sample`, `journal_bytes` is the file size. `journal_writes`, `journal_max_wait_ms` and `journal_max_write_ms` cover successful mutations since the previous sample. The last field measures serialization and persistence, not the whole model turn. An idle interval has no timing values.
+
 Telemetry is owner-private. Most identifiers are hashed, but selected features may retain bounded raw context for
 quality review. Transcripts and final image prompts contain raw private content by design.
+
+The telemetry sink, and the transcript and reaction sinks when enabled, prune expired UTC day files at startup and hourly. The notes command clears the personal note store only; delivery receipts and independent evidence follow their own retention policies.
 
 ## 12. Shutdown And Deployment
 
@@ -352,3 +365,5 @@ Production uses the hardened deploy script or serialized GitHub Actions workflow
 Steward executable but no private profile. Private profile and binding resources are validated before apply. A failed
 rollout restores the prior deployment and private resources. Recreate strategy prevents concurrent writers on the
 Azure Files-backed file journals.
+
+Use the [maintenance atlas](maintenance/atlas.md) for symptom-specific tests, release commands, and conditions that should stop a rollout.

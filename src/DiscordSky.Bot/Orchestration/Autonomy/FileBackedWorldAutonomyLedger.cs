@@ -1,10 +1,11 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Options;
 
 namespace DiscordSky.Bot.Orchestration.Autonomy;
 
-public sealed class FileBackedWorldAutonomyLedger : IWorldAutonomyLedger, IDisposable
+public sealed class FileBackedWorldAutonomyLedger : IWorldAutonomyLedger, IVerifiedDeedReader, IDisposable
 {
     private const int SchemaVersion = 1;
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -16,6 +17,10 @@ public sealed class FileBackedWorldAutonomyLedger : IWorldAutonomyLedger, IDispo
 
     private readonly string _ledgerPath;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly object _sampleLock = new();
+    private long _writes;
+    private double _maxWaitMs;
+    private double _maxWriteMs;
     private LedgerSnapshot _snapshot = new();
     private bool _loaded;
 
@@ -48,12 +53,20 @@ public sealed class FileBackedWorldAutonomyLedger : IWorldAutonomyLedger, IDispo
                     CompletedAt: null,
                     WorldAutonomyRunStatuses.Running,
                     FinalText: null,
-                    FailureReason: null)))
+                    FailureReason: null,
+                    SourceChannelId: run.SourceChannelId)))
             {
                 throw new InvalidOperationException($"Autonomy run '{run.RunId}' already exists.");
             }
         }, cancellationToken);
     }
+
+    Task<VerifiedDeed?> IVerifiedDeedReader.ReadDeedAsync(ulong guild, ulong channel, string query, DateTimeOffset now, CancellationToken token) =>
+        ReadAsync(snapshot => snapshot.ToolCalls.Values
+            .Where(call => call.CompletedAt >= now.AddHours(-48) && call.CompletedAt <= now &&
+                snapshot.Runs.TryGetValue(call.RunId, out var run) && run.GuildId == guild && run.SourceChannelId == channel)
+            .OrderByDescending(call => call.CompletedAt)
+            .Select(call => VerifiedDeed.From(call, guild, channel, query)).FirstOrDefault(deed => deed is not null), token);
 
     public Task RecordDispatchPendingAsync(
         WorldAutonomyPendingDispatch dispatch,
@@ -224,18 +237,45 @@ public sealed class FileBackedWorldAutonomyLedger : IWorldAutonomyLedger, IDispo
 
     private async Task MutateAsync(Action<LedgerSnapshot> mutation, CancellationToken cancellationToken)
     {
+        var requested = Stopwatch.GetTimestamp();
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var wait = Stopwatch.GetElapsedTime(requested).TotalMilliseconds;
         try
         {
             await EnsureLoadedAsync(cancellationToken).ConfigureAwait(false);
             var next = _snapshot.Clone();
             mutation(next);
+            var writing = Stopwatch.GetTimestamp();
             await PersistAsync(next, cancellationToken).ConfigureAwait(false);
             _snapshot = next;
+            lock (_sampleLock)
+            {
+                _writes++;
+                _maxWaitMs = Math.Max(_maxWaitMs, wait);
+                _maxWriteMs = Math.Max(_maxWriteMs, Stopwatch.GetElapsedTime(writing).TotalMilliseconds);
+            }
         }
         finally
         {
             _gate.Release();
+        }
+    }
+
+    internal JournalIoSample TakeIoSample()
+    {
+        long? bytes = null;
+        try
+        {
+            var file = new FileInfo(_ledgerPath);
+            if (file.Exists) bytes = file.Length;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
+        lock (_sampleLock)
+        {
+            var sample = new JournalIoSample(bytes, _writes, _writes == 0 ? null : _maxWaitMs, _writes == 0 ? null : _maxWriteMs);
+            _writes = 0;
+            _maxWaitMs = _maxWriteMs = 0;
+            return sample;
         }
     }
 
@@ -328,3 +368,5 @@ public sealed class FileBackedWorldAutonomyLedger : IWorldAutonomyLedger, IDispo
         string? PayloadJson,
         DateTimeOffset OccurredAt);
 }
+
+internal sealed record JournalIoSample(long? Bytes, long SuccessfulWrites, double? MaxWaitMs, double? MaxWriteMs);

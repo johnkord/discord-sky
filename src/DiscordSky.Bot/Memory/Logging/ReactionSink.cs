@@ -105,7 +105,7 @@ public sealed class FileBackedReactionSink : IReactionSink, IHostedService
         try
         {
             Directory.CreateDirectory(_options.BaseDirectory);
-            PruneOldFiles();
+            Prune(DateTimeOffset.UtcNow);
             _logger.LogInformation(
                 "Reaction logging ENABLED at \"{Dir}\" (retention {Days}d).",
                 _options.BaseDirectory, _options.RetentionDays);
@@ -125,31 +125,9 @@ public sealed class FileBackedReactionSink : IReactionSink, IHostedService
         return Path.Combine(_options.BaseDirectory, $"reactions-{date}.jsonl");
     }
 
-    private void PruneOldFiles()
+    internal void Prune(DateTimeOffset now)
     {
-        if (!Directory.Exists(_options.BaseDirectory)) return;
-        var cutoff = DateTimeOffset.UtcNow.AddDays(-_options.RetentionDays);
-        var pruned = 0;
-        foreach (var file in Directory.EnumerateFiles(_options.BaseDirectory, "reactions-*.jsonl"))
-        {
-            var name = Path.GetFileNameWithoutExtension(file); // "reactions-YYYY-MM-DD"
-            if (name.Length < 20) continue; // "reactions-YYYY-MM-DD" = 20 chars
-            var datePart = name[10..]; // "YYYY-MM-DD"
-            if (DateOnly.TryParseExact(datePart, "yyyy-MM-dd", out var d)
-                && d.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc) < cutoff.UtcDateTime)
-            {
-                try { File.Delete(file); pruned++; }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Reaction prune: failed to delete {File}", file);
-                }
-            }
-        }
-        if (pruned > 0)
-        {
-            _logger.LogInformation("Reaction prune: deleted {Pruned} file(s) older than {Days} days.",
-                pruned, _options.RetentionDays);
-        }
+        if (_options.Enabled) DailyEvidenceRetention.Prune(_options.BaseDirectory, "reactions", _options.RetentionDays, now, _logger);
     }
 }
 

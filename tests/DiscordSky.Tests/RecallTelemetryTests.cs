@@ -20,6 +20,23 @@ public sealed class RecallTelemetryTests : IDisposable
         try { Directory.Delete(_tempDir, recursive: true); } catch { /* best effort */ }
     }
 
+    [Fact]
+    public void IdleSweepPrunesOnlyExpiredEnabledUtcDayFiles()
+    {
+        using var sweep = new DailyEvidenceRetention(BuildSink(30),
+            new FileBackedTranscriptSink(Options.Create(new TranscriptOptions { BaseDirectory = _tempDir, Enabled = true, RetentionDays = 14 }), NullLogger<FileBackedTranscriptSink>.Instance),
+            new FileBackedReactionSink(Options.Create(new ReactionOptions { BaseDirectory = _tempDir, Enabled = false }), NullLogger<FileBackedReactionSink>.Instance));
+        string[] files = ["recall-2026-05-01.jsonl", "transcript-2026-05-01.jsonl", "transcript-2026-05-17.jsonl", "reactions-2026-05-01.jsonl", "transcript-owner.jsonl", "journal.json"];
+        foreach (var file in files) File.WriteAllText(Path.Combine(_tempDir, file), "fixture");
+        sweep.Sweep(DateTimeOffset.Parse("2026-05-31T23:59:00Z"));
+        Assert.False(File.Exists(Path.Combine(_tempDir, files[1])));
+        Assert.All(files.Where(file => file != files[1]), file => Assert.True(File.Exists(Path.Combine(_tempDir, file))));
+        sweep.Sweep(DateTimeOffset.Parse("2026-06-01T00:01:00Z"));
+        Assert.False(File.Exists(Path.Combine(_tempDir, files[0])));
+        Assert.False(File.Exists(Path.Combine(_tempDir, files[2])));
+        Assert.All(files.Skip(3), file => Assert.True(File.Exists(Path.Combine(_tempDir, file))));
+    }
+
     private FileBackedTelemetrySink BuildSink(int retentionDays = 30)
     {
         var opts = new TelemetryOptions { BaseDirectory = _tempDir, RetentionDays = retentionDays };

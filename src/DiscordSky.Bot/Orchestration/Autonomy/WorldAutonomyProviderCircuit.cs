@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Diagnostics.CodeAnalysis;
 using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Memory.Logging;
 using Microsoft.Extensions.AI;
@@ -18,7 +19,12 @@ public sealed record LlmProviderCallLease(
     string Model,
     double ReservedUsd,
     bool OwnsCircuitLease,
-    bool GuardEnabled);
+    bool GuardEnabled)
+{
+    internal long? ProbeVersion { get; init; }
+    private int _settled;
+    internal bool TrySettle() => Interlocked.Exchange(ref _settled, 1) == 0;
+}
 
 public sealed class LlmProviderBlockedException(string reason)
     : InvalidOperationException($"LLM provider guard blocked the call: {reason}")
@@ -40,6 +46,7 @@ public sealed class LlmProviderGuard
     private double _dailyReservations;
     private bool _isOpen;
     private bool _probeInFlight;
+    private long _circuitVersion;
     private DateTimeOffset? _nextProbeAt;
     private string? _reason;
 
@@ -78,10 +85,19 @@ public sealed class LlmProviderGuard
         }
     }
 
+    public bool CanAttempt(out LlmProviderGuardSnapshot snapshot)
+    {
+        lock (_gate)
+        {
+            snapshot = SnapshotUnsafe();
+            return !_isOpen || (!_probeInFlight && _timeProvider.GetUtcNow() >= _nextProbeAt);
+        }
+    }
+
     public bool TryBeginCall(
         string model,
         bool ownsCircuitLease,
-        out LlmProviderCallLease lease,
+        [NotNullWhen(true)] out LlmProviderCallLease? lease,
         out LlmProviderGuardSnapshot snapshot,
         double? reservationUsd = null)
     {
@@ -92,14 +108,15 @@ public sealed class LlmProviderGuard
             ResetSpendWindows(_timeProvider.GetUtcNow());
             if (ownsCircuitLease && !TryEnterCircuitUnsafe())
             {
-                lease = new LlmProviderCallLease(model, 0, ownsCircuitLease, _options.Enabled);
+                lease = null;
                 snapshot = SnapshotUnsafe();
                 return false;
             }
 
             if (!_options.Enabled)
             {
-                lease = new LlmProviderCallLease(model, 0, ownsCircuitLease, GuardEnabled: false);
+                lease = new LlmProviderCallLease(model, 0, ownsCircuitLease, GuardEnabled: false)
+                    { ProbeVersion = ownsCircuitLease && _isOpen ? _circuitVersion : null };
                 snapshot = SnapshotUnsafe();
                 return true;
             }
@@ -108,7 +125,6 @@ public sealed class LlmProviderGuard
             if (_spend.HourlyCostUsd + _hourlyReservations + reservation > _options.HourlyUsdLimit)
             {
                 return BlockBudgetUnsafe(
-                    model,
                     ownsCircuitLease,
                     "hourly_cost_budget_exhausted",
                     out lease,
@@ -117,7 +133,6 @@ public sealed class LlmProviderGuard
             if (_spend.DailyCostUsd + _dailyReservations + reservation > _options.DailyUsdLimit)
             {
                 return BlockBudgetUnsafe(
-                    model,
                     ownsCircuitLease,
                     "daily_cost_budget_exhausted",
                     out lease,
@@ -130,7 +145,8 @@ public sealed class LlmProviderGuard
             }
             _hourlyReservations += reservation;
             _dailyReservations += reservation;
-            lease = new LlmProviderCallLease(model, reservation, ownsCircuitLease, GuardEnabled: true);
+            lease = new LlmProviderCallLease(model, reservation, ownsCircuitLease, GuardEnabled: true)
+                { ProbeVersion = ownsCircuitLease && _isOpen ? _circuitVersion : null };
             snapshot = SnapshotUnsafe();
             return true;
         }
@@ -140,13 +156,14 @@ public sealed class LlmProviderGuard
     {
         lock (_gate)
         {
+            if (!lease.TrySettle()) return;
             ReleaseReservationUnsafe(lease);
             ResetSpendWindows(_timeProvider.GetUtcNow());
             var cost = response is null ? lease.ReservedUsd : EstimateUpperBoundCost(lease.Model, response);
             _spend.HourlyCostUsd += cost;
             _spend.DailyCostUsd += cost;
             PersistSpendUnsafe();
-            if (lease.OwnsCircuitLease)
+            if (lease.ProbeVersion == _circuitVersion)
             {
                 RecordSuccessUnsafe();
             }
@@ -158,13 +175,14 @@ public sealed class LlmProviderGuard
     {
         lock (_gate)
         {
+            if (!lease.TrySettle()) return;
             ReleaseReservationUnsafe(lease);
             ResetSpendWindows(_timeProvider.GetUtcNow());
             var cost = Math.Max(0, estimatedCostUsd);
             _spend.HourlyCostUsd += cost;
             _spend.DailyCostUsd += cost;
             PersistSpendUnsafe();
-            if (lease.OwnsCircuitLease)
+            if (lease.ProbeVersion == _circuitVersion)
             {
                 RecordSuccessUnsafe();
             }
@@ -176,8 +194,9 @@ public sealed class LlmProviderGuard
     {
         lock (_gate)
         {
+            if (!lease.TrySettle()) return;
             ReleaseReservationUnsafe(lease);
-            if (lease.OwnsCircuitLease)
+            if (lease.OwnsCircuitLease && (!_isOpen || lease.ProbeVersion == _circuitVersion || IsDeterministicProviderBlock(exception, out _)))
             {
                 RecordFailureUnsafe(exception);
             }
@@ -276,10 +295,9 @@ public sealed class LlmProviderGuard
     }
 
     private bool BlockBudgetUnsafe(
-        string model,
         bool ownsCircuitLease,
         string reason,
-        out LlmProviderCallLease lease,
+        out LlmProviderCallLease? lease,
         out LlmProviderGuardSnapshot snapshot)
     {
         if (ownsCircuitLease && _isOpen)
@@ -290,8 +308,8 @@ public sealed class LlmProviderGuard
         {
             _reason = reason;
         }
-        lease = new LlmProviderCallLease(model, 0, ownsCircuitLease, GuardEnabled: true);
-        snapshot = SnapshotUnsafe();
+        lease = null;
+        snapshot = SnapshotUnsafe() with { Reason = reason };
         Emit("blocked", reason, 0);
         return false;
     }
@@ -320,6 +338,7 @@ public sealed class LlmProviderGuard
         }
 
         _isOpen = true;
+        _circuitVersion++;
         _probeInFlight = false;
         _reason = deterministic ? reason : exception.GetType().Name;
         _nextProbeAt = _timeProvider.GetUtcNow() + _probeInterval;
@@ -366,14 +385,12 @@ public sealed class LlmProviderGuard
         {
             _spend.HourStartUtc = hour;
             _spend.HourlyCostUsd = 0;
-            _hourlyReservations = 0;
         }
         var day = DateOnly.FromDateTime(now.UtcDateTime);
         if (_spend.DayUtc != day)
         {
             _spend.DayUtc = day;
             _spend.DailyCostUsd = 0;
-            _dailyReservations = 0;
         }
     }
 

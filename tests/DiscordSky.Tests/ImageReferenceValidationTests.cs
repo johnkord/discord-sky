@@ -1,7 +1,5 @@
 using DiscordSky.Bot.Integrations.Images;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Formats.Png;
-using SixLabors.ImageSharp.PixelFormats;
+using SkiaSharp;
 
 namespace DiscordSky.Tests;
 
@@ -35,17 +33,18 @@ public sealed class ImageReferenceValidationTests
         var source = ImageReferenceValidation.Create(Png(16, 16), 123, false);
         var mask = ImageReferenceValidation.Create(Png(16, 16), 124, true);
         ImageReferenceValidation.ValidateMask(new ImageReferenceSet([source], mask));
-        Assert.Throws<ArgumentException>(() => ImageReferenceValidation.Create(Png(16, 16, PngColorType.Rgb), 124, true));
+        Assert.Throws<ArgumentException>(() => ImageReferenceValidation.Create(Png(16, 16, alpha: false), 124, true));
         var wrongSize = ImageReferenceValidation.Create(Png(32, 16), 124, true);
         Assert.Throws<ArgumentException>(() => ImageReferenceValidation.ValidateMask(new ImageReferenceSet([source], wrongSize)));
         Assert.Throws<ArgumentException>(() => ImageReferenceValidation.ValidateMask(new ImageReferenceSet([], mask)));
     }
 
-    internal static byte[] Png(int width, int height, PngColorType colorType = PngColorType.RgbWithAlpha)
+    internal static byte[] Png(int width, int height, bool alpha = true)
     {
-        using var image = new Image<Rgba32>(width, height);
-        using var buffer = new MemoryStream();
-        image.Save(buffer, new PngEncoder { ColorType = colorType });
-        return buffer.ToArray();
+        using var bitmap = new SKBitmap(new SKImageInfo(width, height, SKColorType.Rgba8888, alpha ? SKAlphaType.Premul : SKAlphaType.Opaque));
+        bitmap.Erase(alpha ? SKColors.Transparent : SKColors.Black);
+        using var image = SKImage.FromBitmap(bitmap);
+        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
+        return data.ToArray();
     }
 }

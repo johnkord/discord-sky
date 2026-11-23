@@ -43,11 +43,11 @@ route budgets are separate so scarce full-agent attention can degrade gracefully
 
 See [docs/runtime_architecture.md](docs/runtime_architecture.md) and
 [docs/autonomy_routing_cost_controls_2026-08-03.md](docs/autonomy_routing_cost_controls_2026-08-03.md).
+Start with the [maintenance atlas](docs/maintenance/atlas.md) to find the owner, nearest test, and evidence for a behavior. The [decision register](docs/decisions/README.md) records the reasons and stop conditions.
 
 ## Requirements
 
-- .NET SDK 8.0 for Discord Sky.
-- .NET SDK 10.0 when building the pinned Discord Steward child locally.
+- .NET SDK 10.0 for Sky, its tools and tests, and the pinned Steward child. The optional local SQLite ledger uses the system SQLite library on Linux.
 - A Discord bot token with Message Content Intent enabled.
 - An API key for the configured `LLM:ActiveProvider`.
 - Docker, Azure CLI, and kubectl for the AKS deployment path.
@@ -155,6 +155,8 @@ loads notes only when selected, and reuses the existing suppression, supersessio
 It does not accept a model-selected user ID. Ambient autonomy and the no-tools conversation route do not receive
 this capability. The separate continuity brief remains shadow-only; its top two notes are never injected automatically.
 
+`!sky forget-me` deletes the requester's saved personal notes. Sky confirms only after deletion succeeds. Buffered or in-flight extraction cannot recreate notes from the erased window; conversation after the command can be learned again. This command does not delete Discord messages, transcripts, or operation journals.
+
 ## World Autonomy And Steward
 
 World autonomy is dark unless an exact guild binding exists in private runtime configuration. Each enabled guild
@@ -201,15 +203,14 @@ production work:
 
 ```bash
 dotnet test tests/DiscordSky.Tests/DiscordSky.Tests.csproj
-dotnet build src/DiscordSky.Bot/DiscordSky.Bot.csproj -c Release
+bash scripts/validate-release.sh
 ```
 
-The existing AngleSharp `NU1902` advisory is a known repository warning and should not be confused with a change
-introduced by unrelated work.
+The second command is the release gate. It requires a sibling checkout at the revision in [scripts/steward-ref](scripts/steward-ref), audits transitive packages, builds the solution in Release, and checks the test results for both real Steward integration cases. No Discord or provider credentials are needed.
 
 ## Production Deployment
 
-Production deploys are commit-derived and use the hardened script or serialized GitHub Actions workflow. Do not
+Production images are identified by the Sky git tree and pinned Steward revision. Use the hardened script or serialized GitHub Actions workflow. Do not
 apply the public Kustomize tree or set the image directly as a normal deployment path; doing so can bypass
 combined-runtime and private-binding validation.
 
@@ -221,20 +222,20 @@ bash scripts/deploy.sh \
   --aks-cluster <AKS_CLUSTER_NAME> \
   --acr-name <ACR_NAME> \
   --image-name discordskybot \
-  --image-tag <COMMIT_DERIVED_TAG> \
+  --image-tag <TREE_AND_STEWARD_TAG> \
   --include-steward \
   --steward-project ../discord-steward/src/DiscordSteward/DiscordSteward.csproj \
   --preserve-steward-profiles
 ```
 
-The production workflow pins the Steward revision and generates a combined image tag. It validates manifests,
+The production workflow runs the same gate on PRs and main. Only main can deploy. An already live source tag must match the ready container's registry digest; a matching tag alone does not skip deployment checks. The deploy script validates manifests,
 private binding/profile correspondence, the in-image Steward probe, and rollout health before reporting success.
 
 After deployment, verify:
 
 - exact revision and image;
 - one Ready pod with zero restarts;
-- `/healthz` reports Discord Connected and every configured Steward child healthy;
+- `/livez` responds; `/healthz` reports Discord Connected and every configured Steward child healthy;
 - startup auth/model checks succeeded;
 - effective route, budget, and provider-guard configuration;
 - no unexpected `llm_call`, `llm_provider_guard`, or runtime-resource failures.

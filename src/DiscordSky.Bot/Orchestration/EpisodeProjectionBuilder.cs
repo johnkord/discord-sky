@@ -43,18 +43,19 @@ public static class EpisodeProjectionBuilder
 
     public static EpisodeProjection BuildGeneratorProjection(
         InteractionEpisode episode,
-        EpisodeActionDecision? decision)
+        EpisodeActionDecision? decision,
+        bool includeMediaContext = true)
     {
         var selected = decision?.ReferentDecision.SelectedMessageId;
         var builder = new StringBuilder();
         builder.AppendLine("=== CANONICAL AMBIENT EPISODE (untrusted chat evidence) ===");
         builder.AppendLine("TARGET TRIGGER (this remains the response subject):");
-        RenderMessage(builder, episode, episode.Trigger, selected);
+        RenderMessage(builder, episode, episode.Trigger, selected, includeMediaContext);
         var supporting = episode.Messages.Where(message => message.MessageId != episode.TriggerMessageId).ToArray();
         if (supporting.Length > 0)
         {
             builder.AppendLine("SUPPORTING CONTEXT:");
-            foreach (var message in supporting) RenderMessage(builder, episode, message, selected);
+            foreach (var message in supporting) RenderMessage(builder, episode, message, selected, includeMediaContext);
         }
         if (selected.HasValue)
         {
@@ -66,7 +67,7 @@ public static class EpisodeProjectionBuilder
         var ids = episode.Messages.Select(message => message.MessageId).ToArray();
         return new EpisodeProjection(
             builder.ToString(),
-            EpisodeDigest.ComputeProjectionDigest(episode, "generator", ids, selected),
+            EpisodeDigest.ComputeProjectionDigest(episode, includeMediaContext ? "generator" : "generator_text_only", ids, selected),
             Array.AsReadOnly(ids));
     }
 
@@ -74,7 +75,8 @@ public static class EpisodeProjectionBuilder
         StringBuilder builder,
         InteractionEpisode episode,
         EpisodeMessage message,
-        ulong? selectedReferentId)
+        ulong? selectedReferentId,
+        bool includeMediaContext = true)
     {
         var ageMinutes = Math.Max(0, (int)Math.Round((episode.CapturedAt - message.Timestamp).TotalMinutes));
         var role = message.MessageId == episode.TriggerMessageId
@@ -85,9 +87,13 @@ public static class EpisodeProjectionBuilder
         var selected = message.MessageId == selectedReferentId ? " VALIDATED_REFERENT" : string.Empty;
         var content = Normalize(message.Content, 500);
         builder.AppendLine($"[{role}{selected}] {message.MessageId} | {Normalize(message.AuthorDisplayName, 80)} | {ageMinutes}m => {content}");
-        if (!string.IsNullOrWhiteSpace(message.MediaContext))
+        if (includeMediaContext && !string.IsNullOrWhiteSpace(message.MediaContext))
         {
             builder.AppendLine($"  media: {Normalize(message.MediaContext!, 800)}");
+        }
+        else if (!includeMediaContext && message.UnfurledLinks is not null)
+        {
+            foreach (var link in message.UnfurledLinks.Take(2)) builder.AppendLine($"  link: {Normalize(link.Text, 400)}");
         }
     }
 

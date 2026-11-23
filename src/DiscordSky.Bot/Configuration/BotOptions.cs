@@ -20,6 +20,7 @@ public sealed class BotOptions
     public string DefaultPersona { get; init; } = "Weird Al";
     public bool AllowImageContext { get; init; } = true;
     public int HistoryImageLimit { get; init; } = 3;
+    internal int ImageInputLimit => AllowImageContext ? Math.Clamp(HistoryImageLimit < 0 ? 3 : HistoryImageLimit, 0, 12) : 0;
     public List<string> ImageHostAllowList { get; init; } = new()
     {
         "cdn.discordapp.com",

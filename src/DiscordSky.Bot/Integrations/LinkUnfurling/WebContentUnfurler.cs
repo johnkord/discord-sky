@@ -153,7 +153,7 @@ public sealed class WebContentUnfurler : ILinkUnfurler
     public bool CanHandle(Uri url)
     {
         // Handle any http/https URL that isn't in the skip list
-        if (url.Scheme != "http" && url.Scheme != "https")
+        if (!PublicPreviewTransport.Allows(url))
         {
             return false;
         }
@@ -214,6 +214,7 @@ public sealed class WebContentUnfurler : ILinkUnfurler
             }
 
             tasks.Add((urlStr, FetchAndParseAsync(uri, messageTimestamp, cancellationToken)));
+            if (tasks.Count == 3) break;
         }
 
         var results = new List<UnfurledLink>();

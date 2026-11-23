@@ -34,7 +34,8 @@ public sealed record WorldAutonomyRunStart(
     string Model,
     string ProfileDigest,
     string ManifestDigest,
-    DateTimeOffset StartedAt);
+    DateTimeOffset StartedAt,
+    ulong? SourceChannelId = null);
 
 public sealed record WorldAutonomyRunRecord(
     string RunId,
@@ -49,7 +50,8 @@ public sealed record WorldAutonomyRunRecord(
     DateTimeOffset? CompletedAt,
     string Status,
     string? FinalText,
-    string? FailureReason);
+    string? FailureReason,
+    ulong? SourceChannelId = null);
 
 public sealed record WorldAutonomyPendingDispatch(
     string CallId,
@@ -119,6 +121,14 @@ public interface IWorldAutonomyLedger
 
 public sealed class SqliteWorldAutonomyLedger : IWorldAutonomyLedger, IDisposable
 {
+    private static readonly Lazy<bool> SystemSqlite = new(() =>
+    {
+        if (OperatingSystem.IsLinux())
+            System.Runtime.InteropServices.NativeLibrary.SetDllImportResolver(typeof(SQLitePCL.SQLite3Provider_sqlite3).Assembly,
+                (name, _, _) => name == "sqlite3" ? System.Runtime.InteropServices.NativeLibrary.Load("libsqlite3.so.0") : IntPtr.Zero);
+        SQLitePCL.raw.SetProvider(new SQLitePCL.SQLite3Provider_sqlite3());
+        return true;
+    });
     private const int SchemaVersion = 1;
     private readonly string _connectionString;
     private readonly string _databasePath;
@@ -133,6 +143,7 @@ public sealed class SqliteWorldAutonomyLedger : IWorldAutonomyLedger, IDisposabl
     public SqliteWorldAutonomyLedger(WorldAutonomyOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
+        _ = SystemSqlite.Value;
         _databasePath = Path.GetFullPath(options.LedgerPath);
         _connectionString = new SqliteConnectionStringBuilder
         {

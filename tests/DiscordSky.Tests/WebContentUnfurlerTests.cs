@@ -5,6 +5,57 @@ namespace DiscordSky.Tests;
 
 public class WebContentUnfurlerTests
 {
+    [Theory]
+    [InlineData("127.0.0.1")]
+    [InlineData("10.1.2.3")]
+    [InlineData("169.254.0.1")]
+    [InlineData("168.63.129.16")]
+    [InlineData("::1")]
+    [InlineData("fd00::1")]
+    [InlineData("2001:db8::1")]
+    public async Task PublicPreview_RejectsNonPublicOrMixedAnswers(string reserved)
+    {
+        var publicAddress = System.Net.IPAddress.Parse("1.1.1.1");
+        await Assert.ThrowsAsync<HttpRequestException>(() => PublicPreviewTransport.ResolveAsync("fixture.example",
+            (_, _) => Task.FromResult(new[] { publicAddress, System.Net.IPAddress.Parse(reserved) }), default));
+        Assert.False(PublicPreviewTransport.Allows(new UriBuilder("https", reserved).Uri));
+        var approved = await PublicPreviewTransport.ResolveAsync("fixture.example", (host, _) =>
+        {
+            Assert.Equal("fixture.example.", host);
+            return Task.FromResult(new[] { publicAddress });
+        }, default);
+        Assert.Equal(publicAddress, Assert.Single(approved));
+    }
+
+    [Theory]
+    [InlineData("/next", true)]
+    [InlineData("https://second.example/page", true)]
+    [InlineData("http://second.example/page", false)]
+    [InlineData("https://single-label/page", false)]
+    public async Task PublicPreview_ValidatesEveryRedirectBeforeSending(string location, bool allowed)
+    {
+        var handler = new RedirectFixture(location);
+        using var client = new HttpClient(new PublicPreviewTransport(handler));
+        if (allowed)
+        {
+            using var response = await client.GetAsync("https://first.example/page");
+            Assert.True(response.IsSuccessStatusCode);
+        }
+        else await Assert.ThrowsAsync<HttpRequestException>(() => client.GetAsync("https://first.example/page"));
+        Assert.Equal(allowed ? 2 : 1, handler.Calls);
+    }
+
+    private sealed class RedirectFixture(string location) : HttpMessageHandler
+    {
+        public int Calls { get; private set; }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var response = new HttpResponseMessage(++Calls == 1 ? System.Net.HttpStatusCode.Found : System.Net.HttpStatusCode.OK);
+            if (Calls == 1) response.Headers.Location = new Uri(location, UriKind.RelativeOrAbsolute);
+            return Task.FromResult(response);
+        }
+    }
+
     private static readonly DateTimeOffset TestTimestamp = new(2025, 1, 15, 12, 0, 0, TimeSpan.Zero);
 
     // ── CanHandle ──────────────────────────────────────────────────────

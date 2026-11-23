@@ -34,12 +34,14 @@ This directory contains the Kubernetes resources required to run the Discord Sky
    kubectl rollout restart deploy/discord-sky-bot -n discord-sky
    ```
 
-2. For production, commit the validated source and use `bash scripts/deploy.sh` or the serialized GitHub Actions
-   workflow. The script renders this Kustomize tree, validates private autonomy resources, builds/probes the combined
-   Sky plus Steward image, applies the resources, waits for health, and restores the prior revision on failure.
+2. For production run `bash scripts/validate-release.sh` against the [pinned Steward checkout](../../scripts/steward-ref). PRs run that same credential-free gate. On main the deploy job cannot start until the Release build, audit and tests, including both real-Steward cases, pass. The hardened script renders Kustomize, validates private bindings, builds and probes the combined image, applies it, waits for readiness and restores the prior configuration/revision on rollout failure.
 
 3. Use raw `kubectl apply -k` only for client-side validation or deliberate dark/local experiments. Do not use
    `kubectl set image` as the normal production path; it bypasses combined-runtime and private-binding checks.
+
+The image tag is `tree-<Sky git tree>-s<first seven characters of Steward pin>`. For an explicitly requested deploy-before-commit, stage only the tested release, use `git write-tree` as the source identity, and pass that tag to the script with `--include-steward --preserve-steward-profiles`. After verifying the live registry digest, commit the same tree, push, and verify the workflow for that commit. A ready pod already serving the exact tag and digest does not need a second restart. [Checklist and stop conditions](../../docs/maintenance/atlas.md#validate-and-release).
+
+Liveness (`/livez`) checks only the HTTP process. Readiness (`/healthz`) requires the Discord gateway and configured Steward children. Neither endpoint spends provider tokens. If only readiness fails, inspect those dependencies before restarting the pod.
 
 ## Chat Provider
 
@@ -131,6 +133,8 @@ Recall is lazy, bound to the direct requester, and subject to the existing memor
 budget exhaustion. These are selection/evidence signals, not proof the response used a returned fact well.
 The shadow continuity brief remains non-injecting.
 
+The independent verified-deed trial is controlled by `WorldAutonomy__VerifiedDeeds__Percent` and `WorldAutonomy__VerifiedDeeds__UntilUtc`. An eligible direct turn can see one recent verified same-guild, same-channel effect. `world_autonomy_deed` identifies `offered` vs `control`; `Percent=0` stops it, and expiry stops it without a rollout. See [DS-008](../../docs/decisions/README.md#ds-008-trial-one-verified-guild-deed) before extending it.
+
 The original GPT-6 Astra cache-canary checks verified first-call reuse of 1,757/2,190 input tokens across fresh run contexts,
 and continuation reuse of 2,187/2,242 tokens. A persona-only breakpoint initially missed the minimum cacheable
 length, so the final implementation uses the full stable instruction prefix. Four bounded smoke loops cost an
@@ -165,10 +169,7 @@ records stop automatic lookups and require operator review; do not replay the or
 what happened. Other recovery errors retain normal retries and identity validation. Use the request ID to
 inspect Steward's journal and Discord state before making a deliberate corrective operation.
 
-AngleSharp is patched to 1.5.0. ImageSharp 3.1.12 still has known security advisories; its patched 3.2 line adds a
-Release-build license requirement. Before upgrading it, choose an eligible licensed deployment or a replacement
-parser. Do not disable the vendor's license validation. Existing bounded Discord-only reference downloads and
-metadata limits remain in place, but are not a substitute for fixing the dependency advisories.
+Sky runs on .NET 10 LTS. Bounded image metadata inspection uses SkiaSharp's Linux native assets; ImageSharp is no longer shipped. The optional local SQLite ledger uses distro SQLite, not a bundled native binary; do not move the live file ledger to SQLite on the share. Run the release gate and keep native packages and the base image patched independently of the NuGet audit.
 
 ## Unrestricted Steward Child
 

@@ -77,6 +77,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly SentMessageRegistry _sentMessages;
     private readonly ConcurrentDictionary<ulong, ChannelMessageBuffer> _channelBuffers = new();
     private readonly ConcurrentDictionary<ulong, SemaphoreSlim> _userMemoryLocks = new();
+    private readonly ConcurrentDictionary<ulong, ulong> _forgottenThrough = new();
     private readonly ConcurrentDictionary<ulong, DateTimeOffset> _lastSuccessfulExtraction = new();
     private readonly CancellationTokenSource _shutdownCts = new();
     private readonly WorldAutonomyRouter? _worldAutonomyRouter;
@@ -2638,7 +2639,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private async Task<AutonomyImageSelection?> SelectAutonomyImagesAsync(SocketUserMessage trigger,
         string text, bool direct, CancellationToken cancellationToken)
     {
-        if (!_options.AllowImageContext || _options.HistoryImageLimit == 0 || trigger.Channel is not SocketGuildChannel guildChannel ||
+        if (_options.ImageInputLimit == 0 || trigger.Channel is not SocketGuildChannel guildChannel ||
             _options.IsGuildDisabled(guildChannel.Guild.Id, guildChannel.Guild.Name)) return null;
 
         static AutonomyImageAttachment[] Images(IMessage source, AutonomyImageOrigin origin) => source.Attachments
@@ -2776,8 +2777,29 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
     private async Task HandleForgetMeAsync(SocketCommandContext context)
     {
-        await _memoryStore.ForgetAllAsync(context.User.Id, _shutdownCts.Token);
-        await context.Channel.SendMessageAsync("Done — I've forgotten everything about you. Fresh start! 🧹");
+        try
+        {
+            await EraseSavedNotesAsync(context.User.Id, context.Message.Id, _shutdownCts.Token);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogWarning(error, "Could not erase saved notes for user {UserHash}", UserIdHash.Hash(context.User.Id));
+            await context.Channel.SendMessageAsync("I couldn't confirm deletion of your saved notes. Please try again.");
+            return;
+        }
+        await context.Channel.SendMessageAsync("Your saved personal notes have been cleared. This does not erase Discord messages or activity logs. I can learn from new messages.");
+    }
+
+    internal async Task EraseSavedNotesAsync(ulong userId, ulong throughMessageId, CancellationToken cancellationToken)
+    {
+        var gate = _userMemoryLocks.GetOrAdd(userId, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            await _memoryStore.ForgetAllAsync(userId, cancellationToken);
+            _forgottenThrough.AddOrUpdate(userId, throughMessageId, (_, prior) => Math.Max(prior, throughMessageId));
+        }
+        finally { gate.Release(); }
     }
 
     private async Task HandleWhatDoYouKnowAsync(SocketCommandContext context)
@@ -2825,7 +2847,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             sb.AppendLine();
         }
 
-        sb.AppendLine($"_`{_options.CommandPrefix} forget <topic>` to suppress a topic \u00b7 `{_options.CommandPrefix} forget-me` to wipe everything._");
+        sb.AppendLine($"_`{_options.CommandPrefix} forget <topic>` to suppress a topic \u00b7 `{_options.CommandPrefix} forget-me` to erase your saved personal notes._");
 
         await SendChunkedAsync(context.Channel, sb.ToString(), null, GetDefaultPersona());
     }
@@ -2980,14 +3002,25 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 .Select(id => _userMemoryLocks.GetOrAdd(id, _ => new SemaphoreSlim(1, 1)))
                 .ToList();
 
-            foreach (var sem in locks)
-            {
-                failureStage = "lock";
-                await sem.WaitAsync(_shutdownCts.Token);
-            }
-
+            var acquired = 0;
             try
             {
+                for (; acquired < locks.Count; acquired++)
+                {
+                    failureStage = "lock";
+                    await locks[acquired].WaitAsync(_shutdownCts.Token);
+                }
+                var cutoff = participantIds.Max(id => _forgottenThrough.GetValueOrDefault(id));
+                if (cutoff != 0 && messages.RemoveAll(message => message.MessageId <= cutoff) > 0)
+                {
+                    if (messages.Count == 0)
+                    {
+                        terminalOutcome = "erased_window";
+                        return;
+                    }
+                    window = ExtractionWindow.Capture(channelId, messages, isShutdownFlush, window.CapturedAt, window.OperationId);
+                    participantIds = window.ParticipantIds;
+                }
                 var participantMemories = new Dictionary<ulong, (string DisplayName, IReadOnlyList<UserMemory> Memories)>();
                 foreach (var userId in participantIds)
                 {
@@ -3122,10 +3155,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             }
             finally
             {
-                foreach (var sem in locks)
-                {
-                    sem.Release();
-                }
+                while (acquired > 0) locks[--acquired].Release();
             }
         }
         catch (OperationCanceledException ex) when (_shutdownCts.IsCancellationRequested)

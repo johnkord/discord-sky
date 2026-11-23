@@ -3,10 +3,7 @@ using Discord;
 using Discord.WebSocket;
 using DiscordSky.Bot.Configuration;
 using Microsoft.Extensions.Options;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Formats;
-using SixLabors.ImageSharp.Formats.Png;
-using Image = SixLabors.ImageSharp.Image;
+using SkiaSharp;
 
 namespace DiscordSky.Bot.Integrations.Images;
 
@@ -120,19 +117,21 @@ internal static class ImageReferenceValidation
 {
     internal static ImageReference Create(byte[] bytes, ulong messageId, bool mask)
     {
-        ImageInfo info;
-        try { info = Image.Identify(new DecoderOptions { SkipMetadata = true, MaxFrames = 1 }, bytes); }
-        catch (Exception exception) when (exception is UnknownImageFormatException or InvalidImageContentException or NotSupportedException)
-        { throw new ArgumentException("A reference image is not a valid PNG, JPEG, or WebP image."); }
-        var format = info.Metadata.DecodedImageFormat;
-        if (format?.DefaultMimeType is not ("image/png" or "image/jpeg" or "image/webp") ||
-            info.Width <= 0 || info.Height <= 0 || (long)info.Width * info.Height > 16_777_216)
+        using var stream = new MemoryStream(bytes, writable: false);
+        using var codec = SKCodec.Create(stream) ?? throw new ArgumentException("A reference image is not a valid PNG, JPEG, or WebP image.");
+        var info = codec.Info;
+        var format = codec.EncodedFormat switch
+        {
+            SKEncodedImageFormat.Png => "png",
+            SKEncodedImageFormat.Jpeg => "jpeg",
+            SKEncodedImageFormat.Webp => "webp",
+            _ => null,
+        };
+        if (format is null || info.Width <= 0 || info.Height <= 0 || (long)info.Width * info.Height > 16_777_216)
             throw new ArgumentException("Reference images must be PNG, JPEG, or WebP, at most 16 megapixels.");
-        if (mask && (format.DefaultMimeType != "image/png" ||
-            info.Metadata.GetPngMetadata().ColorType is not (PngColorType.RgbWithAlpha or PngColorType.GrayscaleWithAlpha)))
+        if (mask && (format != "png" || bytes.Length < 33 || bytes[25] is not (4 or 6)))
             throw new ArgumentException("mask.png must be a PNG with an alpha channel; transparent areas are edited.");
-        return new ImageReference(bytes, mask ? "mask.png" : $"reference-{messageId}.{format.FileExtensions.First()}",
-            format.DefaultMimeType, messageId);
+        return new ImageReference(bytes, mask ? "mask.png" : $"reference-{messageId}.{format}", $"image/{format}", messageId);
     }
 
     internal static void ValidateMask(ImageReferenceSet references)
@@ -140,10 +139,9 @@ internal static class ImageReferenceValidation
         if (references.Mask is null) return;
         if (references.Images.Count == 0) throw new ArgumentException("A mask requires a source image.");
         var source = references.Images[0];
-        var decoderOptions = new DecoderOptions { SkipMetadata = true, MaxFrames = 1 };
-        var sourceInfo = Image.Identify(decoderOptions, source.Bytes);
-        var maskInfo = Image.Identify(decoderOptions, references.Mask.Bytes);
-        if (source.MediaType != "image/png" || sourceInfo.Width != maskInfo.Width || sourceInfo.Height != maskInfo.Height)
+        using var sourceCodec = SKCodec.Create(new MemoryStream(source.Bytes, writable: false));
+        using var maskCodec = SKCodec.Create(new MemoryStream(references.Mask.Bytes, writable: false));
+        if (source.MediaType != "image/png" || sourceCodec is null || maskCodec is null || sourceCodec.Info.Size != maskCodec.Info.Size)
             throw new ArgumentException("mask.png must have the same dimensions as the first source image, which must also be PNG.");
     }
 }

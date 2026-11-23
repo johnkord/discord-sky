@@ -92,6 +92,39 @@ public sealed class WorldAutonomyLedgerTests
     }
 
     [Fact]
+    public async Task DeedTrialUsesOnlyRecentVerifiedEvidenceFromTheSameRoom()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "ledger.json");
+        var now = DateTimeOffset.UtcNow;
+        using var ledger = CreateLedger(path);
+        await ledger.StartRunAsync(new("run", 4001, "message", "1", null, "model", "profile", "manifest", now, 5001), default);
+        var id = Guid.NewGuid().ToString();
+        await ledger.RecordDispatchPendingAsync(new("call", "run", 1, "create_role", id, "{}", "digest", "schema", now), default);
+        var envelope = System.Text.Json.JsonSerializer.Serialize(new { outcome = "succeeded", requestId = id, guild = new { id = "4001" },
+            data = new { requestId = id, toolName = "create_role", status = "succeeded", verified = true, observed = new { id = "701", name = "Ceremonial fixture" } } });
+        var reader = (IVerifiedDeedReader)ledger;
+        Assert.Null(await reader.ReadDeedAsync(4001, 5001, "that title", now, default));
+        await ledger.CompleteToolCallAsync("call", "succeeded", System.Text.Json.JsonSerializer.Serialize(new { Text = envelope }), null, now, default);
+        Assert.Equal("Ceremonial fixture", (await reader.ReadDeedAsync(4001, 5001, "that title", now, default))?.Value);
+        Assert.Null(await reader.ReadDeedAsync(4001, 5002, "that title", now, default));
+        Assert.Null(await reader.ReadDeedAsync(4002, 5001, "that title", now, default));
+        Assert.Null(await reader.ReadDeedAsync(4001, 5001, "that title", now.AddDays(3), default));
+        Assert.Null(await reader.ReadDeedAsync(4001, 5001, "unrelated", now, default));
+    }
+
+    [Fact]
+    public async Task OptionalLocalSqliteUsesSystemLibraryWithoutBundledNativeBinary()
+    {
+        using var directory = new TemporaryDirectory();
+        var options = new WorldAutonomyOptions { LedgerPath = Path.Combine(directory.Path, "local.db") };
+        using (var ledger = new SqliteWorldAutonomyLedger(options))
+            await ledger.StartRunAsync(new("local", 42, "test", null, null, "model", "profile", "manifest", DateTimeOffset.UtcNow), default);
+        using var reopened = new SqliteWorldAutonomyLedger(options);
+        Assert.Equal("running", (await reopened.GetRunAsync("local", default))?.Status);
+    }
+
+    [Fact]
     public async Task ConcurrentDispatches_PersistEveryRecordWithoutTemporaryFiles()
     {
         using var directory = new TemporaryDirectory();
@@ -114,6 +147,12 @@ public sealed class WorldAutonomyLedgerTests
                     "schema",
                     now.AddSeconds(sequence)),
                 CancellationToken.None)));
+                    var sample = ledger.TakeIoSample();
+                    Assert.Equal(17, sample.SuccessfulWrites);
+                    Assert.Equal(new FileInfo(path).Length, sample.Bytes);
+                    Assert.True(sample.MaxWriteMs > 0);
+                    Assert.True(sample.MaxWaitMs >= 0);
+                    Assert.Null(ledger.TakeIoSample().MaxWriteMs);
         }
 
         using var reopened = CreateLedger(path);

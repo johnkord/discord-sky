@@ -130,11 +130,8 @@ internal sealed class LlmCallMetadata
     public ulong? MessageId { get; }
     public string? EvaluationId { get; }
     public InteractionTraceContext? Trace { get; }
-    public int NextCallIndex()
-    {
-        _usageAccumulator?.RecordCall();
-        return Interlocked.Increment(ref _callIndex);
-    }
+    public int NextCallIndex() => Interlocked.Increment(ref _callIndex);
+    public void RecordDispatch() => _usageAccumulator?.RecordCall();
 
     public void RecordUsage(UsageDetails? usage, long? cacheWriteInputTokens) =>
         _usageAccumulator?.RecordUsage(usage, cacheWriteInputTokens);
@@ -227,8 +224,10 @@ internal sealed class TelemetryChatClient : IChatClient
         var callIndex = metadata?.NextCallIndex();
         var startedAt = Stopwatch.GetTimestamp();
         LlmProviderCallLease? lease = null;
+        var dispatched = false;
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (_providerGuard is not null)
             {
                 var model = forwarded?.ModelId ?? "unknown";
@@ -241,6 +240,8 @@ internal sealed class TelemetryChatClient : IChatClient
                     throw new LlmProviderBlockedException(guard.Reason ?? "provider_guard_open");
                 }
             }
+            dispatched = true;
+            metadata?.RecordDispatch();
             var response = await _inner.GetResponseAsync(messages, forwarded, cancellationToken);
             if (lease is not null)
             {
@@ -266,7 +267,8 @@ internal sealed class TelemetryChatClient : IChatClient
             {
                 _providerGuard!.RecordCallFailure(lease, new OperationCanceledException());
             }
-            Emit(metadata, callIndex, startedAt, "cancelled", forwarded?.ModelId, null, null, null, null, "OperationCanceledException");
+            Emit(metadata, callIndex, startedAt, "cancelled", forwarded?.ModelId, null, null, null, null,
+                "OperationCanceledException", dispatched ? "client_dispatched_usage_unknown" : "before_client_dispatch");
             throw;
         }
         catch (Exception ex)
@@ -275,7 +277,8 @@ internal sealed class TelemetryChatClient : IChatClient
             {
                 _providerGuard!.RecordCallFailure(lease, ex);
             }
-            Emit(metadata, callIndex, startedAt, "error", forwarded?.ModelId, null, null, null, null, ex.GetType().Name);
+            Emit(metadata, callIndex, startedAt, "error", forwarded?.ModelId, null, null, null, null, ex.GetType().Name,
+                dispatched ? "client_dispatched" : "before_client_dispatch");
             throw;
         }
     }
@@ -289,6 +292,12 @@ internal sealed class TelemetryChatClient : IChatClient
         var callIndex = metadata?.NextCallIndex();
         var startedAt = Stopwatch.GetTimestamp();
         LlmProviderCallLease? lease = null;
+        if (cancellationToken.IsCancellationRequested)
+        {
+            Emit(metadata, callIndex, startedAt, "cancelled", forwarded?.ModelId, null, null, null, null,
+                nameof(OperationCanceledException), "before_client_dispatch");
+            cancellationToken.ThrowIfCancellationRequested();
+        }
         if (_providerGuard is not null)
         {
             var model = forwarded?.ModelId ?? "unknown";
@@ -308,17 +317,36 @@ internal sealed class TelemetryChatClient : IChatClient
                     null,
                     null,
                     null,
-                    nameof(LlmProviderBlockedException));
+                    nameof(LlmProviderBlockedException), "before_client_dispatch");
                 throw new LlmProviderBlockedException(guard.Reason ?? "provider_guard_open");
             }
         }
-        var leaseSettled = false;
+        var finished = false;
+        IAsyncEnumerator<ChatResponseUpdate> enumerator;
+        string? responseId = null;
+        UsageDetails? usage = null;
+        void Fail(Exception exception, string stage)
+        {
+            finished = true;
+            if (lease is not null) _providerGuard!.RecordCallFailure(lease, exception);
+            Emit(metadata, callIndex, startedAt, exception is OperationCanceledException ? "cancelled" : "error",
+                forwarded?.ModelId, responseId, null, usage, null, exception.GetType().Name, stage);
+        }
         try
         {
-            await using var enumerator = _inner
+            metadata?.RecordDispatch();
+            enumerator = _inner
                 .GetStreamingResponseAsync(messages, forwarded, cancellationToken)
                 .GetAsyncEnumerator(cancellationToken);
-
+        }
+        catch (Exception exception)
+        {
+            Fail(exception, "client_dispatched_usage_unknown");
+            throw;
+        }
+        await using var ownedEnumerator = enumerator;
+        try
+        {
             while (true)
             {
                 bool hasNext;
@@ -326,45 +354,35 @@ internal sealed class TelemetryChatClient : IChatClient
                 {
                     hasNext = await enumerator.MoveNextAsync();
                 }
-                catch (OperationCanceledException)
-                {
-                    if (lease is not null)
-                    {
-                        _providerGuard!.RecordCallFailure(lease, new OperationCanceledException());
-                        leaseSettled = true;
-                    }
-                    Emit(metadata, callIndex, startedAt, "cancelled", forwarded?.ModelId, null, null, null, null, "OperationCanceledException");
-                    throw;
-                }
                 catch (Exception ex)
                 {
-                    if (lease is not null)
-                    {
-                        _providerGuard!.RecordCallFailure(lease, ex);
-                        leaseSettled = true;
-                    }
-                    Emit(metadata, callIndex, startedAt, "error", forwarded?.ModelId, null, null, null, null, ex.GetType().Name);
+                    Fail(ex, usage is null ? "client_dispatched_usage_unknown" : "client_dispatched_usage_reported");
                     throw;
                 }
 
                 if (!hasNext) break;
-                yield return enumerator.Current;
+                var update = enumerator.Current;
+                responseId = update.ResponseId ?? responseId;
+                foreach (var content in update.Contents.OfType<UsageContent>())
+                {
+                    (usage ??= new UsageDetails()).Add(content.Details);
+                }
+                yield return update;
             }
 
+            finished = true;
             if (lease is not null)
             {
-                _providerGuard!.RecordCallSuccess(lease, response: null);
-                leaseSettled = true;
+                _providerGuard!.RecordCallSuccess(lease, usage is null ? null : new ChatResponse([]) { Usage = usage });
             }
-            Emit(metadata, callIndex, startedAt, "ok", forwarded?.ModelId, null, null, null, null, null);
+            Emit(metadata, callIndex, startedAt, "ok", forwarded?.ModelId, responseId, null, usage, null, null);
         }
         finally
         {
-            if (lease is not null && !leaseSettled)
+            if (!finished)
             {
-                _providerGuard!.RecordCallFailure(
-                    lease,
-                    new OperationCanceledException("Streaming response enumeration ended before completion."));
+                Fail(new OperationCanceledException("Stream consumer ended enumeration."),
+                    usage is null ? "stream_ended_usage_unknown" : "stream_ended_usage_reported");
             }
         }
     }
@@ -386,7 +404,8 @@ internal sealed class TelemetryChatClient : IChatClient
         string? finishReason,
         UsageDetails? usage,
         long? cacheWriteInputTokens,
-        string? failureClass)
+        string? failureClass,
+        string? stage = null)
     {
         metadata?.RecordUsage(usage, cacheWriteInputTokens);
         _telemetry.Emit(new TelemetryEvent(
@@ -411,6 +430,7 @@ internal sealed class TelemetryChatClient : IChatClient
             ResponseId: responseId,
             FinishReason: finishReason,
             FailureClass: failureClass,
+            Stage: stage,
             OperationId: metadata?.Trace?.OperationId,
             EpisodeId: metadata?.Trace?.EpisodeId,
             EpisodeSchemaVersion: metadata?.Trace?.EpisodeSchemaVersion,

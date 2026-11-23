@@ -55,12 +55,11 @@ public sealed class WorldAutonomyVision(
     {
         var message = new ChatMessage(ChatRole.User, prompt);
         var bot = botOptions.Value;
-        if (!bot.AllowImageContext || bot.HistoryImageLimit == 0 || selection is null ||
+        if (bot.ImageInputLimit == 0 || selection is null ||
             (selection.Attachments.Count == 0 && !selection.MissingReply)) return message;
 
         var limits = imageOptions.Value;
-        var historyLimit = Math.Clamp(bot.HistoryImageLimit < 0 ? 3 : bot.HistoryImageLimit, 0, 12);
-        var limit = Math.Clamp(limits.MaxReferenceImages, 0, historyLimit);
+        var limit = Math.Clamp(limits.MaxReferenceImages, 0, bot.ImageInputLimit);
         var candidates = selection.Attachments.DistinctBy(item => item.Url, StringComparer.Ordinal).ToArray();
         var skipped = Math.Max(0, candidates.Length - limit);
         var failed = 0;

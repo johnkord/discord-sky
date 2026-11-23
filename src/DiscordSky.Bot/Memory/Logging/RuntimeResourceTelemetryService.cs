@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using DiscordSky.Bot.Memory.Reception;
 using DiscordSky.Bot.Orchestration;
+using DiscordSky.Bot.Orchestration.Autonomy;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -24,7 +25,8 @@ public sealed class RuntimeResourceTelemetryService : BackgroundService
         ILogger<RuntimeResourceTelemetryService> logger,
         IUserMemoryStore userMemoryStore,
         MediaSemanticCache mediaSemanticCache,
-        SentMessageRegistry sentMessages)
+        SentMessageRegistry sentMessages,
+        FileBackedWorldAutonomyLedger journal)
         : this(
             telemetry,
             options,
@@ -34,7 +36,8 @@ public sealed class RuntimeResourceTelemetryService : BackgroundService
             () => new RuntimeApplicationResourceSample(
                 userMemoryStore is FileBackedUserMemoryStore fileStore ? fileStore.CachedUserCount : null,
                 mediaSemanticCache.EntryCount,
-                sentMessages.Count))
+                sentMessages.Count,
+                journal.TakeIoSample()))
     {
     }
 
@@ -159,7 +162,11 @@ public sealed class RuntimeResourceTelemetryService : BackgroundService
             ThreadCount: sample.ThreadCount,
             UserMemoryCacheCount: application?.UserMemoryCacheCount,
             MediaSemanticCacheCount: application?.MediaSemanticCacheCount,
-            SentMessageRegistryCount: application?.SentMessageRegistryCount);
+            SentMessageRegistryCount: application?.SentMessageRegistryCount,
+            JournalBytes: application?.Journal?.Bytes,
+            JournalWrites: application?.Journal?.SuccessfulWrites,
+            JournalMaxWaitMs: application?.Journal?.MaxWaitMs,
+            JournalMaxWriteMs: application?.Journal?.MaxWriteMs);
 }
 
 internal interface IRuntimeMemoryReader
@@ -184,7 +191,8 @@ internal sealed record RuntimeMemorySample(
 internal sealed record RuntimeApplicationResourceSample(
     int? UserMemoryCacheCount,
     int? MediaSemanticCacheCount,
-    int? SentMessageRegistryCount);
+    int? SentMessageRegistryCount,
+    JournalIoSample? Journal = null);
 
 internal sealed class CgroupRuntimeMemoryReader : IRuntimeMemoryReader
 {
