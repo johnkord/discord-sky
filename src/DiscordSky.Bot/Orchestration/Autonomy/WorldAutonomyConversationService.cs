@@ -151,7 +151,7 @@ public sealed class WorldAutonomyConversationService
         }
 
         ulong? replyTarget = request.IsDirectAddress ? request.TriggerMessageId : null;
-        var receipt = await _transport.SendAsync(
+        var receipt = await WorldAutonomyDeliveryReceipt.SendOnceAsync(_transport,
             request.GuildId,
             request.ChannelId,
             text,
@@ -160,20 +160,11 @@ public sealed class WorldAutonomyConversationService
         var delivered = receipt.Messages;
         if (delivered.Count == 0)
         {
-            Emit(request, operationId, "delivery_failed", null, text.Length);
-            return null;
+            Emit(request, operationId, receipt.Outcome, receipt.Failure, 0);
+            return receipt.Outcome == "not_sent" ? null : new WorldAutonomyConversationResult(operationId, "", []);
         }
 
-        foreach (var message in delivered)
-        {
-            _sentMessages.Register(
-                message.MessageId,
-                _botOptions.DefaultPersona,
-                "world_autonomy_conversation",
-                request.TriggerMessageId,
-                operationId,
-                message.MessageId == delivered[0].MessageId ? replyTarget : null);
-        }
+        receipt.Register(_sentMessages, _botOptions.DefaultPersona, "world_autonomy_conversation", request.TriggerMessageId, operationId, replyTarget);
 
         var now = _timeProvider.GetUtcNow();
         _transcripts.Record(new TranscriptEntry(

@@ -156,6 +156,10 @@ Already-delivered speech or visuals remain marked delivered, preventing a second
 Ambient failures remain silent. Provider-budget/auth explanations retain their existing specific wording.
 The host failure text and reason are persisted in the run ledger. No failed mutation is automatically replayed.
 
+Full-run speech and final image tools journal `discord_delivery_attempt` before the Discord call. A receipt closes that attempt by ID and identifies confirmed chunks. An intent alone does not establish that the call was sent. A lost acknowledgement holds the turn without claiming success, retrying the send, or starting an ordinary persona answer. A definite rejection is distinct from an unknown. A terminal journal failure reports `journal_unavailable` through run telemetry without erasing an already observed delivery. The gateway can still publish an agent's own unsent final text, or yield a known pre-dispatch failure. Direct final text and budget decrees record dispatch intent and receipt in speech telemetry; a no-tools conversation with an unknown acknowledgement does not also send the decree.
+
+In enforcing ambient modes, exploration is available only after a valid judge verdict at or above the confidence floor. A missing or weak verdict stays silent; Shadow remains observational. When a provider recovery probe is due, the gate checks availability without reserving it. The wrapped provider call owns the single probe.
+
 The operational prompt treats errors as evidence about the reported target and action, not the entire catalog.
 A protected owner nickname does not imply that a lower-position role title is unavailable. Spoken titles,
 Discord nicknames, assigned roles, and stored Empire ranks are distinct state. This changes neither native

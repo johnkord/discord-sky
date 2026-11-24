@@ -531,7 +531,29 @@ public sealed class WorldAutonomyAgentFactoryTests
             await agent.RunAsync("fixture", await agent.CreateSessionAsync());
             Assert.Equal(WorldAutonomyDispatchStatuses.Succeeded, Assert.Single(ledger.PendingDispatches).DispatchStatus);
             Assert.Equal(destination == "6001", run.SpokeInChannel);
+            Assert.False(run.DeliveryUncertain);
         }
+    }
+
+    [Theory]
+    [InlineData("unknown", true)]
+    [InlineData("accepted", true)]
+    [InlineData("succeeded", true)]
+    [InlineData("failed", false)]
+    public async Task NativeSendWithoutVerifiedDestinationDoesNotInventDelivery(string outcome, bool hold)
+    {
+        const string requestId = "01900000-0000-7000-8000-000000000001";
+        var context = new WorldAutonomyRunContext("run", 4001, "message", "5001", null, null, "model", "profile", "manifest", [requestId], SourceChannelId: 6001);
+        var ledger = new RecordingLedger();
+        await ledger.StartRunAsync(context.ToRunStart(DateTimeOffset.UtcNow), default);
+        var descriptor = new WorldAutonomyToolDescriptor(AIFunctionFactory.Create((string request_id) =>
+            new TextContent(JsonSerializer.Serialize(new { outcome })), name: "send_message"), true, true, "schema");
+        var run = new WorldAutonomyRunState(context, ledger, [descriptor]);
+        var agent = new WorldAutonomyAgentFactory().Create(new ScriptedChatClient(requestId, "send_message", includeValue: false), run, [descriptor]);
+        await agent.RunAsync("fixture", await agent.CreateSessionAsync());
+        Assert.False(run.SpokeInChannel);
+        Assert.Equal(hold, run.DeliveryUncertain);
+        Assert.Single(ledger.PendingDispatches);
     }
 
     [Fact]

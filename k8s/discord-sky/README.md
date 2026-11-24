@@ -163,6 +163,8 @@ It never executes arbitrary tools found in that text, and explicit reply ownersh
 Mixed read/write batches are covered by tests through the real agent framework with both terminal modes and
 both tool orderings. A successful single-tool provider smoke does not cover these approval interactions.
 
+For a missing or duplicate direct answer, use the [turn inspector](../../scripts/inspect_turn.py) on an owner-private snapshot. `discord_delivery_attempt` is not an acknowledgement. Match its attempt ID to the receipt and destination before drawing conclusions. On `delivery_unknown` or a missing receipt, do not resend. On `journal_unavailable`, compare the run summary, independent delivery evidence and volume health; a bookkeeping failure after publication is not a new turn.
+
 In the private autonomy ledger, `run_ended_before_invocation` is a failed approval that never reached a tool.
 `steward_operation_missing` is different: the receipt is absent and the outcome remains unknown. These unknown
 records stop automatic lookups and require operator review; do not replay the original mutation to find out

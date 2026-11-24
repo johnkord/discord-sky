@@ -36,11 +36,11 @@ public sealed class DiscordWorldAutonomyVisualTransport(DiscordSocketClient clie
     {
         if (client.GetChannel(channelId) is not ISocketMessageChannel channel ||
             channel is not SocketGuildChannel guildChannel || guildChannel.Guild.Id != guildId)
-            throw new InvalidOperationException("The image channel is unavailable.");
+            throw new WorldAutonomyDestinationUnavailableException("The image channel is unavailable.");
         var placeholder = await channel.SendMessageAsync(
             "Stand back. The Royal Egg Art Foundry is firing up...",
             messageReference: replyTargetMessageId.HasValue ? new MessageReference(replyTargetMessageId.Value) : null,
-            options: new RequestOptions { CancelToken = cancellationToken }).ConfigureAwait(false);
+            options: WorldAutonomyDeliveryReceipt.SendOptions(cancellationToken)).ConfigureAwait(false);
         return new DiscordWorldAutonomyVisualProgress(placeholder, channelId);
     }
 
@@ -57,7 +57,7 @@ public sealed class DiscordWorldAutonomyVisualTransport(DiscordSocketClient clie
             || channel is not SocketGuildChannel guildChannel
             || guildChannel.Guild.Id != guildId)
         {
-            throw new InvalidOperationException(
+            throw new WorldAutonomyDestinationUnavailableException(
                 $"Robotnik cannot find image channel '{channelId}' in guild '{guildId}'.");
         }
 
@@ -70,6 +70,7 @@ public sealed class DiscordWorldAutonomyVisualTransport(DiscordSocketClient clie
             stream,
             fileName,
             text: caption,
+            options: WorldAutonomyDeliveryReceipt.SendOptions(cancellationToken),
             messageReference: reference).ConfigureAwait(false);
         return new WorldAutonomyDeliveredMessage(message.Id, channelId);
     }
@@ -167,6 +168,7 @@ public sealed class WorldAutonomyVisualTool
         {
             throw new ArgumentException("generated_bitmap caption cannot exceed 2000 characters.", nameof(caption));
         }
+        if (run.DeliveryUncertain) return new("delivery_unknown", GeneratedBitmap, null, [], null, null);
         if (!run.TrySelectVisualMedium())
         {
             throw new InvalidOperationException("An image was already attempted for this run.");
@@ -179,13 +181,21 @@ public sealed class WorldAutonomyVisualTool
             ?? (opportunity.IsDirectAddress ? ParseMessageId(opportunity.SourceMessageId) : null);
         var finalCaption = string.IsNullOrWhiteSpace(caption) ? "Behold." : caption.Trim();
         IWorldAutonomyVisualProgress? progress = null;
+        cancellationToken.ThrowIfCancellationRequested();
         try
         {
             progress = await _visualTransport.BeginAsync(opportunity.GuildId, channelId, replyTarget, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception) when (WorldAutonomyDeliveryReceipt.IsDefiniteRejection(exception))
         {
             _logger.LogWarning("Image progress message unavailable: {ErrorType}", exception.GetType().Name);
+        }
+        catch (Exception error)
+        {
+            run.MarkDeliveryUncertain();
+            _logger.LogWarning("Image progress post acknowledgement unknown for run {RunId} ({ErrorType}).", context.RunId, error.GetType().Name);
+            EmitVisual(opportunity, context, GeneratedBitmap, "progress_delivery_unknown", null);
+            return new("delivery_unknown", GeneratedBitmap, null, [], null, null);
         }
         await using var progressLifetime = progress;
         var outcome = await _imageToolService.GenerateAsync(
@@ -209,10 +219,17 @@ public sealed class WorldAutonomyVisualTool
                 outcome.RefusalText ?? ImageRefusals.GenericRefusal);
         }
 
-        var delivered = progress is null
-            ? await _visualTransport.SendAsync(opportunity.GuildId, channelId, outcome.Bytes,
-                outcome.FileName, finalCaption, replyTarget, cancellationToken).ConfigureAwait(false)
-            : await progress.CompleteAsync(outcome.Bytes, outcome.FileName, finalCaption, cancellationToken).ConfigureAwait(false);
+        var receipt = await run.DispatchHostDeliveryAsync("visual", channelId, replyTarget, async () =>
+        {
+            var message = progress is null
+                ? await _visualTransport.SendAsync(opportunity.GuildId, channelId, outcome.Bytes,
+                    outcome.FileName, finalCaption, replyTarget, cancellationToken).ConfigureAwait(false)
+                : await progress.CompleteAsync(outcome.Bytes, outcome.FileName, finalCaption, cancellationToken).ConfigureAwait(false);
+            return new([message], finalCaption, "delivered");
+        }, _logger, cancellationToken).ConfigureAwait(false);
+        if (receipt.Messages.Count == 0) return new(receipt.Outcome, GeneratedBitmap, null, [], null, null);
+        var delivered = receipt.Messages[0];
+        run.RecordVisualDelivery();
         _sentMessages.Register(
             delivered.MessageId,
             _botOptions.DefaultPersona,
@@ -220,24 +237,6 @@ public sealed class WorldAutonomyVisualTool
             ParseMessageId(opportunity.SourceMessageId),
             context.RunId,
             replyTarget);
-        try
-        {
-            await run.RecordDiscordDeliveryAsync(
-                channelId,
-                [delivered.MessageId],
-                replyTarget,
-                finalCaption.Length).ConfigureAwait(false);
-        }
-        catch (Exception exception)
-        {
-            _logger.LogError(
-                exception,
-                "Robotnik visual {MessageId} delivered but run {RunId} could not record delivery evidence.",
-                delivered.MessageId,
-                context.RunId);
-        }
-            run.RecordVisualDelivery();
-
         var now = _timeProvider.GetUtcNow();
         _transcripts.Record(new TranscriptEntry(
             Timestamp: now,

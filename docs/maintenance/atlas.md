@@ -32,6 +32,8 @@ Use `--message` for a trigger or a recorded output message; `--run` and `--reque
 
 ## Authority and evidence
 
+For full-run host speech or final images, the inspector lists the attempt separately from its receipt. `no_receipt` can mean a crash before or after dispatch; `unknown` means the acknowledgement was inconclusive. Neither is proof of delivery or silence. Inspect Discord read-only. A `journal_unavailable` terminal summary can coexist with a confirmed post and a run still marked `running` on disk. The [pinned-child delivery fixture](../../tests/DiscordSky.Tests/StewardMcpSupervisorIntegrationTests.cs) covers preflight failure, partial delivery, an unknown first send, and completion failure after a confirmed send.
+
 - Sky owns the gateway and routing. Steward's separate child and private profile delimit administrative authority for each exact bound guild. Do not narrow that catalog to tune style, or extend those permissions to unbound guilds. Disabled guilds remain excluded before active behavior. Notes and Empire lore are not isolated by a Steward binding.
 - Live overrides come from the [Deployment](../../k8s/discord-sky/deployment.yaml), in order: primary Secret, public ConfigMap, private autonomy bindings, private runtime bindings. These override app settings. Query only the named effective fields you need; never dump Secrets or all environment variables.
 - For [investigations](../../.github/skills/discord-sky-investigation/SKILL.md), capture pod start/image and UTC window first. Join trigger, episode/run, provider call and Discord IDs. Use Discord for what was visible, journals for effects, telemetry for admission and costs, and the owner for quality. Where sources disagree, record an unknown.

@@ -26,6 +26,8 @@ The trade-off is a short reconnect during replacement rather than competing writ
 
 Reopen the retrieval design after owner review of actual opportunities, including cases where **not** mentioning a remembered fact was the right answer. Do not use a target tool-call rate as the success measure. [Recall binding](../../src/DiscordSky.Bot/Orchestration/Autonomy/WorldAutonomyRecallTool.cs); [runtime contract](../runtime_architecture.md).
 
+**2026-11-23: emoji reactions use room evidence.** The reaction judge receives the target, same-room context, associated media and available emotes, not saved personal notes. The prior recall ranker supplied four unrelated synthetic notes even with zero topical overlap. Removing the store read is preferable to asking the model to ignore information it already received. Reopen only for a demonstrated benefit from deliberately personalized reactions; this does not change direct recall. [Provider request tests](../../tests/DiscordSky.Tests/ReactionJudgeTests.cs).
+
 ## DS-004: Hybrid prompt caching has to earn promotion
 
 **Experiment | Trial | 2026-11-17 | Maintainer; product owner reviews behavioral changes.** Compare the bounded stable-prefix breakpoint plus implicit history caching against implicit caching alone. Both cohorts keep the same full instructions and tool authority. A higher cache-hit rate can still cost more once cache writes are counted.

@@ -77,6 +77,7 @@ def telemetry(root, gaps):
                 rows.append({"event": row["event"], "message": snowflake(row.get("message_id")),
                              "referent": snowflake(row.get("referent_message_id")), "operation": guid(row.get("operation_id")),
                              "evaluation": guid(row.get("evaluation_id")), "kind": code(row.get("kind")),
+                             "workload": code(row.get("workload") or row.get("kind")),
                              "outcome": code(row.get("outcome")), "stage": code(row.get("stage")),
                              "usage_reported": type(row.get("total_tokens")) is int,
                              "latency_ms": row.get("latency_ms") if type(row.get("latency_ms")) is int else None})
@@ -127,17 +128,31 @@ def inspect(root, mode, key):
     runs = {guid(name): row for name, row in sky["runs"].items() if guid(name) and guid(row.get("runId")) == guid(name)}
     calls = list(sky["toolCalls"].values())
     receipts = [receipt for call in calls if (receipt := native_receipt(call, runs)) is not None]
+    attempts = {}
     for event in sky["events"]:
         run = guid(event.get("runId"))
-        if run not in runs or event.get("kind") != "discord_delivery":
+        kind = event.get("kind")
+        if run not in runs or kind not in {"discord_delivery", "discord_delivery_attempt", "discord_delivery_unknown", "discord_delivery_not_sent"}:
             continue
         payload = evidence_json(event.get("payloadJson"))
+        attempt = guid(payload.get("attemptId"))
+        channel = snowflake(payload.get("channelId"))
+        if kind == "discord_delivery_attempt" and attempt and channel:
+            attempts[(run, attempt)] = {"run": run, "attempt": attempt, "channel": channel,
+                                        "medium": code(payload.get("medium")), "outcome": "no_receipt"}
+        entry = attempts.get((run, attempt))
+        if kind in {"discord_delivery_unknown", "discord_delivery_not_sent"} and entry and channel == entry["channel"]:
+            entry["outcome"] = "unknown" if kind.endswith("_unknown") else "not_sent"
+        if kind != "discord_delivery":
+            continue
         if payload.get("outcome") not in (None, "delivered", "partial_delivery"):
             continue
         receipt = delivery("sky_ack", run, payload.get("channelId"), payload.get("messageIds"),
                            payload.get("outcome") or "acknowledged", snowflake(runs[run].get("sourceChannelId")))
         if receipt:
             receipts.append(receipt)
+            if entry and channel == entry["channel"]:
+                entry["outcome"] = receipt["outcome"]
 
     rows = telemetry(root, gaps)
     messages = {key} if mode == "message" else set()
@@ -163,7 +178,7 @@ def inspect(root, mode, key):
         dispatch = ("before_dispatch" if stage == "before_client_dispatch" else "dispatched" if row["outcome"] == "ok" or
                     stage.startswith(("client_dispatched", "stream_ended")) else "dispatch_unknown")
         provider[dispatch] += 1
-        provider_calls.append({"workload": row["kind"], "dispatch": dispatch, "outcome": row["outcome"],
+        provider_calls.append({"workload": row["workload"], "dispatch": dispatch, "outcome": row["outcome"],
                        "latency_ms": row["latency_ms"], "usage_reported": row["usage_reported"]})
         if dispatch != "before_dispatch" and not row["usage_reported"]:
             provider["without_reported_usage"] += 1
@@ -215,13 +230,16 @@ def inspect(root, mode, key):
                               item["channel"] == sent["channel"] and item["messages"] == sent["messages"])]
                 deliveries.append(sent)
     found = bool(selected_runs or matched or writes)
+    selected_attempts = [entry for entry in attempts.values() if entry["run"] in selected_runs]
+    if any(entry["outcome"] in {"no_receipt", "unknown"} for entry in selected_attempts):
+        gaps.add("A host send has no conclusive receipt. Inspect Discord read-only; do not replay it.")
     if not deliveries:
         gaps.add("No confirmed Discord message ID in the joined records; this does not establish silence.")
     if not provider:
         gaps.add("No joined provider-call rows; actual dispatch is not established by this view.")
     return {"found": found, "query": {mode: key}, "runs": [{"id": run, "trigger": snowflake(row.get("sourceMessageId")),
             "status": code(row.get("status"))} for run, row in selected_runs.items()], "steps": steps,
-            "provider": dict(provider), "calls": provider_calls, "deliveries": deliveries, "writes": writes, "gaps": sorted(gaps)}
+            "provider": dict(provider), "calls": provider_calls, "attempts": selected_attempts, "deliveries": deliveries, "writes": writes, "gaps": sorted(gaps)}
 
 
 def render(report):
@@ -243,6 +261,8 @@ def render(report):
         lines.append(f"    {call['workload']}: {call['dispatch']} / {call['outcome']}{elapsed}")
     for item in report["writes"]:
         lines.append(f"  {item['tool']} ({item['request'] or 'no request ID'}): Sky {item['sky']}; Steward {item['steward']} / {item.get('outcome', 'unconfirmed')}")
+    for attempt in report["attempts"]:
+        lines.append(f"  Host {attempt['medium']} attempt {attempt['attempt']}: {attempt['outcome']} (channel {attempt['channel']})")
     for sent in report["deliveries"]:
         lines.append(f"  {sent['source']}: {sent['outcome']}; {sent['location']} {sent['channel']}; message {', '.join(sent['messages'])}")
     lines.extend(f"  Limit: {gap}" for gap in report["gaps"])

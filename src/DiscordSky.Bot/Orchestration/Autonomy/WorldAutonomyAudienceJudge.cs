@@ -77,7 +77,7 @@ public sealed class WorldAutonomyAudienceJudge
         }
         catch (Exception exception)
         {
-            _logger.LogDebug(exception, "World-autonomy audience judge failed; caller will fail open.");
+            _logger.LogDebug(exception, "World-autonomy audience judge returned no verdict.");
             return null;
         }
     }

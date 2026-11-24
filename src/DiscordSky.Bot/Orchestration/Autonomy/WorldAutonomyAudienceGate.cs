@@ -88,7 +88,7 @@ public sealed class WorldAutonomyAudienceGate
                 "gate_off");
         }
 
-        if (_providerGuard.Snapshot().IsOpen)
+        if (!_providerGuard.CanAttempt(out _))
         {
             var delegated = new WorldAutonomyAudienceDecision(
                 WorldAutonomyAudienceAction.Silence,
@@ -140,27 +140,13 @@ public sealed class WorldAutonomyAudienceGate
             : verdict.Confidence < _configuration.AmbientJudgeConfidenceFloor
             ? "judge_low_confidence_fail_closed"
             : ActionName(predicted);
-        var explorationCandidate = _configuration.AmbientGateMode switch
-        {
-            WorldAutonomyAmbientGateMode.Canary => predicted != WorldAutonomyAudienceAction.FullAutonomy,
-            WorldAutonomyAmbientGateMode.Live => predicted is
-                WorldAutonomyAudienceAction.Conversation or
-                WorldAutonomyAudienceAction.Reaction or
-                WorldAutonomyAudienceAction.Silence,
-            _ => false,
-        };
+        var enforcing = _configuration.AmbientGateMode is WorldAutonomyAmbientGateMode.Canary or WorldAutonomyAmbientGateMode.Live;
         var explorationPercent = _configuration.AmbientGateMode == WorldAutonomyAmbientGateMode.Canary
             ? _configuration.AmbientCanaryExplorationPercent
             : _configuration.AmbientLiveExplorationPercent;
-        var exploration = explorationCandidate && _nextDouble() < explorationPercent / 100.0;
-        var action = _configuration.AmbientGateMode switch
-        {
-            WorldAutonomyAmbientGateMode.Canary when exploration => ExplorationAction(predicted),
-            WorldAutonomyAmbientGateMode.Live when exploration => ExplorationAction(predicted),
-            WorldAutonomyAmbientGateMode.Canary when !exploration => predicted,
-            WorldAutonomyAmbientGateMode.Live when !exploration => predicted,
-            _ => WorldAutonomyAudienceAction.FullAutonomy,
-        };
+        var exploration = enforcing && verdict is not null && verdict.Confidence >= _configuration.AmbientJudgeConfidenceFloor &&
+            predicted != WorldAutonomyAudienceAction.FullAutonomy && explorationPercent > 0 && _nextDouble() < explorationPercent / 100.0;
+        var action = !enforcing ? WorldAutonomyAudienceAction.FullAutonomy : exploration ? ExplorationAction(predicted) : predicted;
         var reason = exploration ? string.Concat("exploration_", predictionReason) : predictionReason;
         var decision = new WorldAutonomyAudienceDecision(action, predicted, verdict, reason, exploration);
         EmitTelemetry(request, decision, cadence.HumanTurns);

@@ -16,7 +16,37 @@ namespace DiscordSky.Bot.Orchestration.Autonomy;
 public sealed record WorldAutonomyDeliveredMessage(ulong MessageId, ulong ChannelId);
 
 public sealed record WorldAutonomyDeliveryReceipt(IReadOnlyList<WorldAutonomyDeliveredMessage> Messages,
-    string ConfirmedText, string Outcome, string? Failure = null);
+    string ConfirmedText, string Outcome, string? Failure = null)
+{
+    internal static bool IsDefiniteRejection(Exception error) => error is WorldAutonomyDestinationUnavailableException ||
+        error is Discord.Net.HttpException http && (int)http.HttpCode is >= 400 and < 500 and not 408 ||
+        error is HttpRequestException { StatusCode: { } status } && (int)status is >= 400 and < 500 and not 408;
+
+    internal static RequestOptions SendOptions(CancellationToken token) => new() { CancelToken = token, RetryMode = RetryMode.RetryRatelimit };
+
+    internal static async Task<WorldAutonomyDeliveryReceipt> SendOnceAsync(IWorldAutonomyMessageTransport transport, ulong guildId,
+        ulong channelId, string text, ulong? target, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            var receipt = await transport.SendAsync(guildId, channelId, text, target, cancellationToken).ConfigureAwait(false);
+            return receipt.Messages.Count > 0 ? receipt : new([], "", "delivery_unknown", "no_acknowledgement");
+        }
+        catch (Exception error)
+        {
+            return new([], "", IsDefiniteRejection(error) ? "not_sent" : "delivery_unknown", error.GetType().Name);
+        }
+    }
+
+    internal void Register(SentMessageRegistry registry, string persona, string source, ulong? trigger, string? operation, ulong? target)
+    {
+        for (var index = 0; index < Messages.Count; index++)
+            registry.Register(Messages[index].MessageId, persona, source, trigger, operation, index == 0 ? target : null);
+    }
+}
+
+internal sealed class WorldAutonomyDestinationUnavailableException(string message) : InvalidOperationException(message);
 
 public interface IWorldAutonomyMessageTransport
 {
@@ -42,13 +72,13 @@ public sealed class DiscordWorldAutonomyMessageTransport(DiscordSocketClient cli
             channel is not SocketGuildChannel guildChannel ||
             guildChannel.Guild.Id != guildId)
         {
-            throw new InvalidOperationException(
+            throw new WorldAutonomyDestinationUnavailableException(
                 $"Robotnik cannot find message channel '{channelId}' in guild '{guildId}'.");
         }
 
         return SendChunksAsync(content, replyTargetMessageId, async (chunk, target, token) =>
         {
-            var message = await channel.SendMessageAsync(chunk, options: new RequestOptions { CancelToken = token },
+            var message = await channel.SendMessageAsync(chunk, options: WorldAutonomyDeliveryReceipt.SendOptions(token),
                 messageReference: target.HasValue ? new MessageReference(target.Value) : null).ConfigureAwait(false);
             return new WorldAutonomyDeliveredMessage(message.Id, channelId);
         }, cancellationToken);
@@ -154,46 +184,16 @@ public sealed class WorldAutonomySpeechTool
         var channelId = opportunity.SourceChannelId!.Value;
         var replyTarget = ParseMessageId(replyToMessageId) ??
             (opportunity.IsDirectAddress ? ParseMessageId(opportunity.SourceMessageId) : null);
-        var receipt = await _transport.SendAsync(
-            opportunity.GuildId,
-            channelId,
-            content.Trim(),
-            replyTarget,
-            cancellationToken).ConfigureAwait(false);
+        var receipt = await run.DispatchHostDeliveryAsync("speech", channelId, replyTarget,
+            () => _transport.SendAsync(opportunity.GuildId, channelId, content.Trim(), replyTarget, cancellationToken),
+            _logger, cancellationToken).ConfigureAwait(false);
         var delivered = receipt.Messages;
         if (delivered.Count == 0)
         {
-            throw new InvalidOperationException("Discord accepted no Robotnik messages.");
+            return new(receipt.Outcome, channelId.ToString(CultureInfo.InvariantCulture), [], replyTarget?.ToString(CultureInfo.InvariantCulture));
         }
 
-        foreach (var message in delivered)
-        {
-            _sentMessages.Register(
-                message.MessageId,
-                _botOptions.DefaultPersona,
-                "world_autonomy",
-                ParseMessageId(opportunity.SourceMessageId),
-                context.RunId,
-                message.MessageId == delivered[0].MessageId ? replyTarget : null);
-        }
-
-        try
-        {
-            await run.RecordDiscordDeliveryAsync(
-                channelId,
-                delivered.Select(message => message.MessageId).ToArray(),
-                replyTarget,
-                receipt.ConfirmedText.Length, receipt.Outcome).ConfigureAwait(false);
-        }
-        catch (Exception exception)
-        {
-            // Discord already delivered the message. Never turn an audit-write failure into a duplicate send.
-            _logger.LogError(
-                exception,
-                "Robotnik delivery {MessageId} succeeded but run {RunId} could not record delivery evidence.",
-                delivered[0].MessageId,
-                context.RunId);
-        }
+        receipt.Register(_sentMessages, _botOptions.DefaultPersona, "world_autonomy", ParseMessageId(opportunity.SourceMessageId), context.RunId, replyTarget);
 
         var now = _timeProvider.GetUtcNow();
         _transcripts.Record(new TranscriptEntry(

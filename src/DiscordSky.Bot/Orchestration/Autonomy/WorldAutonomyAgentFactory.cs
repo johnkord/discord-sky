@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Text;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using DiscordSky.Bot.Configuration;
@@ -131,6 +132,8 @@ public sealed class WorldAutonomyRunState
     private int _partialFailureWriteCount;
     private int _unknownWriteCount;
     private int _channelSpeechCount;
+    private int _deliveryUncertain;
+    private readonly SemaphoreSlim _hostDeliveryGate = new(1, 1);
     private int _visualMediumSelectionCount;
     private int _visualDeliveryCount;
 
@@ -165,6 +168,9 @@ public sealed class WorldAutonomyRunState
     /// </summary>
     public bool SpokeInChannel => Volatile.Read(ref _channelSpeechCount) > 0;
 
+    internal bool DeliveryUncertain => Volatile.Read(ref _deliveryUncertain) != 0;
+    internal void MarkDeliveryUncertain() => Interlocked.Exchange(ref _deliveryUncertain, 1);
+
     public bool VisualMediumSelected => Volatile.Read(ref _visualMediumSelectionCount) > 0;
 
     public bool VisualDelivered => Volatile.Read(ref _visualDeliveryCount) > 0;
@@ -186,6 +192,52 @@ public sealed class WorldAutonomyRunState
         Interlocked.CompareExchange(ref _visualMediumSelectionCount, 1, 0) == 0;
 
     internal void RecordVisualDelivery() => Interlocked.Increment(ref _visualDeliveryCount);
+
+    internal async Task<WorldAutonomyDeliveryReceipt> DispatchHostDeliveryAsync(string medium, ulong channelId, ulong? replyTarget,
+        Func<Task<WorldAutonomyDeliveryReceipt>> dispatch, ILogger logger, CancellationToken cancellationToken)
+    {
+        await _hostDeliveryGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (DeliveryUncertain) return new([], "", "delivery_unknown");
+            var attemptId = Guid.NewGuid().ToString("N");
+            var metadata = JsonSerializer.Serialize(new { attemptId, medium, channelId = channelId.ToString(CultureInfo.InvariantCulture),
+                replyTargetMessageId = replyTarget?.ToString(CultureInfo.InvariantCulture) });
+            await _ledger.RecordRunEventAsync(Context.RunId, "discord_delivery_attempt", metadata, TimeProvider.GetUtcNow(), cancellationToken).ConfigureAwait(false);
+            var dispatched = false;
+            WorldAutonomyDeliveryReceipt receipt;
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                dispatched = true;
+                receipt = await dispatch().ConfigureAwait(false);
+                if (receipt.Messages.Count == 0) throw new IOException("No Discord acknowledgement was returned.");
+            }
+            catch (Exception error)
+            {
+                var unknown = dispatched && !WorldAutonomyDeliveryReceipt.IsDefiniteRejection(error);
+                if (unknown) MarkDeliveryUncertain();
+                try
+                {
+                    await _ledger.RecordRunEventAsync(Context.RunId, unknown ? "discord_delivery_unknown" : "discord_delivery_not_sent",
+                        metadata, TimeProvider.GetUtcNow(), CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception journalError) { logger.LogError(journalError, "Could not record delivery attempt {AttemptId} for run {RunId}.", attemptId, Context.RunId); }
+                if (!unknown) throw;
+                logger.LogWarning("Discord acknowledgement unknown for {Medium} attempt {AttemptId} in run {RunId} ({ErrorType}); not retrying.",
+                    medium, attemptId, Context.RunId, error.GetType().Name);
+                return new([], "", "delivery_unknown", error.GetType().Name);
+            }
+            try
+            {
+                await RecordDiscordDeliveryAsync(channelId, receipt.Messages.Select(message => message.MessageId).ToArray(), replyTarget,
+                    receipt.ConfirmedText.Length, receipt.Outcome, attemptId).ConfigureAwait(false);
+            }
+            catch (Exception error) { logger.LogError(error, "Discord delivery {AttemptId} succeeded but run {RunId} could not persist its receipt.", attemptId, Context.RunId); }
+            return receipt;
+        }
+        finally { _hostDeliveryGate.Release(); }
+    }
 
     internal async ValueTask<bool> TryBeginTerminalizationAsync(CancellationToken cancellationToken)
     {
@@ -224,7 +276,8 @@ public sealed class WorldAutonomyRunState
         IReadOnlyList<ulong> messageIds,
         ulong? replyTargetMessageId,
         int characterCount,
-        string outcome = "delivered")
+        string outcome = "delivered",
+        string? attemptId = null)
     {
         Interlocked.Increment(ref _channelSpeechCount);
         return _ledger.RecordRunEventAsync(
@@ -232,6 +285,7 @@ public sealed class WorldAutonomyRunState
             "discord_delivery",
             JsonSerializer.Serialize(new
             {
+                attemptId,
                 channelId = channelId.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 messageIds = messageIds.Select(id => id.ToString(System.Globalization.CultureInfo.InvariantCulture)),
                 replyTargetMessageId = replyTargetMessageId?.ToString(System.Globalization.CultureInfo.InvariantCulture),
@@ -260,7 +314,7 @@ public sealed class WorldAutonomyRunState
         await _dispatchGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
-            if (_terminalizing)
+            if (_terminalizing || DeliveryUncertain)
             {
                 throw new InvalidOperationException("Autonomy cannot approve a write after terminal delivery begins.");
             }
@@ -412,6 +466,8 @@ public sealed class WorldAutonomyRunState
             : IsMcpToolError(result)
                 ? WorldAutonomyDispatchStatuses.Failed
                 : WorldAutonomyDispatchStatuses.Succeeded;
+        if (IsChannelSpeechTool(dispatch.ToolName) && evidence.Delivery is null && dispatchStatus != WorldAutonomyDispatchStatuses.Failed)
+            MarkDeliveryUncertain();
         await _ledger.CompleteToolCallAsync(
             dispatch.CallId,
             dispatchStatus,
@@ -437,6 +493,7 @@ public sealed class WorldAutonomyRunState
 
     internal async Task RecordInvocationUnknownAsync(ApprovedDispatch dispatch, Exception exception)
     {
+        if (IsChannelSpeechTool(dispatch.ToolName)) MarkDeliveryUncertain();
         await _ledger.CompleteToolCallAsync(
             dispatch.CallId,
             WorldAutonomyDispatchStatuses.Unknown,
@@ -846,7 +903,8 @@ public sealed class WorldAutonomyAgentFactory
                     StringComparison.Ordinal);
                 if (!isFinalSpeech && !isVisual)
                 {
-                    return await context.Function.InvokeAsync(context.Arguments, cancellationToken).ConfigureAwait(false);
+                    try { return await context.Function.InvokeAsync(context.Arguments, cancellationToken).ConfigureAwait(false); }
+                    finally { if (run.DeliveryUncertain) context.Terminate = true; }
                 }
 
                 if (isFinalSpeech && (context.FunctionCount != 1 || context.FunctionCallIndex != 0))
@@ -858,7 +916,8 @@ public sealed class WorldAutonomyAgentFactory
                 var canTerminate = context.FunctionCount == 1 && context.FunctionCallIndex == 0;
                 if (!canTerminate)
                 {
-                    return await context.Function.InvokeAsync(context.Arguments, cancellationToken).ConfigureAwait(false);
+                    try { return await context.Function.InvokeAsync(context.Arguments, cancellationToken).ConfigureAwait(false); }
+                    finally { if (run.DeliveryUncertain) context.Terminate = true; }
                 }
 
                 if (!await run.TryBeginTerminalizationAsync(cancellationToken).ConfigureAwait(false))
@@ -870,7 +929,7 @@ public sealed class WorldAutonomyAgentFactory
                 try
                 {
                     var result = await context.Function.InvokeAsync(context.Arguments, cancellationToken).ConfigureAwait(false);
-                    if (isFinalSpeech || IsDeliveredVisual(result))
+                    if (isFinalSpeech || IsDeliveredVisual(result) || run.DeliveryUncertain)
                     {
                         context.Terminate = true;
                     }
@@ -883,7 +942,8 @@ public sealed class WorldAutonomyAgentFactory
                 }
                 catch
                 {
-                    await run.CancelTerminalizationAsync().ConfigureAwait(false);
+                    if (run.SpokeInChannel || run.DeliveryUncertain) context.Terminate = true;
+                    else await run.CancelTerminalizationAsync().ConfigureAwait(false);
                     throw;
                 }
             },
@@ -911,17 +971,18 @@ public sealed class WorldAutonomyAgentFactory
             CancellationToken cancellationToken)
         {
             var dispatch = run.ClaimApprovedInvocation(Name, arguments);
+            object? result;
             try
             {
-                var result = await InnerFunction.InvokeAsync(arguments, cancellationToken).ConfigureAwait(false);
-                await run.RecordInvocationCompletedAsync(dispatch, result).ConfigureAwait(false);
-                return result;
+                result = await InnerFunction.InvokeAsync(arguments, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception exception)
             {
                 await run.RecordInvocationUnknownAsync(dispatch, exception).ConfigureAwait(false);
                 throw;
             }
+            await run.RecordInvocationCompletedAsync(dispatch, result).ConfigureAwait(false);
+            return result;
         }
     }
 

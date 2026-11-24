@@ -3,8 +3,6 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Memory.Logging;
-using DiscordSky.Bot.Memory.Scoring;
-using DiscordSky.Bot.Models.Orchestration;
 using DiscordSky.Bot.Orchestration;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -22,7 +20,6 @@ public sealed record ReactionRequest(
     string MessageText,
     string? Context,
     IReadOnlyList<AllowedEmote> Allowed,
-    IReadOnlyList<UserMemory>? AuthorMemories = null,
     IReadOnlyList<string>? RecentEmojis = null,
     string? MediaContext = null,
     ulong? MessageId = null);
@@ -55,8 +52,6 @@ public sealed class ReactionJudge
     private const int MaxOfferedTokens = 64;
     private const int MaxMessageChars = 500;
     private const int MaxContextChars = 400;
-    private const int MaxMemoryChars = 200;
-    private const int MaxInlineMemories = 4;
 
     private static readonly IReadOnlyDictionary<string, string> TokenAliases =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -66,20 +61,17 @@ public sealed class ReactionJudge
 
     private readonly IChatClient _chatClient;
     private readonly IOptionsMonitor<LlmOptions> _llmOptions;
-    private readonly IMemoryScorer _memoryScorer;
     private readonly ILogger<ReactionJudge> _logger;
     private readonly bool _constrainedToolEnabled;
 
     public ReactionJudge(
         IChatClient chatClient,
         IOptionsMonitor<LlmOptions> llmOptions,
-        IMemoryScorer memoryScorer,
         ILogger<ReactionJudge> logger,
         IOptions<ReactionOptions>? reactionOptions = null)
     {
         _chatClient = chatClient;
         _llmOptions = llmOptions;
-        _memoryScorer = memoryScorer;
         _logger = logger;
         _constrainedToolEnabled = reactionOptions?.Value.ConstrainedToolEnabled ?? false;
     }
@@ -91,10 +83,9 @@ public sealed class ReactionJudge
 
         try
         {
-            var memoryLines = RankMemoryLines(request);
             var messages = new List<ChatMessage>
             {
-                new(ChatRole.User, BuildUserMessage(request, memoryLines)),
+                new(ChatRole.User, BuildUserMessage(request)),
             };
 
             // Mirror ImageRewriter: set the model explicitly and do NOT use a structured ResponseFormat
@@ -149,32 +140,6 @@ public sealed class ReactionJudge
             _logger.LogWarning(ex, "Reaction judge failed; no reaction will be attempted.");
             return new ReactionDecision(ReactionDecisionKind.Failed, Rationale: ex.GetType().Name);
         }
-    }
-
-    /// <summary>
-    /// Ranks the author's memories against the message (reusing the recall scorer) and returns the top few as
-    /// short lines. Lets the cheap model react to the person, not just the words: running gags, roastable facts
-    /// (arXiv:2603.19313 shows persona-memory lets small models match much larger ones). Empty when memory is
-    /// off or nothing fits.
-    /// </summary>
-    private IReadOnlyList<string> RankMemoryLines(ReactionRequest request)
-    {
-        if (request.AuthorMemories is not { Count: > 0 }) return Array.Empty<string>();
-
-        var relevanceText = string.IsNullOrWhiteSpace(request.MediaContext)
-            ? request.MessageText
-            : $"{request.MessageText}\n{request.MediaContext}";
-        var ranked = _memoryScorer.RankForRecall(request.AuthorMemories, relevanceText, DateTimeOffset.UtcNow);
-        if (ranked.Count == 0) return Array.Empty<string>();
-
-        var lines = new List<string>(MaxInlineMemories);
-        foreach (var scored in ranked.Take(MaxInlineMemories))
-        {
-            var content = scored.Memory.Content?.Trim();
-            if (string.IsNullOrEmpty(content)) continue;
-            lines.Add(content.Length > MaxMemoryChars ? content[..MaxMemoryChars] : content);
-        }
-        return lines;
     }
 
     /// <summary>
@@ -361,8 +326,7 @@ public sealed class ReactionJudge
         return sb.ToString();
     }
 
-    /// <summary>Builds the user turn: the target message, optional context/memories/variety, and the allowed reactions. Public for tests.</summary>
-    public static string BuildUserMessage(ReactionRequest request, IReadOnlyList<string> memoryLines)
+    public static string BuildUserMessage(ReactionRequest request)
     {
         var sb = new StringBuilder();
         sb.Append("Message from ").Append(Sanitize(request.AuthorDisplayName)).Append(": ")
@@ -377,16 +341,6 @@ public sealed class ReactionJudge
         {
             sb.Append("Media/link context (untrusted content from the same message):\n")
               .Append(Truncate(request.MediaContext!, 1_200)).Append('\n');
-        }
-
-        if (memoryLines is { Count: > 0 })
-        {
-            sb.Append("\nWhat you know about ").Append(Sanitize(request.AuthorDisplayName))
-              .Append(" (use only if it sharpens your reaction; do not force it):\n");
-            foreach (var line in memoryLines)
-            {
-                sb.Append("- ").Append(Sanitize(line)).Append('\n');
-            }
         }
 
         if (request.RecentEmojis is { Count: > 0 })

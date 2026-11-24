@@ -3,7 +3,6 @@ using System.Text.Json;
 using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Integrations.Reactions;
 using DiscordSky.Bot.Memory.Logging;
-using DiscordSky.Bot.Memory.Scoring;
 using DiscordSky.Bot.Orchestration;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -193,7 +192,7 @@ public class ReactionJudgeTests
                 new("kekw", string.Empty, IsCustom: true),
             });
 
-        var msg = ReactionJudge.BuildUserMessage(request, Array.Empty<string>());
+        var msg = ReactionJudge.BuildUserMessage(request);
         Assert.Contains("Sonic", msg);
         Assert.Contains("gotta go fast", msg);
         Assert.Contains("- egg:", msg);
@@ -212,7 +211,7 @@ public class ReactionJudgeTests
             Context: null,
             Allowed: new List<AllowedEmote> { new("egg", "sig", IsCustom: false) });
 
-        var msg = ReactionJudge.BuildUserMessage(request, Array.Empty<string>());
+        var msg = ReactionJudge.BuildUserMessage(request);
         Assert.True(msg.Length < 2000, $"expected truncation, got length {msg.Length}");
     }
 
@@ -226,7 +225,7 @@ public class ReactionJudgeTests
             Context: "earlier: a plan was mentioned",
             Allowed: new List<AllowedEmote> { new("eyes", "scheming", IsCustom: false) });
 
-        var msg = ReactionJudge.BuildUserMessage(request, Array.Empty<string>());
+        var msg = ReactionJudge.BuildUserMessage(request);
         Assert.Contains("Context", msg);
         Assert.Contains("a plan was mentioned", msg);
     }
@@ -242,40 +241,24 @@ public class ReactionJudgeTests
             Allowed: new List<AllowedEmote> { new("eyes", "scheming", IsCustom: false) },
             MediaContext: "tweet by tails: a suspicious machine");
 
-        var msg = ReactionJudge.BuildUserMessage(request, Array.Empty<string>());
+        var msg = ReactionJudge.BuildUserMessage(request);
         Assert.Contains("Media/link context", msg);
         Assert.Contains("a suspicious machine", msg);
         Assert.Contains("untrusted", msg);
     }
 
     [Fact]
-    public void BuildUserMessage_WithMemories_IncludesMemoryBlock()
+    public async Task Judge_SendsRoomAndMediaContextWithoutPersonalMemoryOrRecallTools()
     {
-        var request = new ReactionRequest(
-            PersonaName: "Robotnik",
-            AuthorDisplayName: "Curlyquote",
-            MessageText: "lost again",
-            Context: null,
-            Allowed: new List<AllowedEmote> { new("chartdown", "mocking failure", IsCustom: false) });
-
-        var msg = ReactionJudge.BuildUserMessage(request, new[] { "always loses at chess", "obsessed with eggs" });
-        Assert.Contains("What you know about Curlyquote", msg);
-        Assert.Contains("always loses at chess", msg);
-        Assert.Contains("obsessed with eggs", msg);
-    }
-
-    [Fact]
-    public void BuildUserMessage_NoMemories_OmitsMemoryBlock()
-    {
-        var request = new ReactionRequest(
-            PersonaName: "Robotnik",
-            AuthorDisplayName: "Curlyquote",
-            MessageText: "hi",
-            Context: null,
-            Allowed: new List<AllowedEmote> { new("egg", "sig", IsCustom: false) });
-
-        var msg = ReactionJudge.BuildUserMessage(request, Array.Empty<string>());
-        Assert.DoesNotContain("What you know about", msg);
+        var client = new CapturingChatClient(ResponseWithTool("none", "fixture"));
+        var decision = await BuildJudge(client, constrainedTool: true).JudgeAsync(Request() with
+            { MessageText = "orbital velocity", Context = "room discussion", MediaContext = "chart in the upload" }, default);
+        Assert.Equal(ReactionDecisionKind.Decline, decision.Kind);
+        Assert.Contains("orbital velocity", client.UserText);
+        Assert.Contains("room discussion", client.UserText);
+        Assert.Contains("chart in the upload", client.UserText);
+        Assert.DoesNotContain("What you know about", client.UserText);
+        Assert.Equal(ReactionJudge.ChooseReactionToolName, Assert.Single(client.Options!.Tools!).Name);
     }
 
     [Fact]
@@ -289,7 +272,7 @@ public class ReactionJudgeTests
             Allowed: new List<AllowedEmote> { new("anger", "rage", IsCustom: false), new("clown", "fool", IsCustom: false) },
             RecentEmojis: new[] { "anger", "clown" });
 
-        var msg = ReactionJudge.BuildUserMessage(request, Array.Empty<string>());
+        var msg = ReactionJudge.BuildUserMessage(request);
         Assert.Contains("recently reacted with", msg);
         Assert.Contains("anger", msg);
     }
@@ -413,11 +396,9 @@ public class ReactionJudgeTests
                 ["OpenAI"] = new() { ChatModel = "test", UtilityModel = "test" },
             },
         });
-        var relevance = new TestOptionsMonitor<MemoryRelevanceOptions>(new MemoryRelevanceOptions());
         return new ReactionJudge(
             client,
             llmOptions,
-            new LexicalMemoryScorer(relevance),
             NullLogger<ReactionJudge>.Instance,
             Options.Create(new ReactionOptions { ConstrainedToolEnabled = constrainedTool }));
     }
@@ -429,6 +410,7 @@ public class ReactionJudgeTests
         public CapturingChatClient(ChatResponse response) => _response = response;
 
         public ChatOptions? Options { get; private set; }
+        public string UserText { get; private set; } = "";
 
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
@@ -436,6 +418,7 @@ public class ReactionJudgeTests
             CancellationToken cancellationToken = default)
         {
             Options = options;
+            UserText = string.Join("\n", messages.Where(message => message.Role == ChatRole.User).Select(message => message.Text));
             return Task.FromResult(_response);
         }
 

@@ -85,6 +85,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
     private readonly WorldAutonomyAmbientAdmissionCoordinator? _worldAutonomyAmbientAdmission;
     private readonly WorldAutonomyBudget? _worldAutonomyBudget;
     private readonly WorldAutonomyConversationService? _worldAutonomyConversation;
+    private readonly IWorldAutonomyMessageTransport _autonomyMessageTransport;
     internal const int DiscordMaxMessageLength = 2000;
 
     /// <summary>How much of the room's recent conversation an autonomy run is briefed with.</summary>
@@ -144,7 +145,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         WorldAutonomyAmbientAdmissionCoordinator? worldAutonomyAmbientAdmission = null,
         WorldAutonomyBudget? worldAutonomyBudget = null,
         WorldAutonomyConversationService? worldAutonomyConversation = null,
-        ITranscriptSink? transcripts = null)
+        ITranscriptSink? transcripts = null,
+        IWorldAutonomyMessageTransport? autonomyMessageTransport = null)
     {
         _client = client;
         _options = options.Value;
@@ -195,6 +197,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
         _worldAutonomyAmbientAdmission = worldAutonomyAmbientAdmission;
         _worldAutonomyBudget = worldAutonomyBudget;
         _worldAutonomyConversation = worldAutonomyConversation;
+        _autonomyMessageTransport = autonomyMessageTransport ?? new DiscordWorldAutonomyMessageTransport(_client);
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -591,15 +594,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                     const string fallback =
                         "The Imperial audience chamber has reached its spending decree. " +
                         "Your petition is recorded beneath my boot; return when the treasury reopens.";
-                    await SendChunkedAsync(
-                        message.Channel,
-                        fallback,
-                        new MessageReference(message.Id),
-                        _options.DefaultPersona,
-                        source: "world_autonomy_budget_fallback",
-                        triggerMessageId: message.Id,
-                        replyTargetMessageId: message.Id);
-                    _transcripts.Record(CreateWorldAutonomyFallbackTranscript(
+                    await PublishDirectTextAsync(autonomyChannel.Guild.Id, CreateWorldAutonomyFallbackTranscript(
                         DateTimeOffset.UtcNow,
                         message.Author.Id,
                         GetDisplayName(message.Author),
@@ -611,10 +606,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                         message.Id,
                         operationId: null,
                         outcome: string.Concat("direct_full_", directBudget.Reason, "_conversation_unavailable"),
-                        modelInvoked: false));
-                    _worldAutonomyRouter?.RecordDeliveredSpeech(
-                        autonomyChannel.Guild.Id,
-                        message.Channel.Id);
+                        modelInvoked: false), "world_autonomy_budget_fallback", _shutdownCts.Token);
                 }
                 return;
             }
@@ -1300,22 +1292,12 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 return;
             }
 
-            IReadOnlyList<UserMemory>? authorMemories = null;
-            if (_options.EnableUserMemory)
-            {
-                // Personalize: hand the cheap judge what Robotnik knows about this author so it can react to the
-                // person, not just the words (running gags, roastable facts). Ranked to the message downstream.
-                authorMemories = await _memoryStore.GetAdmissibleMemoriesAsync(
-                    message.Author.Id, _memoryRelevanceMonitor, _shutdownCts.Token);
-            }
-
             var request = new ReactionRequest(
                 PersonaName: GetDefaultPersona(),
                 AuthorDisplayName: authorName,
                 MessageText: semanticView.Text,
                 Context: BuildReactionContext(message),
                 Allowed: allowed,
-                AuthorMemories: authorMemories,
                 RecentEmojis: recentEmojis,
                 MediaContext: semanticView.MediaContext,
                 MessageId: message.Id);
@@ -1419,8 +1401,8 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
 
             // Human reception changes Empire mood. Robotnik's own editorial choice does not reward itself.
             _logger.LogInformation(
-                "in_character_reaction emote={Emote} custom={Custom} channel={Channel} message={MessageId} mem={Mem} why={Why}",
-                verdict!.Token, emote is Emote, message.Channel.Name, message.Id, authorMemories?.Count ?? 0, verdict!.Rationale);
+                "in_character_reaction emote={Emote} custom={Custom} channel={Channel} message={MessageId} why={Why}",
+                verdict!.Token, emote is Emote, message.Channel.Name, message.Id, verdict!.Rationale);
         }
         catch (Exception ex)
         {
@@ -2354,7 +2336,7 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             return false;
         }
 
-        _worldAutonomyRouter?.RecordDeliveredSpeech(request.GuildId, request.ChannelId);
+        if (result.MessageIds.Count > 0) _worldAutonomyRouter?.RecordDeliveredSpeech(request.GuildId, request.ChannelId);
         return true;
     }
 
@@ -2483,52 +2465,18 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
             result = await _worldAutonomyRouter!.TryRunDirectAsync(opportunity, cancellationToken);
         }
 
-        if (result is null)
+        var action = WorldAutonomyRunResult.DecideReply(result, opportunity.VisualIntent);
+        if (action == DirectReplyAction.PersonaFallback)
         {
-            // Busy direct audiences stay queued in the guild mailbox. Null now means the queued run was
-            // cancelled or failed before it could produce a result, so the ordinary path is a true fallback
-            // rather than a second Robotnik answering the same message.
             _logger.LogWarning(
-                "Autonomy could not complete direct message {MessageId} in guild {GuildId}; falling back to the persona path.",
-                message.Id,
-                guildChannel.Guild.Id);
+                "Autonomy yielded direct message {MessageId} to the persona path (status {Status}).",
+                message.Id, result?.Status ?? "unbound");
             return false;
         }
-
-        // The agent runtime never delivers his final text to Discord, so if he schemed without speaking,
-        // say it for him. Routed through SendChunkedAsync so the reply keeps normal transcript, reaction,
-        // and reply-chain continuity.
-        if (!result.SpokeInChannel)
+        if (action == DirectReplyAction.PublishFinalText)
         {
-            if (string.IsNullOrWhiteSpace(result.FinalText))
-            {
-                // Timed out or failed with nothing to show for it. Hand the message back rather than
-                // answering a member with silence.
-                _logger.LogWarning(
-                    "Autonomy run {RunId} ended {Status} with nothing to say for message {MessageId}; falling back to the persona path.",
-                    result.RunId,
-                    result.Status,
-                    message.Id);
-                return false;
-            }
-            if (ImageReplyPolicy.IsTextArtSubstitute(opportunity.VisualIntent, result.FinalText))
-            {
-                _logger.LogWarning(
-                    "Autonomy run {RunId} returned text art for drawing request {MessageId}; using the image handler instead.",
-                    result.RunId,
-                    message.Id);
-                return false;
-            }
-
-            await SendChunkedAsync(
-                message.Channel,
-                result.FinalText.Trim(),
-                new MessageReference(message.Id),
-                _options.DefaultPersona,
-                source: "world_autonomy",
-                triggerMessageId: message.Id,
-                replyTargetMessageId: message.Id);
-            _transcripts.Record(CreateWorldAutonomyFallbackTranscript(
+            var text = result!.FinalText!.Trim();
+            await PublishDirectTextAsync(guildChannel.Guild.Id, CreateWorldAutonomyFallbackTranscript(
                 DateTimeOffset.UtcNow,
                 message.Author.Id,
                 GetDisplayName(message.Author),
@@ -2536,21 +2484,38 @@ public sealed class DiscordBotService : IHostedService, IAsyncDisposable
                 guildChannel.Name,
                 _options.DefaultPersona,
                 content,
-                result.FinalText.Trim(),
+                text,
                 message.Id,
                 result.RunId,
                 result.FailureReason ?? result.Status,
-                modelInvoked: result.Status == WorldAutonomyRunStatuses.Succeeded));
-            _worldAutonomyRouter.RecordDeliveredSpeech(guildChannel.Guild.Id, message.Channel.Id);
+                modelInvoked: result.ModelAuthoredFinalText), "world_autonomy", cancellationToken);
         }
 
         _logger.LogInformation(
             "Autonomy answered message {MessageId} in guild {GuildId} with status {Status} (spoke={Spoke}).",
             message.Id,
             guildChannel.Guild.Id,
-            result.Status,
+            result!.Status,
             result.SpokeInChannel);
         return true;
+    }
+
+    private async Task PublishDirectTextAsync(ulong guildId, TranscriptEntry draft, string source, CancellationToken cancellationToken)
+    {
+        var operation = draft.EpisodeId ?? Guid.NewGuid().ToString("N");
+        var kind = draft.ModelInvoked == true ? "direct_final_text" : "direct_host_text";
+        _telemetry.Emit(new TelemetryEvent(DateTimeOffset.UtcNow, TelemetryEventTypes.WorldAutonomySpeech, Kind: kind,
+            Outcome: "dispatch_intent", OperationId: operation, MessageId: draft.TriggerMessageId));
+        var receipt = await WorldAutonomyDeliveryReceipt.SendOnceAsync(_autonomyMessageTransport, guildId, draft.ChannelId,
+            draft.Reply, draft.ReplyTargetMessageId, cancellationToken);
+        receipt.Register(_sentMessages, draft.Persona, source, draft.TriggerMessageId, operation, draft.ReplyTargetMessageId);
+        _telemetry.Emit(new TelemetryEvent(DateTimeOffset.UtcNow, TelemetryEventTypes.WorldAutonomySpeech, Kind: kind,
+            Outcome: receipt.Outcome, Reason: receipt.Failure, Count: receipt.Messages.Count, OperationId: operation,
+            MessageId: receipt.Messages.FirstOrDefault()?.MessageId ?? draft.TriggerMessageId, CharacterCount: receipt.ConfirmedText.Length));
+        if (receipt.Messages.Count == 0) return;
+        _transcripts.Record(draft with { Timestamp = DateTimeOffset.UtcNow, Reply = receipt.ConfirmedText, EpisodeId = operation,
+            Outcome = receipt.Outcome == "partial_delivery" ? receipt.Outcome : draft.Outcome });
+        _worldAutonomyRouter?.RecordDeliveredSpeech(guildId, draft.ChannelId);
     }
 
     internal static TranscriptEntry CreateWorldAutonomyFallbackTranscript(

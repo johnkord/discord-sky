@@ -154,6 +154,48 @@ public sealed class WorldAutonomyVisualToolTests
         Assert.Empty(fixture.SpeechTransport.Calls);
     }
 
+    [Fact]
+    public async Task UnacknowledgedProgressPostStopsBeforeImageGeneration()
+    {
+        var fixture = new Fixture(VisualRequestIntent.BitmapRequired);
+        fixture.VisualTransport.BeginError = new IOException("unknown");
+        var raw = await fixture.Bind().InvokeAsync(new AIFunctionArguments { ["visual_prompt"] = "fixture" }, default);
+        Assert.Equal("delivery_unknown", Assert.IsType<System.Text.Json.JsonElement>(raw).GetProperty("outcome").GetString());
+        Assert.True(fixture.Run.DeliveryUncertain);
+        Assert.False(fixture.Run.SpokeInChannel);
+        Assert.Null(fixture.Generator.LastOptions);
+        Assert.Empty(fixture.VisualTransport.Calls);
+    }
+
+    [Theory]
+    [InlineData(true, 0)]
+    [InlineData(false, 1)]
+    public async Task ProgressCleanupDoesNotDeleteAnUnacknowledgedFinalEdit(bool unknown, int deletions)
+    {
+        var message = System.Reflection.DispatchProxy.Create<Discord.IUserMessage, ProgressMessage>();
+        var stub = (ProgressMessage)(object)message;
+        stub.Error = unknown ? new IOException() : new HttpRequestException("rejected", null, System.Net.HttpStatusCode.Forbidden);
+        await using (var progress = new DiscordWorldAutonomyVisualProgress(message, 6001))
+        {
+            await Assert.ThrowsAnyAsync<Exception>(() => progress.CompleteAsync([1], "fixture.png", "fixture", default));
+        }
+        Assert.Equal(1, stub.Edits);
+        Assert.Equal(deletions, stub.Deletes);
+    }
+
+    public class ProgressMessage : System.Reflection.DispatchProxy
+    {
+        public Exception Error { get; set; } = null!;
+        public int Edits { get; private set; }
+        public int Deletes { get; private set; }
+        protected override object? Invoke(System.Reflection.MethodInfo? method, object?[]? arguments)
+        {
+            if (method!.Name == "ModifyAsync") { Edits++; return Task.FromException(Error); }
+            if (method.Name == "DeleteAsync") { Deletes++; return Task.CompletedTask; }
+            throw new NotSupportedException(method.Name);
+        }
+    }
+
     private sealed class Fixture
     {
         internal RecordingVisualTransport VisualTransport { get; } = new();
@@ -247,10 +289,11 @@ public sealed class WorldAutonomyVisualToolTests
     {
         internal List<VisualCall> Calls { get; } = [];
         internal RecordingProgress? Progress { get; set; }
+        internal Exception? BeginError { get; set; }
 
         public Task<IWorldAutonomyVisualProgress?> BeginAsync(
             ulong guildId, ulong channelId, ulong? replyTargetMessageId, CancellationToken cancellationToken) =>
-            Task.FromResult<IWorldAutonomyVisualProgress?>(Progress);
+            BeginError is null ? Task.FromResult<IWorldAutonomyVisualProgress?>(Progress) : Task.FromException<IWorldAutonomyVisualProgress?>(BeginError);
 
         public Task<WorldAutonomyDeliveredMessage> SendAsync(
             ulong guildId,

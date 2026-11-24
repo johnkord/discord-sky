@@ -131,6 +131,27 @@ public sealed class WorldAutonomyConversationServiceTests
         Assert.Equal("empty", Assert.Single(telemetry.Events).Outcome);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UnacknowledgedSendOwnsTurnWithoutClaimingSpeech(bool lostResponse)
+    {
+        var client = new StubChatClient("fixture");
+        var transport = new RecordingTransport(new([], "", "delivery_unknown"), lostResponse ? new IOException() : null);
+        var transcripts = new RecordingTranscriptSink();
+        var telemetry = new RecordingTelemetrySink();
+        var service = new WorldAutonomyConversationService(client, OptionsMonitor(), transport, new SentMessageRegistry(), transcripts,
+            telemetry, Options.Create(new BotOptions()), NullLogger<WorldAutonomyConversationService>.Instance);
+        var result = await service.RespondAsync(Request(true), default);
+        Assert.NotNull(result);
+        Assert.Empty(result!.MessageIds);
+        Assert.Empty(result.Text);
+        Assert.Single(transport.Calls);
+        Assert.Equal(1, client.CallCount);
+        Assert.Empty(transcripts.Entries);
+        Assert.Equal("delivery_unknown", Assert.Single(telemetry.Events).Outcome);
+    }
+
     [Fact]
     public async Task Respond_TextOnlyFallbackCannotSubstituteAsciiForDrawing()
     {
@@ -210,7 +231,7 @@ public sealed class WorldAutonomyConversationServiceTests
         }
     }
 
-    private sealed class RecordingTransport(WorldAutonomyDeliveryReceipt? receipt = null) : IWorldAutonomyMessageTransport
+    private sealed class RecordingTransport(WorldAutonomyDeliveryReceipt? receipt = null, Exception? failure = null) : IWorldAutonomyMessageTransport
     {
         public List<TransportCall> Calls { get; } = [];
 
@@ -222,6 +243,7 @@ public sealed class WorldAutonomyConversationServiceTests
             CancellationToken cancellationToken)
         {
             Calls.Add(new TransportCall(content, replyTargetMessageId));
+            if (failure is not null) throw failure;
             return Task.FromResult(receipt ?? new WorldAutonomyDeliveryReceipt([new WorldAutonomyDeliveredMessage(7001, channelId)], content, "delivered"));
         }
     }

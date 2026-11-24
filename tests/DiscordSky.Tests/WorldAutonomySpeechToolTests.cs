@@ -59,9 +59,42 @@ public sealed class WorldAutonomySpeechToolTests
         Assert.Equal((ulong)7001, metric.MessageId);
         Assert.Equal("run-1", metric.OperationId);
 
-        var delivery = Assert.Single(ledger.Events);
-        Assert.Equal("discord_delivery", delivery.Kind);
+        Assert.Equal(new[] { "discord_delivery_attempt", "discord_delivery" }, ledger.Events.Select(entry => entry.Kind));
         Assert.True(run.SpokeInChannel);
+    }
+
+    [Fact]
+    public async Task LostFirstAcknowledgementIsNotAReceiptAndCannotBeRetried()
+    {
+        var ledger = new RecordingLedger();
+        var run = new WorldAutonomyRunState(Context(), ledger, []);
+        var calls = 0;
+        Task<WorldAutonomyDeliveryReceipt> LostAck() { calls++; throw new IOException("lost acknowledgement"); }
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var result = await run.DispatchHostDeliveryAsync("speech", 6001, 5001, LostAck, NullLogger.Instance, default);
+            Assert.Equal("delivery_unknown", result.Outcome);
+            Assert.Empty(result.Messages);
+        }
+        Assert.Equal(1, calls);
+        Assert.True(run.DeliveryUncertain);
+        Assert.False(run.SpokeInChannel);
+        Assert.Equal(new[] { "discord_delivery_attempt", "discord_delivery_unknown" }, ledger.Events.Select(entry => entry.Kind));
+    }
+
+    [Fact]
+    public async Task PreDispatchCancellationAndDefiniteRejectionDoNotImplyAnUnknownSend()
+    {
+        var ledger = new RecordingLedger();
+        var run = new WorldAutonomyRunState(Context(), ledger, []);
+        Task<WorldAutonomyDeliveryReceipt> Reject() => throw new HttpRequestException("rejected", null, System.Net.HttpStatusCode.Forbidden);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => run.DispatchHostDeliveryAsync("speech", 6001, 5001,
+            Reject, NullLogger.Instance, new CancellationToken(true)));
+        Assert.Empty(ledger.Events);
+        await Assert.ThrowsAsync<HttpRequestException>(() => run.DispatchHostDeliveryAsync("speech", 6001, 5001, Reject, NullLogger.Instance, default));
+        Assert.False(run.DeliveryUncertain);
+        Assert.False(run.SpokeInChannel);
+        Assert.Equal(new[] { "discord_delivery_attempt", "discord_delivery_not_sent" }, ledger.Events.Select(entry => entry.Kind));
     }
 
     [Fact]

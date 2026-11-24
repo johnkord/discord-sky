@@ -156,6 +156,7 @@ Full-autonomy direct petitions can deliberately call `recall_about_user`. The to
 loads notes only when selected, and reuses the existing suppression, supersession, ranking, and recall limits.
 It does not accept a model-selected user ID. Ambient autonomy and the no-tools conversation route do not receive
 this capability. The separate continuity brief remains shadow-only; its top two notes are never injected automatically.
+Emoji reactions use the current conversation and its media without reading saved personal notes.
 
 `!sky forget-me` deletes the requester's saved personal notes. Sky confirms only after deletion succeeds. Buffered or in-flight extraction cannot recreate notes from the erased window; conversation after the command can be learned again. This command does not delete Discord messages, transcripts, or operation journals.
 

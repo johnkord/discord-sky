@@ -37,7 +37,22 @@ public sealed record WorldAutonomyRunResult(
     string Status,
     string? FinalText,
     string? FailureReason,
-    bool SpokeInChannel = false);
+    bool SpokeInChannel = false)
+{
+    internal bool AllowPersonaFallback { get; init; }
+    internal bool ModelAuthoredFinalText { get; init; }
+
+    internal static DirectReplyAction DecideReply(WorldAutonomyRunResult? result, VisualRequestIntent visualIntent)
+    {
+        if (result is null) return DirectReplyAction.PersonaFallback;
+        if (result.SpokeInChannel) return DirectReplyAction.Handled;
+        if (!string.IsNullOrWhiteSpace(result.FinalText) && !ImageReplyPolicy.IsTextArtSubstitute(visualIntent, result.FinalText))
+            return DirectReplyAction.PublishFinalText;
+        return result.AllowPersonaFallback ? DirectReplyAction.PersonaFallback : DirectReplyAction.Handled;
+    }
+}
+
+internal enum DirectReplyAction { Handled, PublishFinalText, PersonaFallback }
 
 public interface IWorldAutonomyRunner
 {
@@ -141,26 +156,27 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
                 circuit.Reason);
         }
 
-        var session = await _stewardSupervisor.GetSessionAsync(opportunity.GuildId, cancellationToken).ConfigureAwait(false);
         var mainProfile = provider.GetProfile(LlmWorkload.Main);
         var model = FirstNonEmpty(opportunity.ModelOverride, binding.Model, mainProfile.Model);
-        var context = WorldAutonomyRunContext.Create(
-            opportunity.GuildId,
-            opportunity.Trigger,
-            model,
-            session.Catalog.Capabilities.ProfileDigest,
-            session.Catalog.Capabilities.ManifestDigest,
-            _configuration.RequestIdPoolSize,
-            opportunity.SourceMessageId,
-            opportunity.SourceEpisodeId,
-            opportunity.TraceId,
-            opportunity.PersonaDirective,
-            opportunity.SourceChannelId,
-            opportunity.SourceChannelName,
-            opportunity.SourceAuthorId,
-            opportunity.SourceAuthorDisplayName);
-        var startedAt = _timeProvider.GetUtcNow();
-        await _ledger.StartRunAsync(context.ToRunStart(startedAt), cancellationToken).ConfigureAwait(false);
+        WorldAutonomyStewardSession session;
+        WorldAutonomyRunContext context;
+        DateTimeOffset startedAt;
+        try
+        {
+            session = await _stewardSupervisor.GetSessionAsync(opportunity.GuildId, cancellationToken).ConfigureAwait(false);
+            context = WorldAutonomyRunContext.Create(opportunity.GuildId, opportunity.Trigger, model,
+                session.Catalog.Capabilities.ProfileDigest, session.Catalog.Capabilities.ManifestDigest,
+                _configuration.RequestIdPoolSize, opportunity.SourceMessageId, opportunity.SourceEpisodeId, opportunity.TraceId,
+                opportunity.PersonaDirective, opportunity.SourceChannelId, opportunity.SourceChannelName,
+                opportunity.SourceAuthorId, opportunity.SourceAuthorDisplayName);
+            startedAt = _timeProvider.GetUtcNow();
+            await _ledger.StartRunAsync(context.ToRunStart(startedAt), cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception error) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogError(error, "Autonomy setup failed before agent dispatch for guild {GuildId}.", opportunity.GuildId);
+            return new WorldAutonomyRunResult(null, opportunity.GuildId, "not_started", null, "setup_failed") { AllowPersonaFallback = true };
+        }
         if (_continuityObserver is not null &&
             opportunity.SourceAuthorId.HasValue &&
             !string.IsNullOrWhiteSpace(opportunity.SourceAuthorDisplayName))
@@ -278,62 +294,29 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
             {
                 _visualTool.RecordNotSelected(opportunity, context);
             }
-            var completedAt = _timeProvider.GetUtcNow();
-            await _ledger.CompleteRunAsync(
-                context.RunId,
-                WorldAutonomyRunStatuses.Succeeded,
-                response.Text,
-                failureReason: null,
-                completedAt,
-                CancellationToken.None).ConfigureAwait(false);
-            EmitRunEvent(opportunity, context, model, WorldAutonomyRunStatuses.Succeeded, null, startedAt, completedAt, runState, usageAccumulator);
-            return new WorldAutonomyRunResult(
+            return await FinishAsync(new WorldAutonomyRunResult(
                 context.RunId,
                 opportunity.GuildId,
                 WorldAutonomyRunStatuses.Succeeded,
                 response.Text,
                 FailureReason: null,
-                runState.SpokeInChannel);
+                runState.SpokeInChannel) { ModelAuthoredFinalText = true }).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && timeout.IsCancellationRequested)
         {
-            var completedAt = _timeProvider.GetUtcNow();
             var result = BuildInterruptedRunResult(opportunity, context.RunId,
                 WorldAutonomyRunStatuses.TimedOut, "session_timeout", runState?.ActivitySnapshot);
-            await _ledger.CompleteRunAsync(
-                context.RunId,
-                WorldAutonomyRunStatuses.TimedOut,
-                finalText: result.FinalText,
-                failureReason: "session_timeout",
-                completedAt,
-                CancellationToken.None).ConfigureAwait(false);
-            EmitRunEvent(opportunity, context, model, WorldAutonomyRunStatuses.TimedOut, "session_timeout", startedAt, completedAt, runState, usageAccumulator);
-            return result;
+            return await FinishAsync(result).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
-            var completedAt = _timeProvider.GetUtcNow();
-            await _ledger.CompleteRunAsync(
-                context.RunId,
-                WorldAutonomyRunStatuses.Failed,
-                finalText: null,
-                failureReason: "cancelled",
-                completedAt,
-                CancellationToken.None).ConfigureAwait(false);
-            await _ledger.RecordRunEventAsync(
-                context.RunId,
-                "cancelled",
-                payloadJson: null,
-                completedAt,
-                CancellationToken.None).ConfigureAwait(false);
-            EmitRunEvent(opportunity, context, model, WorldAutonomyRunStatuses.Failed, "cancelled", startedAt, completedAt, runState, usageAccumulator);
-            throw;
+            return await FinishAsync(new WorldAutonomyRunResult(context.RunId, opportunity.GuildId,
+                WorldAutonomyRunStatuses.Failed, null, "cancelled", runState?.SpokeInChannel == true)).ConfigureAwait(false);
         }
         catch (Exception exception)
         {
             var providerFault = LlmProviderGuard.IsDeterministicProviderBlock(exception, out var providerReason);
             _logger.LogError(exception, "Autonomy run {RunId} failed for guild {GuildId}.", context.RunId, opportunity.GuildId);
-            var completedAt = _timeProvider.GetUtcNow();
             var failureReason = exception is LlmProviderBlockedException blocked
                 ? blocked.Reason
                 : providerFault
@@ -342,14 +325,34 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
             var result = BuildInterruptedRunResult(opportunity, context.RunId,
                 WorldAutonomyRunStatuses.Failed, failureReason, runState?.ActivitySnapshot,
                 providerUnavailable: providerFault || exception is LlmProviderBlockedException);
-            await _ledger.CompleteRunAsync(
-                context.RunId,
-                WorldAutonomyRunStatuses.Failed,
-                finalText: result.FinalText,
-                failureReason,
-                completedAt,
-                CancellationToken.None).ConfigureAwait(false);
-            EmitRunEvent(opportunity, context, model, WorldAutonomyRunStatuses.Failed, failureReason, startedAt, completedAt, runState, usageAccumulator);
+            return await FinishAsync(result).ConfigureAwait(false);
+        }
+
+        async Task<WorldAutonomyRunResult> FinishAsync(WorldAutonomyRunResult result)
+        {
+            result = runState?.DeliveryUncertain == true
+                ? result with { Status = WorldAutonomyRunStatuses.Failed, FinalText = null, FailureReason = "discord_delivery_unknown", AllowPersonaFallback = false }
+                : result with { AllowPersonaFallback = !result.SpokeInChannel && result.FailureReason != "cancelled" &&
+                    !cancellationToken.IsCancellationRequested && (runState?.ActivitySnapshot.NativeWriteCount ?? 0) == 0 };
+            var completedAt = _timeProvider.GetUtcNow();
+            try
+            {
+                await _ledger.CompleteRunAsync(context.RunId, result.Status, result.FinalText, result.FailureReason,
+                    completedAt, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception error)
+            {
+                _logger.LogError(error, "Could not finalize autonomy run {RunId} ({Status}); preserving its delivery outcome.", context.RunId, result.Status);
+                result = result with { Status = "journal_unavailable", FailureReason = result.FailureReason ?? "run_completion_not_persisted" };
+            }
+            try
+            {
+                EmitRunEvent(opportunity, context, model, result.Status, result.FailureReason, startedAt, completedAt, runState, usageAccumulator);
+            }
+            catch (Exception error)
+            {
+                _logger.LogError(error, "Could not emit the terminal summary for autonomy run {RunId}.", context.RunId);
+            }
             return result;
         }
     }
@@ -636,13 +639,14 @@ public sealed class WorldAutonomyRouter
         catch (OperationCanceledException) when (pending.CancellationToken.IsCancellationRequested)
         {
             _logger.LogDebug("Autonomy opportunity cancelled for guild {GuildId}.", guildId);
+            return new(null, guildId, WorldAutonomyRunStatuses.Failed, null, "cancelled");
         }
         catch (Exception exception)
         {
             _logger.LogError(exception, "Autonomy opportunity failed for guild {GuildId}.", guildId);
         }
 
-        return null;
+        return new(null, guildId, "outcome_unknown", null, "runner_failed");
     }
 
     private sealed class GuildMailbox

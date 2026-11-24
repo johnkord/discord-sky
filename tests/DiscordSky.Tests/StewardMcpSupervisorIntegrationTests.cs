@@ -2,17 +2,20 @@
 
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Memory.Logging;
+using DiscordSky.Bot.Memory.Reception;
 using DiscordSky.Bot.Models.Orchestration;
 using DiscordSky.Bot.Orchestration.Autonomy;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace DiscordSky.Tests;
 
@@ -276,14 +279,7 @@ public sealed class StewardMcpSupervisorIntegrationTests
         var directory = Directory.CreateTempSubdirectory("sky-reply-parent-");
         try
         {
-            var opts = new WorldAutonomyOptions
-            {
-                LedgerPath = Path.Combine(directory.FullName, "ledger.json"),
-                StewardCommand = "env", StewardWorkingDirectory = directory.FullName,
-                StewardArguments = ["-i", $"PATH={Environment.GetEnvironmentVariable("PATH")}", $"HOME={directory.FullName}", $"Steward__ProfilePath={profile}",
-                    "dotnet", Path.Combine(steward, "src/DiscordSteward/bin/Debug/net10.0/DiscordSteward.dll")],
-                EnabledGuilds = new() { [guild] = new() { ProfilePath = profile } }
-            };
+            var opts = IsolatedOptions(directory.FullName, steward, profile, guild);
             using var listener = StartLocalProvider(out var endpoint);
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             await using var supervisor = new StewardMcpSupervisor(WorldAutonomyConfiguration.FromOptions(opts), NullLoggerFactory.Instance, NullLogger<StewardMcpSupervisor>.Instance);
@@ -324,15 +320,8 @@ public sealed class StewardMcpSupervisorIntegrationTests
                 var request = await listener.GetContextAsync().WaitAsync(deadline.Token);
                 using var reader = new StreamReader(request.Request.InputStream, Encoding.UTF8);
                 var body = await reader.ReadToEndAsync(deadline.Token);
-                request.Response.ContentType = "application/json";
-                var response = JsonSerializer.SerializeToUtf8Bytes(new { id = "resp_fixture", @object = "response", created_at = 1, status = "completed", model = "gpt-6.2-astra",
-                    output = new[] { new { type = "message", id = "msg_fixture", status = "completed", role = "assistant",
-                        content = new[] { new { type = "output_text", text = "The calendar may counteroffer.", annotations = Array.Empty<object>() } } } }, parallel_tool_calls = false,
-                    tool_choice = "auto", tools = Array.Empty<object>(), usage = new { input_tokens = 40, input_tokens_details = new { cached_tokens = 0 },
-                        output_tokens = 6, output_tokens_details = new { reasoning_tokens = 0 }, total_tokens = 46 } });
-                request.Response.ContentLength64 = response.Length;
-                await request.Response.OutputStream.WriteAsync(response, deadline.Token);
-                request.Response.Close();
+                await RespondAsync(request, new { type = "message", id = "msg_fixture", status = "completed", role = "assistant",
+                    content = new[] { new { type = "output_text", text = "The calendar may counteroffer.", annotations = Array.Empty<object>() } } }, deadline.Token);
                 var result = await run;
                 Assert.True(result.Status == "succeeded", $"{item.Words}: {result.FailureReason} {errors.Error}");
                 Assert.Equal("The calendar may counteroffer.", result.FinalText);
@@ -373,6 +362,127 @@ public sealed class StewardMcpSupervisorIntegrationTests
             }
         }
         finally { directory.Delete(recursive: true); }
+    }
+
+    [StewardFact]
+    public async Task SiblingSteward_DirectDeliveryFaultsCannotHandAPostedTurnToFallback()
+    {
+        var steward = GetSiblingStewardRoot();
+        var profile = Path.Combine(steward, "config/profiles/unrestricted-autonomy.example.json");
+        using var profileJson = JsonDocument.Parse(await File.ReadAllTextAsync(profile));
+        var guild = profileJson.RootElement.GetProperty("Discord").GetProperty("GuildId").GetString()!;
+        var directory = Directory.CreateTempSubdirectory("sky-direct-delivery-");
+        try
+        {
+            var options = IsolatedOptions(directory.FullName, steward, profile, guild, terminal: true);
+            var config = WorldAutonomyConfiguration.FromOptions(options);
+            await using var supervisor = new StewardMcpSupervisor(config, NullLoggerFactory.Instance, NullLogger<StewardMcpSupervisor>.Instance);
+            using var fileLedger = new FileBackedWorldAutonomyLedger(options);
+            foreach (var mode in new[] { "normal", "completion_fault", "partial", "lost_ack", "setup_fault" })
+            {
+                using var listener = StartLocalProvider(out var endpoint);
+                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                var ledger = DispatchProxy.Create<IWorldAutonomyLedger, FaultLedger>();
+                var fault = (FaultLedger)(object)ledger;
+                fault.Inner = fileLedger;
+                fault.Mode = mode;
+                var telemetry = new InMemoryTelemetrySink();
+                var llm = new TestOptionsMonitor<LlmOptions>(new LlmOptions { Providers = new() { ["OpenAI"] = new()
+                    { ApiKey = "fixture-only", Endpoint = endpoint, ChatModel = "gpt-6.2-astra", UseResponsesApi = true } } });
+                var guard = new LlmProviderGuard(NullLogger<LlmProviderGuard>.Instance, options: new LlmProviderGuardOptions
+                    { Enabled = false, StatePath = Path.Combine(directory.FullName, "guard.json") });
+                var transport = new FaultTransport(mode);
+                var speech = new WorldAutonomySpeechTool(transport, new SentMessageRegistry(), new NoOpTranscriptSink(), telemetry,
+                    Options.Create(new BotOptions()), NullLogger<WorldAutonomySpeechTool>.Instance);
+                var runtime = new WorldAutonomyOrchestrator(config, llm, supervisor, new WorldAutonomyAgentFactory(), ledger,
+                    NullLogger<WorldAutonomyOrchestrator>.Instance, speechTool: speech, telemetry: telemetry, providerGuard: guard);
+                var router = new WorldAutonomyRouter(config, runtime, NullLogger<WorldAutonomyRouter>.Instance);
+                var run = router.TryRunDirectAsync(new(ulong.Parse(guild), "discord_message", "Fixture turn.", "5001",
+                    IsDirectAddress: true, SourceChannelId: 6001, SourceAuthorId: 8001), deadline.Token);
+                if (mode != "setup_fault")
+                {
+                    var request = await listener.GetContextAsync().WaitAsync(deadline.Token);
+                    await request.Request.InputStream.CopyToAsync(Stream.Null, deadline.Token);
+                    var content = mode == "partial" ? new string('a', 2000) + "\nsecond chunk" : "Fixture reply.";
+                    await RespondAsync(request, new { type = "function_call", id = "fc_fixture", status = "completed", call_id = "call_fixture",
+                        name = WorldAutonomySpeechTool.TerminalToolName, arguments = JsonSerializer.Serialize(new { content }) }, deadline.Token);
+                }
+                var result = await run.WaitAsync(deadline.Token);
+                Assert.NotNull(result);
+                Assert.Equal(mode == "setup_fault" ? DirectReplyAction.PersonaFallback : DirectReplyAction.Handled,
+                    WorldAutonomyRunResult.DecideReply(result, default));
+                Assert.Equal(mode != "setup_fault" && mode != "lost_ack", result!.SpokeInChannel);
+                Assert.Equal(mode == "setup_fault" ? 0 : 1, telemetry.Events.Count(entry => entry.EventType == TelemetryEventTypes.LlmCall));
+                Assert.Equal(mode == "setup_fault" ? 0 : mode == "partial" ? 2 : 1, transport.Dispatches);
+                Assert.Equal(mode == "setup_fault" ? 0 : 1, fault.Completions);
+                if (mode == "setup_fault") continue;
+                var stored = await fileLedger.GetRunAsync(result.RunId!, default);
+                Assert.Equal(mode == "completion_fault" ? "running" : mode == "lost_ack" ? "failed" : "succeeded", stored!.Status);
+                var summary = Assert.Single(telemetry.Events, entry => entry.EventType == TelemetryEventTypes.WorldAutonomyRun);
+                Assert.Equal(result.Status, summary.Outcome);
+                if (mode == "completion_fault") Assert.Equal("journal_unavailable", result.Status);
+                if (mode == "lost_ack") Assert.Equal("discord_delivery_unknown", result.FailureReason);
+                using var snapshot = JsonDocument.Parse(await File.ReadAllTextAsync(options.LedgerPath));
+                var entries = snapshot.RootElement.GetProperty("events").EnumerateArray().Where(entry =>
+                    entry.GetProperty("runId").GetString() == result.RunId && entry.GetProperty("kind").GetString()!.StartsWith("discord_delivery", StringComparison.Ordinal)).ToArray();
+                Assert.Equal(new[] { "discord_delivery_attempt", mode == "lost_ack" ? "discord_delivery_unknown" : "discord_delivery" },
+                    entries.Select(entry => entry.GetProperty("kind").GetString()));
+                var payloads = entries.Select(entry => JsonNode.Parse(entry.GetProperty("payloadJson").GetString()!)!).ToArray();
+                Assert.Equal(payloads[0]["attemptId"]!.GetValue<string>(), payloads[1]["attemptId"]!.GetValue<string>());
+                if (mode == "lost_ack") Assert.Null(payloads[1]["messageIds"]);
+                else Assert.Single(payloads[1]["messageIds"]!.AsArray());
+                if (mode == "partial") Assert.Equal("partial_delivery", payloads[1]["outcome"]!.GetValue<string>());
+            }
+        }
+        finally { directory.Delete(recursive: true); }
+    }
+
+    public class FaultLedger : DispatchProxy
+    {
+        public IWorldAutonomyLedger Inner { get; set; } = null!;
+        public string Mode { get; set; } = "";
+        public int Completions { get; private set; }
+        protected override object? Invoke(MethodInfo? method, object?[]? arguments)
+        {
+            if (method!.Name == nameof(IWorldAutonomyLedger.CompleteRunAsync)) Completions++;
+            if ((Mode == "completion_fault" && method.Name == nameof(IWorldAutonomyLedger.CompleteRunAsync)) ||
+                (Mode == "setup_fault" && method.Name == nameof(IWorldAutonomyLedger.StartRunAsync)))
+                return Task.FromException(new IOException("Fixture journal unavailable."));
+            return method.Invoke(Inner, arguments);
+        }
+    }
+
+    private sealed class FaultTransport(string mode) : IWorldAutonomyMessageTransport
+    {
+        public int Dispatches { get; private set; }
+        public Task<WorldAutonomyDeliveryReceipt> SendAsync(ulong guildId, ulong channelId, string content, ulong? target, CancellationToken cancellationToken) =>
+            DiscordWorldAutonomyMessageTransport.SendChunksAsync(content, target, (_, replyTo, _) =>
+            {
+                Dispatches++;
+                Assert.Equal(Dispatches == 1 ? 5001UL : (ulong?)null, replyTo);
+                if (mode == "lost_ack" || (mode == "partial" && Dispatches == 2)) throw new IOException("Fixture acknowledgement lost.");
+                return Task.FromResult(new WorldAutonomyDeliveredMessage(7001, channelId));
+            }, cancellationToken);
+    }
+
+    private static WorldAutonomyOptions IsolatedOptions(string directory, string steward, string profile, string guild, bool terminal = false) => new()
+    {
+        LedgerPath = Path.Combine(directory, "ledger.json"), TerminalDeliveryEnabled = terminal,
+        StewardCommand = "env", StewardWorkingDirectory = directory,
+        StewardArguments = ["-i", $"PATH={Environment.GetEnvironmentVariable("PATH")}", $"HOME={directory}", $"Steward__ProfilePath={profile}",
+            "dotnet", Path.Combine(steward, "src/DiscordSteward/bin/Debug/net10.0/DiscordSteward.dll")],
+        EnabledGuilds = new() { [guild] = new() { ProfilePath = profile } }
+    };
+
+    private static async Task RespondAsync(HttpListenerContext request, object output, CancellationToken token)
+    {
+        var body = JsonSerializer.SerializeToUtf8Bytes(new { id = "resp_fixture", @object = "response", created_at = 1, status = "completed", model = "gpt-6.2-astra",
+            output = new[] { output }, parallel_tool_calls = false, tool_choice = "auto", tools = Array.Empty<object>(), usage = new { input_tokens = 40,
+                input_tokens_details = new { cached_tokens = 0 }, output_tokens = 6, output_tokens_details = new { reasoning_tokens = 0 }, total_tokens = 46 } });
+        request.Response.ContentType = "application/json";
+        request.Response.ContentLength64 = body.Length;
+        await request.Response.OutputStream.WriteAsync(body, token);
+        request.Response.Close();
     }
 
     private static HttpListener StartLocalProvider(out string endpoint)

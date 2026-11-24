@@ -71,6 +71,21 @@ class TurnInspectorTests(unittest.TestCase):
         result = self.trace(); self.assertEqual("refused", result["steps"][0]["outcome"])
         self.assertFalse(result["deliveries"]); self.assertEqual({"before_dispatch": 1}, result["provider"])
 
+    def test_only_a_matching_ack_can_close_a_host_attempt_as_delivered(self):
+        payload = {"attemptId": self.request, "medium": "speech", "channelId": "5001", "text": self.private}
+        def event(kind, **extra):
+            return {"runId": self.run_id, "kind": kind, "payloadJson": json.dumps({**payload, **extra})}
+        self.rows = [{"event": "llm_call", "evaluation_id": self.run_id, "workload": "world_autonomy", "outcome": "ok"}]
+        for suffix, outcome in [(None, "no_receipt"), ("_unknown", "unknown"), ("_not_sent", "not_sent"), ("", "partial_delivery")]:
+            with self.subTest(suffix=suffix):
+                self.sky["events"] = [event("discord_delivery_attempt"), event("discord_delivery_not_sent", channelId="5002")]
+                if suffix is not None:
+                    self.sky["events"].append(event("discord_delivery" + suffix, messageIds=["7001"], outcome="partial_delivery"))
+                report = self.trace()
+                self.assertEqual([outcome], [entry["outcome"] for entry in report["attempts"]])
+                self.assertEqual(suffix == "", bool(report["deliveries"]))
+                self.assertEqual("world_autonomy", report["calls"][0]["workload"])
+
     def test_native_post_id_resolves_to_source_turn_without_double_counting(self):
         self.write("succeeded")
         observed = {"channelId": "5002", "messageId": "7001", "content": self.private}

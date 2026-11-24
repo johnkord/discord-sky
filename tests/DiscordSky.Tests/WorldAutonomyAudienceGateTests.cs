@@ -136,6 +136,53 @@ public sealed class WorldAutonomyAudienceGateTests
         Assert.False(decision.IsExplorationRun);
     }
 
+    [Theory]
+    [InlineData(WorldAutonomyAmbientGateMode.Canary, false)]
+    [InlineData(WorldAutonomyAmbientGateMode.Canary, true)]
+    [InlineData(WorldAutonomyAmbientGateMode.Live, false)]
+    [InlineData(WorldAutonomyAmbientGateMode.Live, true)]
+    public async Task InvalidVerdictNeverEntersExploration(WorldAutonomyAmbientGateMode mode, bool weak)
+    {
+        var config = WorldAutonomyConfiguration.FromOptions(new WorldAutonomyOptions { AmbientGateMode = mode,
+            AmbientJudgeConfidenceFloor = 0.35, AmbientCanaryExplorationPercent = 100, AmbientLiveExplorationPercent = 100 });
+        var client = new StubChatClient(weak ? """{"confidence":0.1,"conversation_worth":1,"reaction_worth":1,"action_worth":1}""" : "{}");
+        var telemetry = new RecordingTelemetrySink();
+        var gate = Gate(config, client, telemetry, new LlmProviderGuard(NullLogger<LlmProviderGuard>.Instance),
+            nextDouble: () => throw new InvalidOperationException("Invalid verdicts must not be sampled."));
+        var decision = await gate.EvaluateAsync(Request(), default);
+        Assert.Equal(WorldAutonomyAudienceAction.Silence, decision.Action);
+        Assert.False(decision.IsExplorationRun);
+        Assert.Equal(weak ? "judge_low_confidence_fail_closed" : "judge_unavailable_fail_closed", Assert.Single(telemetry.Events).Reason);
+    }
+
+    [Fact]
+    public async Task DueAmbientProbeIsOwnedOnlyByTheDispatchedProviderCall()
+    {
+        var clock = new MutableTimeProvider(DateTimeOffset.UnixEpoch);
+        var circuit = new LlmProviderGuard(NullLogger<LlmProviderGuard>.Instance, clock, TimeSpan.FromMinutes(1),
+            new LlmProviderGuardOptions { Enabled = false, StatePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json") });
+        circuit.RecordFailure(new InvalidOperationException("insufficient_quota"));
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new StubChatClient(VerdictJson(0.8, 0.1, 0.1)) { BeforeReply = token =>
+            { started.TrySetResult(); return finish.Task.WaitAsync(token); } };
+        using var wrapped = new TelemetryChatClient(client, "test", new NoOpTelemetrySink(), circuit);
+        var gate = Gate(Configuration(WorldAutonomyAmbientGateMode.Canary, canaryExplorationPercent: 0), wrapped, new RecordingTelemetrySink(), circuit);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        Assert.Equal("provider_circuit_open", (await gate.EvaluateAsync(Request(), deadline.Token)).Reason);
+        clock.Advance(TimeSpan.FromMinutes(1));
+        var probe = gate.EvaluateAsync(Request(), deadline.Token);
+        try
+        {
+            await started.Task.WaitAsync(deadline.Token);
+            Assert.Equal("provider_circuit_open", (await gate.EvaluateAsync(Request(), deadline.Token)).Reason);
+            Assert.Equal(1, client.CallCount);
+        }
+        finally { finish.TrySetResult(); }
+        Assert.Equal(WorldAutonomyAudienceAction.Conversation, (await probe).Action);
+        Assert.False(circuit.Snapshot().IsOpen);
+    }
+
     [Fact]
     public async Task Evaluate_CanaryEnforcesEnabledLowValueHold()
     {
@@ -389,18 +436,20 @@ public sealed class WorldAutonomyAudienceGateTests
 
     private sealed class StubChatClient(string responseText) : IChatClient
     {
+        internal Func<CancellationToken, Task>? BeforeReply { get; init; }
         internal int CallCount { get; private set; }
 
         internal ChatOptions? Options { get; private set; }
 
-        public Task<ChatResponse> GetResponseAsync(
+        public async Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
             ChatOptions? options = null,
             CancellationToken cancellationToken = default)
         {
             CallCount++;
             Options = options;
-            return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, responseText)));
+            if (BeforeReply is not null) await BeforeReply(cancellationToken);
+            return new ChatResponse(new ChatMessage(ChatRole.Assistant, responseText));
         }
 
         public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
