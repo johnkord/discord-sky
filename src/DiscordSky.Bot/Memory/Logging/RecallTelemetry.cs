@@ -219,7 +219,7 @@ public static class TelemetryEventTypes
     public const string WorldAutonomyFeatures = "world_autonomy_features";
     public const string WorldAutonomyImageInput = "world_autonomy_image_input";
     public const string WorldAutonomyRecall = "world_autonomy_recall";
-    public const string WorldAutonomyAppeal = "world_autonomy_appeal";
+    public const string ReplyParent = "reply_parent";
 }
 
 /// <summary>Writes one content-free deployment boundary after the durable telemetry sink has started.</summary>

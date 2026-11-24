@@ -5,7 +5,7 @@ using Microsoft.Extensions.Options;
 
 namespace DiscordSky.Bot.Orchestration.Autonomy;
 
-public sealed class FileBackedWorldAutonomyLedger : IWorldAutonomyLedger, IVerifiedDeedReader, IDisposable
+public sealed class FileBackedWorldAutonomyLedger : IWorldAutonomyLedger, IDisposable
 {
     private const int SchemaVersion = 1;
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -59,49 +59,6 @@ public sealed class FileBackedWorldAutonomyLedger : IWorldAutonomyLedger, IVerif
                 throw new InvalidOperationException($"Autonomy run '{run.RunId}' already exists.");
             }
         }, cancellationToken);
-    }
-
-    Task<VerifiedDeed?> IVerifiedDeedReader.ReadAppealedDeedAsync(ulong guild, ulong channel, ulong messageId, string decree, string petition,
-        DateTimeOffset now, CancellationToken token) => ReadAsync(snapshot =>
-    {
-        var cutoff = now.AddHours(-48);
-        WorldAutonomyRunEvent? delivery = null;
-        foreach (var entry in snapshot.Events)
-        {
-            token.ThrowIfCancellationRequested();
-            if (entry.Kind != "discord_delivery" || entry.OccurredAt < cutoff || entry.OccurredAt > now ||
-                !snapshot.Runs.TryGetValue(entry.RunId, out var run) || run.GuildId != guild || run.SourceChannelId != channel ||
-                !ConfirmsMessage(entry.PayloadJson, channel, messageId)) continue;
-            if (delivery is not null) return null;
-            delivery = entry;
-        }
-        if (delivery is null) return null;
-        VerifiedDeed? match = null;
-        foreach (var call in snapshot.ToolCalls.Values)
-        {
-            token.ThrowIfCancellationRequested();
-            if (call.RunId != delivery.RunId || call.CompletedAt is not { } at || at < cutoff || at > delivery.OccurredAt ||
-                VerifiedDeed.From(call, guild, channel) is not { } deed || !deed.IsPubliclyNamedIn(decree, petition)) continue;
-            if (match is not null) return null;
-            match = deed;
-        }
-        return match;
-    }, token);
-
-    private static bool ConfirmsMessage(string? payload, ulong channel, ulong messageId)
-    {
-        if (payload is null || channel == 0 || messageId == 0) return false;
-        try
-        {
-            using var document = JsonDocument.Parse(payload);
-            var root = document.RootElement;
-            return root.ValueKind == JsonValueKind.Object && root.TryGetProperty("outcome", out var outcome) && outcome.ValueKind == JsonValueKind.String &&
-                outcome.GetString() is "delivered" or "partial_delivery" && root.TryGetProperty("channelId", out var destination) &&
-                destination.ValueKind == JsonValueKind.String && ulong.TryParse(destination.GetString(), out var id) && id == channel &&
-                root.TryGetProperty("messageIds", out var messages) && messages.ValueKind == JsonValueKind.Array &&
-                messages.EnumerateArray().Any(item => item.ValueKind == JsonValueKind.String && ulong.TryParse(item.GetString(), out var sent) && sent == messageId);
-        }
-        catch (JsonException) { return false; }
     }
 
     public Task RecordDispatchPendingAsync(

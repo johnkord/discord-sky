@@ -3,6 +3,7 @@ using System.Text.Json;
 using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Integrations.Images;
 using DiscordSky.Bot.Memory.Logging;
+using DiscordSky.Bot.Models.Orchestration;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -27,7 +28,7 @@ public sealed record WorldAutonomyOpportunity(
     string? SourceMessageText = null,
     AutonomyImageSelection? ImageSelection = null)
 {
-    internal DecreeAppeal? Appeal { get; init; }
+    internal DirectReplyParent? ReplyParent { get; init; }
 }
 
 public sealed record WorldAutonomyRunResult(
@@ -180,13 +181,12 @@ public sealed class WorldAutonomyOrchestrator : IWorldAutonomyRunner
         timeout.CancelAfter(_configuration.SessionTimeout);
         try
         {
-            if (_configuration.DecreeAppealsEnabled && opportunity.Appeal is { } appeal &&
-                ulong.TryParse(opportunity.SourceMessageId, out var appealTrigger) && appeal.IsFor(opportunity.IsDirectAddress, opportunity.GuildId, opportunity.SourceChannelId, appealTrigger))
+            if (opportunity.ReplyParent is { } parent && ulong.TryParse(opportunity.SourceMessageId, out var trigger) &&
+                parent.Matches(opportunity.IsDirectAddress, opportunity.GuildId, opportunity.SourceChannelId, trigger))
             {
-                var brief = await appeal.PrepareAsync(_ledger as IVerifiedDeedReader, startedAt, timeout.Token).ConfigureAwait(false);
-                opportunity = opportunity with { Prompt = opportunity.Prompt + brief.Prompt };
-                _telemetry.Emit(new TelemetryEvent(startedAt, TelemetryEventTypes.WorldAutonomyAppeal, OperationId: context.RunId,
-                    MessageId: appealTrigger, ReferentMessageId: appeal.MessageId, Kind: "full", Stage: "brief", Outcome: brief.Outcome));
+                opportunity = opportunity with { Prompt = opportunity.Prompt + parent.Render() };
+                _telemetry.Emit(new TelemetryEvent(startedAt, TelemetryEventTypes.ReplyParent, OperationId: context.RunId,
+                    MessageId: trigger, ReferentMessageId: parent.Id, Kind: "full", Stage: "projection", Outcome: parent.State));
             }
             var catalog = session.Catalog.Bind(context, provider.UseHostedToolSearch);
             await _ledger.RecordRunEventAsync(
@@ -504,7 +504,6 @@ public sealed class WorldAutonomyRouter
     /// doing autonomy-only work for the guilds that have not.
     /// </summary>
     public bool IsEnabled(ulong guildId) => _configuration.TryGetBinding(guildId, out _);
-    internal bool DecreeAppealsEnabled => _configuration.DecreeAppealsEnabled;
 
     public void RecordDeliveredSpeech(ulong guildId, ulong channelId) =>
         _postSpeechGuard?.RecordSpeech(guildId, channelId);

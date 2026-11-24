@@ -27,7 +27,6 @@ public sealed class WorldAutonomyOptions
     public int PromptCacheCanaryPercent { get; init; } = 100;
 
     public bool MemoryRecallEnabled { get; init; }
-    public bool DecreeAppealsEnabled { get; init; }
 
     public bool ContinuityBriefShadowEnabled { get; init; }
 
@@ -108,7 +107,6 @@ public sealed class WorldAutonomyConfiguration
         WorldAutonomyPromptCacheMode promptCacheMode,
         int promptCacheCanaryPercent,
         bool memoryRecallEnabled,
-        bool decreeAppealsEnabled,
         WorldAutonomyAmbientGateMode ambientGateMode,
         double ambientFullThreshold,
         double ambientReactionThreshold,
@@ -137,7 +135,6 @@ public sealed class WorldAutonomyConfiguration
         PromptCacheMode = promptCacheMode;
         PromptCacheCanaryPercent = promptCacheCanaryPercent;
         MemoryRecallEnabled = memoryRecallEnabled;
-        DecreeAppealsEnabled = decreeAppealsEnabled;
         AmbientGateMode = ambientGateMode;
         AmbientFullThreshold = ambientFullThreshold;
         AmbientReactionThreshold = ambientReactionThreshold;
@@ -176,7 +173,6 @@ public sealed class WorldAutonomyConfiguration
     public int PromptCacheCanaryPercent { get; }
 
     public bool MemoryRecallEnabled { get; }
-    public bool DecreeAppealsEnabled { get; }
 
     public WorldAutonomyAmbientGateMode AmbientGateMode { get; }
 
@@ -363,7 +359,6 @@ public sealed class WorldAutonomyConfiguration
             options.PromptCacheMode,
             options.PromptCacheCanaryPercent,
             options.MemoryRecallEnabled,
-            options.DecreeAppealsEnabled,
             options.AmbientGateMode,
             options.AmbientFullThreshold,
             options.AmbientReactionThreshold,

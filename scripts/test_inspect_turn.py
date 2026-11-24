@@ -43,9 +43,9 @@ class TurnInspectorTests(unittest.TestCase):
         self.assertEqual(["silence"], [row["outcome"] for row in result["steps"]]); self.assertEqual({"dispatched": 1}, result["provider"])
         self.assertFalse(result["deliveries"])
 
-    def test_filing_and_partial_speech_join_even_from_the_confirmed_chunk(self):
-        self.rows = [{"event": "world_autonomy_appeal", "message_id": self.trigger, "referent_message_id": self.trigger - 1,
-                      "operation_id": self.run_id, "kind": "full", "outcome": "quote_only", "note": self.private}]
+    def test_reply_parent_and_partial_speech_join_even_from_the_confirmed_chunk(self):
+        self.rows = [{"event": "reply_parent", "message_id": self.trigger, "referent_message_id": self.trigger - 1,
+                      "operation_id": self.run_id, "kind": "full", "outcome": "quoted", "note": self.private}]
         self.sky["events"] = [{"runId": self.run_id, "kind": "discord_delivery", "payloadJson": json.dumps(
             {"channelId": "5001", "messageIds": [str(self.trigger + 1)], "outcome": "partial_delivery"})}]
         result = self.trace(key=str(self.trigger + 1)); self.assertTrue(result["found"])

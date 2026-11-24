@@ -11,7 +11,7 @@ from uuid import UUID
 
 EVENTS = {
     "world_autonomy_audience", "world_autonomy_budget", "world_autonomy_run", "world_autonomy_speech",
-    "world_autonomy_visual", "world_autonomy_conversation", "world_autonomy_appeal", "reaction_judged", "llm_call",
+    "world_autonomy_visual", "world_autonomy_conversation", "world_autonomy_appeal", "reply_parent", "reaction_judged", "llm_call",
 }
 CONFIRMED = {"verified_desired_state", "recovered_verified_desired_state", "reconciled_verified_desired_state"}
 

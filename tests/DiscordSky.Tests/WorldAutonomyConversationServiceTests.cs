@@ -1,6 +1,7 @@
 using DiscordSky.Bot.Configuration;
 using DiscordSky.Bot.Memory.Logging;
 using DiscordSky.Bot.Memory.Reception;
+using DiscordSky.Bot.Models.Orchestration;
 using DiscordSky.Bot.Orchestration.Autonomy;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -62,26 +63,26 @@ public sealed class WorldAutonomyConversationServiceTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task DirectSpeechFallbackHearsTheAppealButHasNoPowerToUndo(bool enabled)
+    public async Task SpeechFallbackSuppliesTheExactParentOnlyOnDirectTurns(bool direct)
     {
         var client = new StubChatClient("The calendar may submit a counteroffer.");
         var transport = new RecordingTransport();
         var telemetry = new RecordingTelemetrySink();
         var service = new WorldAutonomyConversationService(client, OptionsMonitor(), transport, new SentMessageRegistry(), new RecordingTranscriptSink(),
-            telemetry, Options.Create(new BotOptions()), NullLogger<WorldAutonomyConversationService>.Instance, configuration:
-            WorldAutonomyConfiguration.FromOptions(new WorldAutonomyOptions { DecreeAppealsEnabled = enabled, EnabledGuilds = new() { ["4001"] = new() { ProfilePath = "/fixture" } } }));
-        var appeal = new DecreeAppeal(4001, 6001, 4900, "Thursday belongs to the Crown.", false, "I need it back", true);
-        await service.RespondAsync(Request(true) with { Appeal = appeal }, default);
+            telemetry, Options.Create(new BotOptions()), NullLogger<WorldAutonomyConversationService>.Instance);
+        var parent = new DirectReplyParent(4001, 6001, 5001, 4900, 42, true, "Thursday belongs to the Crown.", false);
+        await service.RespondAsync(Request(direct) with { ReplyParent = parent, MessageText = "Thursday was never yours." }, default);
         Assert.Equal(1, client.CallCount);
         Assert.Empty(client.Options!.Tools ?? []);
-        Assert.Equal(enabled, Assert.Single(client.Messages).Text.Contains(appeal.Quotation, StringComparison.Ordinal));
-        Assert.Equal(enabled, client.Messages[0].Text.Contains("spoken ruling only", StringComparison.Ordinal));
-        Assert.Equal(5001UL, Assert.Single(transport.Calls).ReplyTargetMessageId);
-        var events = telemetry.Events.Where(entry => entry.EventType == TelemetryEventTypes.WorldAutonomyAppeal);
-        if (!enabled) { Assert.Empty(events); return; }
+        Assert.Equal(direct, client.Options.Instructions!.Contains("addressing you directly", StringComparison.Ordinal));
+        Assert.Equal(!direct, client.Options.Instructions.Contains("ambient Discord moment", StringComparison.Ordinal));
+        Assert.Equal(direct, Assert.Single(client.Messages).Text.Contains(parent.Quote!, StringComparison.Ordinal));
+        Assert.Equal(direct ? 5001UL : (ulong?)null, Assert.Single(transport.Calls).ReplyTargetMessageId);
+        var events = telemetry.Events.Where(entry => entry.EventType == TelemetryEventTypes.ReplyParent);
+        if (!direct) { Assert.Empty(events); return; }
         var metric = Assert.Single(events);
         Assert.Equal(4900UL, metric.ReferentMessageId);
-        Assert.Equal("quote_only", metric.Outcome);
+        Assert.Equal("quoted", metric.Outcome);
         Assert.Null(metric.Note);
     }
 

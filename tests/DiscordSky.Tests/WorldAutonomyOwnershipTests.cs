@@ -5,6 +5,20 @@ namespace DiscordSky.Tests;
 public sealed class WorldAutonomyOwnershipTests
 {
     [Theory]
+    [InlineData("forget-me", false)]
+    [InlineData("what-do-you-know", false)]
+    [InlineData("forget Thursday", false)]
+    [InlineData("(image) a calendar", false)]
+    [InlineData("court-rules", true)]
+    [InlineData("Objection!", true)]
+    public void OnlyLiteralCommandsPreemptAReplyToSky(string payload, bool conversational)
+    {
+        Assert.Equal(conversational, DiscordBotService.UseConversationalReply(true, true, payload));
+        Assert.True(DiscordBotService.UseConversationalReply(true, false, payload));
+        Assert.False(DiscordBotService.UseConversationalReply(false, false, payload));
+    }
+
+    [Theory]
     [InlineData(false, "", false)]
     [InlineData(true, "rename these channels", false)]
     [InlineData(true, "declare me Minister of Bad Decisions", false)]

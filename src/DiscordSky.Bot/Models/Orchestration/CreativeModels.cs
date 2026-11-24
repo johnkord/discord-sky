@@ -37,8 +37,12 @@ public sealed record CreativeRequest(
     string? VisualHook = null,
     InteractionTraceContext? Trace = null,
     InteractionEpisode? Episode = null,
-    EpisodeActionDecision? EpisodeDecision = null
-);
+    EpisodeActionDecision? EpisodeDecision = null)
+{
+    internal DirectReplyParent? ReplyParent { get; init; }
+    internal DirectReplyParent? ScopedReplyParent => GuildId is { } guild && TriggerMessageId is { } trigger &&
+        ReplyParent is { } parent && parent.Matches(InvocationKind != CreativeInvocationKind.Ambient, guild, ChannelId, trigger) ? parent : null;
+}
 
 /// <summary>
 /// Metadata about the Discord channel and server where the message originated.

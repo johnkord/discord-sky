@@ -13,7 +13,6 @@ while host-owned routing and persistent budgets decide when the expensive tool-e
 - Ambient `Conversation`, `Reaction`, `Silence`, and `FullAutonomy` routes selected by a utility-model judge.
 - One-call, no-tools conversation for ordinary Robotnik lines.
 - Full Astra/xhigh autonomy with hosted discovery of the complete native Steward catalog for bound guilds.
-- A Court of Appeals where a member can contest the particular Robotnik message they reply to.
 - Per-user factual, experiential, running-bit, meta, and suppression memories.
 - GPT Image 2.5 generation, reference edits, transparent outputs, and progressive previews behind shared budgets.
 - Persistent Empire State mood, ranks, and bounded war-room log.
@@ -93,7 +92,6 @@ The default command prefix is `!sky`. Locally handled commands include:
 - `!sky what-do-you-know`
 - `!sky forget <topic>`
 - `!sky forget-me`
-- `!sky court-rules` (in a guild with the Court of Appeals enabled)
 - `!sky(image) <request>`
 - owner/moderator Empire and safety commands documented in source and operational runbooks
 
@@ -108,11 +106,7 @@ To read a screenshot, attach it to the question or reply directly to its message
 such as "what does this say?" can also refer to immediately preceding image-only posts in the same channel.
 An upload on the question takes precedence. A `.png` filename and a WebP metadata label do not require re-exporting.
 
-## Court of Appeals
-
-In a bound guild, use Discord's **Reply** on a message from Robotnik. Try `Objection! You claimed Thursday, but the calendar was never sworn in.` Or write `appeal: <your case>`. He gets a short quotation from the specific message, even when newer decrees have appeared. He can stand by it, change his mind, or throw the case out. Filing does not undo anything.
-
-To ask for corroboration, start the reply with `appeal on the record:` and use the actual Discord mention for the subject. For example, to contest a role award, mention both the member and the role. Sky will offer at most one verified public effect from that exact decree's run, within 48 hours, only if the subjects also appear unambiguously in the original. Otherwise Robotnik just has the quotation. Plain appeals do not search the journal. Use `!sky court-rules` for the short in-room instructions.
+Use Discord's **Reply** and say what you mean. A reply to Robotnik, or a reply to another member that also addresses him, gives him the selected message as context. He answers the new message. No special phrasing is required, and quoting a boast does not establish that a role, nickname, or channel actually changed.
 
 ## Model Routing
 
@@ -207,7 +201,7 @@ production work:
 - `.github/skills/discord-sky-investigation/SKILL.md`
 - `.github/skills/discord-sky-eval/SKILL.md`
 
-For one turn in an existing owner-private local snapshot, use the [turn inspector](scripts/inspect_turn.py). It joins routing, provider calls, court exhibits and delivery records without printing prompts or replies. See the [snapshot layout and examples](docs/maintenance/atlas.md#inspect-one-turn).
+For one turn in an existing owner-private local snapshot, use the [turn inspector](scripts/inspect_turn.py). It joins routing, provider calls, reply references and delivery records without printing prompts or replies. See the [snapshot layout and examples](docs/maintenance/atlas.md#inspect-one-turn).
 
 ## Testing
 
@@ -216,7 +210,7 @@ dotnet test tests/DiscordSky.Tests/DiscordSky.Tests.csproj
 bash scripts/validate-release.sh
 ```
 
-The second command is the release gate. It requires a sibling checkout at the revision in [scripts/steward-ref](scripts/steward-ref), runs the offline rollout and turn-inspector checks, audits transitive packages, builds the solution in Release, and requires the real Steward catalog, provider-failure, interrupted-operation and court-filing tests to pass. No Discord or provider credentials are needed.
+The second command is the release gate. It requires a sibling checkout at the revision in [scripts/steward-ref](scripts/steward-ref), runs the offline rollout and turn-inspector checks, audits transitive packages, builds the solution in Release, and requires the real Steward catalog, provider-failure, interrupted-operation and natural-reply tests to pass. No Discord or provider credentials are needed.
 
 ## Production Deployment
 

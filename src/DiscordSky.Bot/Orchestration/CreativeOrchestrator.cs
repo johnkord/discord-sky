@@ -332,6 +332,9 @@ public sealed class CreativeOrchestrator
             hasTopic,
             turnFlavor.EndReminder,
             episodeProjection);
+        if (request.ScopedReplyParent is { } parent)
+            _telemetry.Emit(new TelemetryEvent(DateTimeOffset.UtcNow, TelemetryEventTypes.ReplyParent, MessageId: parent.TriggerId,
+                ReferentMessageId: parent.Id, EpisodeId: request.Trace?.EpisodeId, Kind: "creative", Stage: "projection", Outcome: parent.State));
 
         // When reasoning is enabled, we need more output tokens to accommodate both reasoning AND the tool call
         var llmProvider = _llmOptionsMonitor.CurrentValue.GetActiveProvider();
@@ -984,12 +987,16 @@ public sealed class CreativeOrchestrator
             }
         }
 
+        var parent = request.ScopedReplyParent;
+        if (parent is not null) builder.AppendLine(parent.Render());
+
         // Add reply chain context prominently for DirectReply invocations
         if (request.InvocationKind == CreativeInvocationKind.DirectReply && request.ReplyChain?.Count > 0)
         {
             builder.AppendLine("=== CONVERSATION HISTORY (reply chain) ===");
             foreach (var chainMsg in request.ReplyChain)
             {
+                if (chainMsg.MessageId == parent?.Id || chainMsg.MessageId == request.TriggerMessageId) continue;
                 var ageMinutes = Math.Max(0, (int)Math.Round((request.Timestamp - chainMsg.Timestamp).TotalMinutes));
                 var authorLabel = chainMsg.IsFromThisBot ? "You (bot)" : chainMsg.Author;
                 var replyNote = chainMsg.ReferencedMessageId.HasValue ? " (replying)" : "";
@@ -1157,14 +1164,14 @@ public sealed class CreativeOrchestrator
 
         foreach (var message in conversation)
         {
-            content.Add(new TextContent(BuildMessageLine(message, request.Timestamp)));
+            if (message.MessageId != parent?.Id) content.Add(new TextContent(BuildMessageLine(message, request.Timestamp)));
 
             AddImages(content, message.Images);
 
             foreach (var link in message.UnfurledLinks)
             {
                 var linkHeader = $"[Unfurled {link.SourceType} from {link.Author}]";
-                content.Add(new TextContent($"{linkHeader}: {link.Text}"));
+                if (message.MessageId != parent?.Id) content.Add(new TextContent($"{linkHeader}: {link.Text}"));
 
                 AddImages(content, link.Images);
             }

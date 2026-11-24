@@ -253,7 +253,8 @@ public sealed class ContextAggregator
     public async Task<IReadOnlyList<ChannelMessage>> GatherReplyChainAsync(
         IMessage triggerMessage,
         IMessageChannel channel,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IMessage? firstParent = null)
     {
         var chain = new List<ChannelMessage>();
         var current = triggerMessage;
@@ -293,18 +294,23 @@ public sealed class ContextAggregator
             });
 
             // Walk to the parent message
-            if (current.Reference?.MessageId.IsSpecified != true)
+            if (chain.Count >= _replyChainDepth || !DirectReplyParent.IsLocalReply(current.Type, current.Reference,
+                (channel as IGuildChannel)?.GuildId, channel.Id, current.Id))
             {
                 break;
             }
 
             try
             {
-                current = await channel.GetMessageAsync(current.Reference.MessageId.Value);
+                var expectedId = current.Reference!.MessageId.Value;
+                var parent = current.Id == triggerMessage.Id && firstParent is not null ? firstParent :
+                    await channel.GetMessageAsync(expectedId, options: new RequestOptions { CancelToken = cancellationToken });
+                if (parent is null || parent.Id != expectedId || parent.Channel.Id != channel.Id) break;
+                current = parent;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
             {
-                _logger.LogDebug(ex, "Failed to fetch referenced message {MessageId} in reply chain", current.Reference.MessageId.Value);
+                _logger.LogDebug(ex, "Failed to fetch referenced message {MessageId} in reply chain", current.Reference!.MessageId.Value);
                 break;
             }
         }

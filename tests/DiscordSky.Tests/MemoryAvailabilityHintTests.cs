@@ -45,6 +45,24 @@ public class MemoryAvailabilityHintTests
         new(content, "pet chatter", DateTimeOffset.UtcNow.AddDays(-2), DateTimeOffset.UtcNow.AddDays(-2), 0, kind);
 
     [Fact]
+    public void SelectedParentAppearsOnceAndDoesNotBecomeAnAlternativeReplyTarget()
+    {
+        var selected = new ChannelMessage { MessageId = 71, Content = "quoted once https://example.invalid/?private-signature" + new string('z', 720),
+            UnfurledLinks = [new UnfurledLink { Text = "unredacted-parent-expansion" }] };
+        var older = new ChannelMessage { MessageId = 70, Content = "older chain text" };
+        var req = new CreativeRequest("Robotnik", "Thursday was never yours.", "member", 1, 2, 3, DateTimeOffset.UtcNow, CreativeInvocationKind.DirectReply,
+            [older, selected], TriggerMessageId: 72) { ReplyParent = DirectReplyParent.Capture(Discord.MessageType.Reply, new(71, 2, 3), 3, 2, 72,
+                new(71, 2, 42, true, Discord.MessageType.Default, selected.Content)) };
+        var text = string.Join('\n', BuildOrchestrator().BuildUserContent(req, [selected], true).OfType<TextContent>().Select(part => part.Text));
+        Assert.Equal(2, text.Split("quoted once").Length);
+        Assert.DoesNotContain("private-signature", text);
+        Assert.DoesNotContain("unredacted-parent-expansion", text);
+        Assert.Contains("older chain text", text);
+        Assert.Contains("TRIGGER MESSAGE ID: 72", text);
+        Assert.DoesNotContain("historicalEffect", text);
+    }
+
+    [Fact]
     public void LinkAndTriggerImagesRespectFinalInputPolicyWithoutRemovingText()
     {
         var image = new ChannelImage { Url = new Uri("https://example.com/fixture.png") };

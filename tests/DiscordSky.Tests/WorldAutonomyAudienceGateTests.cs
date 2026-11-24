@@ -121,7 +121,7 @@ public sealed class WorldAutonomyAudienceGateTests
     [Fact]
     public async Task Evaluate_CanaryRoutesReactionPredictionToReaction()
     {
-        var configuration = Configuration(WorldAutonomyAmbientGateMode.Canary);
+        var configuration = Configuration(WorldAutonomyAmbientGateMode.Canary, canaryExplorationPercent: 0);
         var client = new StubChatClient(VerdictJson(0.1, 0.8, 0.1));
         var gate = Gate(
             configuration,
