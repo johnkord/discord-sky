@@ -1,6 +1,8 @@
 # Discord Sky Kubernetes Manifests
 
-This directory contains the Kubernetes resources required to run the Discord Sky bot on AKS.
+> **Reference only.** The supported deployment is one Docker Compose service ([DS-011](../../docs/decisions/README.md#ds-011-run-production-as-one-compose-service-on-a-single-host), [README](../../README.md#production-deployment)). `configmap.yaml` remains the source of public settings: each release renders it into the host's `public.env`. The other manifests and the `kubectl` commands below are kept for reference, and CI does not exercise them. The cache and recall comparison guidance still applies; read the telemetry with the [ops skill](../../.github/skills/discord-sky-ops/SKILL.md).
+
+This directory contains Kubernetes resources for running the Discord Sky bot on AKS.
 
 > Keep the actual Azure resource identifiers (registry login server, cluster name, etc.) in a private, untracked document so you can substitute them for the placeholders referenced below.
 

@@ -362,11 +362,12 @@ The telemetry sink, and the transcript and reaction sinks when enabled, prune ex
 ## 12. Shutdown And Deployment
 
 On graceful shutdown, Sky flushes pending memory windows, cancels in-flight work, unhooks Discord message/reaction
-handlers, logs out, and disposes the client. Persistent route/guard/journal state survives pod replacement.
+handlers, logs out, and disposes the client. Persistent route/guard/journal state survives container restarts and releases.
 
-Production uses the hardened deploy script or serialized GitHub Actions workflow. The image includes a pinned
-Steward executable but no private profile. Private profile and binding resources are validated before apply. A failed
-rollout restores the prior deployment and release-owned resources; in preserve mode private bindings and profiles stay untouched. Recreate strategy prevents concurrent writers on the
-Azure Files-backed file journals.
+Production runs as one Docker Compose service on a single Linux host (DS-011, [deploy/compose.yaml](../deploy/compose.yaml)).
+CI publishes the combined image, which includes a pinned Steward executable but no private profile. A release backs up
+first, then applies the new image digest and that commit's public settings under the host's private settings, then
+waits for Discord Connected with every configured guild healthy, restoring the previous files otherwise. One container
+and a stop-before-start replacement keep a single writer on the file journals in the host's `data/` directory.
 
 Use the [maintenance atlas](maintenance/atlas.md) for symptom-specific tests, release commands, and conditions that should stop a rollout.

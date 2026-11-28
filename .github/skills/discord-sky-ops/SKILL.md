@@ -1,19 +1,20 @@
 ---
 name: discord-sky-ops
-description: "Operational runbook for accessing and investigating the Discord Sky bot running in AKS. Use for bot logs, owner-private telemetry, transcripts, memories, Discord activity, pods, PVC state, health, provider guards, route budgets, or AKS incidents. Covers live logs, durable evidence, health checks, Azure Monitor, and the real-vs-ephemeral data model."
+description: "Operational runbook for accessing and investigating the Discord Sky bot on its production Docker Compose host. Use for bot logs, owner-private telemetry, transcripts, memories, Discord activity, container state, durable data, health, provider guards, route budgets, releases, or production incidents. Covers live logs, durable evidence, health checks, and the real-vs-ephemeral data model."
 ---
 
-# Discord Sky Ops: Logs, Memories, Telemetry, and AKS Resources
+# Discord Sky Ops: Logs, Memories, Telemetry, and the Production Host
 
 This skill gives an agent everything needed to find, read, and reason about the runtime
 state of the Discord Sky bot: its container logs, its durable telemetry, the per-user
-memories it stores, the Discord traffic it processes, and the Azure / Kubernetes resources
-that host it.
+memories it stores, the Discord traffic it processes, and the host that runs it.
 
 The bot is a single-replica .NET 10 worker. It holds one outbound Discord gateway WebSocket
 and makes HTTPS calls to an OpenAI-compatible LLM. Port 8080 serves `/livez` (process) and
-`/healthz` (dependency readiness). It runs as one `Deployment` (`discord-sky-bot`) in the
-`discord-sky` namespace on AKS, with a `PersistentVolumeClaim` for durable state.
+`/healthz` (dependency readiness). It runs as one Docker Compose service (project `sky`, service `bot`, container
+`sky-bot-1`) from [deploy/compose.yaml](../../../deploy/compose.yaml) on a single Linux host. Durable state lives in
+the deployment directory's `data/`, mounted at `/app/data/user_memories`. The host accepts no inbound traffic for Sky,
+and health is published only on the host's loopback.
 
 For the owning code, focused tests, release gate and rollback boundaries, use the [maintenance atlas](../../../docs/maintenance/atlas.md).
 
@@ -26,11 +27,13 @@ for data that does not exist.
 
 | Tier | Location | Durability | Contains | Raw message text? |
 |---|---|---|---|---|
-| **Container stdout logs** | `kubectl logs` (console) | **Ephemeral** - lost on pod rotation unless collected | Runtime diagnostics and Discord.Net logs; treat as private | Do not assume content-free |
-| **Telemetry JSONL** | PVC: `/app/data/user_memories/telemetry/recall-YYYY-MM-DD.jsonl` | **Durable** (survives restarts; 30-day retention) | Event records, usually hashed IDs and metadata; selected owner-private features may store bounded room text | Sometimes |
-| **Transcript JSONL** | PVC: `/app/data/user_memories/transcripts/transcript-YYYY-MM-DD.jsonl` | **Durable** (14-day retention) when `Transcript:Enabled=true` | Full prompt the model saw + the reply it produced, raw user IDs, channel, persona | **Yes** (when enabled) |
-| **User memories** | PVC: `/app/data/user_memories/<discordUserId>.json` | **Durable** | LLM-extracted facts about users, plus short `context` snippets that may quote the user | Partial (derived snippets only) |
+| **Container stdout logs** | `docker logs sky-bot-1` on the host | **Ephemeral** - lost when a release recreates the container; size-rotated | Runtime diagnostics and Discord.Net logs; treat as private | Do not assume content-free |
+| **Telemetry JSONL** | Data dir: `telemetry/recall-YYYY-MM-DD.jsonl` | **Durable** (survives restarts and releases; 30-day retention) | Event records, usually hashed IDs and metadata; selected owner-private features may store bounded room text | Sometimes |
+| **Transcript JSONL** | Data dir: `transcripts/transcript-YYYY-MM-DD.jsonl` | **Durable** (14-day retention) when `Transcript:Enabled=true` | Full prompt the model saw + the reply it produced, raw user IDs, channel, persona | **Yes** (when enabled) |
+| **User memories** | Data dir: `<discordUserId>.json` | **Durable** | LLM-extracted facts about users, plus short `context` snippets that may quote the user | Partial (derived snippets only) |
 | **Actual Discord messages** | Discord itself (and a transient in-process cache of the last 100 messages per channel) | Not persisted by the bot | The real text users sent and the bot sent | Yes, but only inside Discord |
+
+The data dir is `/srv/sky/data` on the host and `/app/data/user_memories` in the container.
 
 **Critical truths:**
 
@@ -39,95 +42,83 @@ for data that does not exist.
   context. Inspect the current event schema before assuming a file is content-free. When
   `Transcript:Enabled=true`, the bot durably logs the full model prompt and reply to
   `transcripts/transcript-*.jsonl`. To read a message the bot never answered, use Discord truth.
-2. `kubectl logs` history is destroyed on every deploy or pod rotation. A single
-   `kubectl rollout` can erase the entire log window you care about. If you need history,
-   use the **telemetry JSONL on the PVC** (durable) or **Azure Monitor** (if Container
-   Insights is enabled). Capture live logs *before* doing anything that restarts the pod.
+2. `docker logs` history is destroyed whenever a release recreates the container, and the
+   `local` log driver rotates by size. Nothing ships stdout to Log Analytics. If you need
+   history, use the **telemetry JSONL on the data disk** (durable). Capture live logs
+   *before* a release.
 3. Most user and guild identifiers in telemetry are hashed with `UserIdHash`; memory filenames and
   transcripts use raw IDs. Some feature-specific rows may include owner-private text. Minimize and
   label private excerpts regardless of which source they came from.
 
 ---
 
-## Step 0: Resolve the live Azure identifiers
+## Step 0: Resolve the live host identifiers
 
-The real cluster, resource group, registry, and Key Vault names are kept out of version
-control on purpose. Resolve them at runtime, do not guess.
+The host address, SSH configuration and Azure resource names are kept out of version
+control on purpose. Resolve them at runtime; do not guess.
 
-1. Read `docs/env-inventory.md` (gitignored, local only). It is the canonical inventory and
-   lists the real values under "Overview" and "Azure Resources". If it is missing, ask the
-   user for their private ops note (the repo convention is `docs/private/azure_resources.local.md`).
+1. Read `docs/env-inventory.md` (gitignored, local only). Its "Current production" section
+   names the SSH alias, deployment directory and registry. If it is missing, ask the user.
 2. Substitute the real values for these placeholders used throughout this skill:
 
 | Placeholder | Meaning |
 |---|---|
-| `<SUBSCRIPTION_ID>` | Azure subscription that owns the resources |
-| `<AKS_RESOURCE_GROUP>` | Resource group containing the AKS cluster |
-| `<AKS_CLUSTER_NAME>` | AKS cluster name |
-| `<AKS_REGION>` | Azure region (for example a West US region) |
+| `<SKY_HOST>` | SSH alias for the production host, from the operator's private SSH config |
 | `<ACR_NAME>` | Azure Container Registry name (no domain) |
-| `<ACR_LOGIN_SERVER>` | ACR login server, for example `<ACR_NAME>.azurecr.io` |
-| `<KEY_VAULT_NAME>` | Key Vault that may hold the bot secrets |
-| `<MANAGED_RG>` | AKS-managed infra RG, pattern `MC_<AKS_RESOURCE_GROUP>_<AKS_CLUSTER_NAME>_<AKS_REGION>` |
+| `<HEALTH_PORT>` | Host loopback port for health: `SKY_HEALTH_PORT` in `.env`, default 8080 |
 
-These names are stable (defined in committed manifests) and safe to use directly:
+The examples assume the README's deployment directory, `/srv/sky`; substitute the real one. These
+names come from [deploy/compose.yaml](../../../deploy/compose.yaml):
 
 | Resource | Value |
 |---|---|
-| Namespace | `discord-sky` |
-| Deployment | `discord-sky-bot` |
-| Pod label selector | `app=discord-sky-bot` |
-| Container name | `bot` |
-| ConfigMap | `discord-sky-config` |
-| Secret | `discord-sky-secrets` |
-| PVC | `discord-sky-memory` (storage class `azurefile`, mounted at `/app/data/user_memories`) |
-| Image repository | `discordskybot` (in `<ACR_LOGIN_SERVER>`) |
-| Health endpoint | `http://<pod>:8080/healthz` |
+| Compose file | `/srv/sky/compose.yaml` (project `sky`, service `bot`) |
+| Container | `sky-bot-1` (non-root, read-only root filesystem, no capabilities, memory-capped) |
+| Data directory | host `/srv/sky/data` = container `/app/data/user_memories` |
+| Steward profiles | host `/srv/sky/profiles` = container `/app/steward/profiles` (read-only) |
+| Public settings | `/srv/sky/public.env`, rendered from `k8s/discord-sky/configmap.yaml` at the released commit |
+| Private settings | `/srv/sky/private.env` (root-only secrets and guild bindings; overrides public) |
+| Released image | `SKY_IMAGE` in `/srv/sky/.env`, pinned by digest |
+| Health endpoint | `http://127.0.0.1:<HEALTH_PORT>/healthz` on the host (container port 8080) |
+| Image repository | `discordskybot` (in `<ACR_NAME>.azurecr.io`) |
 | Command prefix | `!sky` |
 
 ---
 
 ## Tooling and access setup
 
-Required CLIs: `az`, `kubectl`, `jq` (for telemetry aggregation). Optional: `dotnet` (only
-for rebuilds, not for log access).
+Required: `ssh` with the operator's key from an allow-listed address, and `jq` for telemetry
+aggregation. `az` is needed only for registry queries. Nothing else, including CI, can reach
+the host.
 
 ```bash
-# Authenticate to Azure and point kubectl at the cluster.
-az login
-az account set --subscription <SUBSCRIPTION_ID>
-az aks get-credentials \
-  --resource-group <AKS_RESOURCE_GROUP> \
-  --name <AKS_CLUSTER_NAME> \
-  --overwrite-existing
-
-# Confirm you are talking to the right cluster.
-kubectl config current-context
-kubectl get pods -n discord-sky -o wide
+# Confirm you are on the right host and the bot is up.
+ssh <SKY_HOST> 'sudo docker compose -f /srv/sky/compose.yaml ps'
+ssh <SKY_HOST> "sudo grep '^SKY_IMAGE=' /srv/sky/.env"
 ```
 
-Default to **read-only** verbs (`get`, `describe`, `logs`, `exec ... cat`, `cp`). Anything
-that mutates the cluster (`apply`, `delete`, `rollout restart`, `patch`, `set image`,
-`scale`) restarts the pod and destroys live logs, so treat those as confirm-first actions.
+Default to **read-only** commands (`ps`, `logs`, `inspect`, `stats`, `cat`, `tar -c`).
+Anything that changes the host (`compose up/down/restart/stop`, editing settings, deleting
+files) restarts the bot, and recreating the container destroys live logs, so treat those as
+confirm-first actions.
 
 ---
 
-## 1. Live container logs (kubectl) - ephemeral
+## 1. Live container logs (docker) - ephemeral
 
 ```bash
-# Current pod, last 24h, with timestamps.
-kubectl logs -n discord-sky deploy/discord-sky-bot -c bot --since=24h --timestamps
+# Last 24h, with timestamps.
+ssh <SKY_HOST> 'sudo docker logs --since 24h --timestamps sky-bot-1'
 
 # Follow live.
-kubectl logs -n discord-sky deploy/discord-sky-bot -c bot -f
+ssh <SKY_HOST> 'sudo docker logs -f --since 5m sky-bot-1'
 
-# Logs from the PREVIOUS container (after a crash/restart). Resolve the pod name first.
-POD=$(kubectl get pod -n discord-sky -l app=discord-sky-bot -o jsonpath='{.items[0].metadata.name}')
-kubectl logs -n discord-sky "$POD" -c bot --previous --timestamps
+# Restart count, state, exit code and OOM flag. A crash restart keeps the same container,
+# so its earlier output stays in `docker logs`; a release recreates the container.
+ssh <SKY_HOST> "sudo docker inspect sky-bot-1 --format '{{.RestartCount}} {{.State.Status}} started={{.State.StartedAt}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}}'"
 
-# Pod state, restart count, last termination reason, and recent events.
-kubectl describe pod -n discord-sky "$POD"
-kubectl get events -n discord-sky --sort-by=.lastTimestamp
+# Memory and CPU against the container limits.
+ssh <SKY_HOST> 'sudo docker stats --no-stream sky-bot-1'
 ```
 
 What you will see in stdout:
@@ -141,35 +132,32 @@ What you will see in stdout:
 - `memory_command action=suppress user=<hash> topic_len=N` for `!sky forget <topic>`.
 - Consolidation lines when a user hits the memory cap.
 - `Circuit breaker open; failing fast until ...` when the LLM is failing repeatedly.
-- `LLM auth self-test FAILED: HTTP 401 ...` (Critical) immediately before the pod crashes.
+- `LLM auth self-test FAILED: HTTP 401 ...` (Critical) immediately before the process exits.
 
-Reminder: this history is gone on the next deploy. For anything older than the current pod's
-lifetime, use tier 2 (telemetry) or tier 3 (Azure Monitor).
+Reminder: this history is gone on the next release. For anything older than the current
+container, use tier 2 (telemetry).
 
 ---
 
-## 2. Durable telemetry (PVC JSONL)
+## 2. Durable telemetry (data disk JSONL)
 
-The bot writes one JSON object per line to daily files on the PVC. These survive pod
-rotation. Expired whole UTC day files are pruned on startup and hourly using the configured retention.
+The bot writes one JSON object per line to daily files on the data disk. These survive
+restarts and releases. Expired whole UTC day files are pruned on startup and hourly using the configured retention.
 
-Path: `/app/data/user_memories/telemetry/recall-YYYY-MM-DD.jsonl`
-(The telemetry directory is nested inside the memory PVC mount on purpose, so it lands on
-durable storage rather than ephemeral container disk.)
+Path: container `/app/data/user_memories/telemetry/recall-YYYY-MM-DD.jsonl`, host
+`/srv/sky/data/telemetry/`. (The telemetry directory is nested inside the data mount on
+purpose, so it lands on durable storage rather than ephemeral container disk.)
 
 ```bash
-POD=$(kubectl get pod -n discord-sky -l app=discord-sky-bot -o jsonpath='{.items[0].metadata.name}')
-
 # List telemetry files.
-kubectl exec -n discord-sky "$POD" -c bot -- ls -la /app/data/user_memories/telemetry
+ssh <SKY_HOST> 'sudo ls -la /srv/sky/data/telemetry'
 
 # Stream all events and count by type.
-kubectl exec -n discord-sky "$POD" -c bot -- \
-  sh -c 'cat /app/data/user_memories/telemetry/recall-*.jsonl' \
+ssh <SKY_HOST> 'sudo sh -c "cat /srv/sky/data/telemetry/recall-*.jsonl"' \
   | jq -r '.event' | sort | uniq -c | sort -rn
 
-# Pull every telemetry file locally for offline analysis.
-kubectl cp "discord-sky/$POD:/app/data/user_memories/telemetry" ./telemetry -c bot
+# Pull every telemetry file locally for offline analysis (creates ./telemetry).
+ssh <SKY_HOST> 'sudo tar -C /srv/sky/data -cf - telemetry' | tar -x
 ```
 
 ### Telemetry event reference
@@ -225,26 +213,23 @@ cat telemetry/recall-*.jsonl | jq -r 'select(.user!=null) | .user' | sort | uniq
 
 ---
 
-## 3. User memories (PVC JSON)
+## 3. User memories (data disk JSON)
 
 One JSON file per user, named by the **raw** Discord user ID. This is the bot's durable
 record of what it has learned about people. Writes are debounced (flushed about every 60s)
 and crash-safe (temp file then atomic rename).
 
-Path: `/app/data/user_memories/<discordUserId>.json`
+Path: container `/app/data/user_memories/<discordUserId>.json`, host `/srv/sky/data/<discordUserId>.json`
 
 ```bash
-POD=$(kubectl get pod -n discord-sky -l app=discord-sky-bot -o jsonpath='{.items[0].metadata.name}')
-
 # List memory files (each filename is a Discord user ID).
-kubectl exec -n discord-sky "$POD" -c bot -- ls -la /app/data/user_memories
+ssh <SKY_HOST> 'sudo ls -la /srv/sky/data'
 
 # Read one user's memories.
-kubectl exec -n discord-sky "$POD" -c bot -- cat /app/data/user_memories/<discordUserId>.json | jq .
+ssh <SKY_HOST> 'sudo cat /srv/sky/data/<discordUserId>.json' | jq .
 
-# Pull all memories locally.
-kubectl cp "discord-sky/$POD:/app/data/user_memories" ./user_memories -c bot
-# (This also pulls the telemetry/ subdirectory.)
+# Pull the whole data directory locally (memories plus telemetry/, transcripts/ and the rest).
+mkdir -p user_memories && ssh <SKY_HOST> 'sudo tar -C /srv/sky/data -cf - .' | tar -x -C user_memories
 ```
 
 ### Memory record schema
@@ -283,7 +268,7 @@ little-endian user ID, hex-encoded (10 chars). To match a hash to a memory file:
 # telemetry "user" field. Example in Python:
 python3 - <<'PY'
 import hashlib, struct
-uid = 188880431955968000  # candidate Discord user ID (a memory filename)
+uid = 123456789012345678  # candidate Discord user ID (a memory filename)
 print(hashlib.sha256(struct.pack('<Q', uid)).hexdigest()[:10])
 PY
 ```
@@ -312,21 +297,18 @@ JSON file outright, so a missing file may simply mean the user opted out.
 
 ## 4. Reading the actual Discord messages (received and sent)
 
-As of 2026-06-10 the bot durably logs **its own replies and the full prompt it received** to the PVC
+As of 2026-06-10 the bot durably logs **its own replies and the full prompt it received** to the data disk
 when `Transcript:Enabled=true` (the committed default). This is the primary durable record of what the
 bot said and the context it had. It does **not** capture messages it never replied to.
 
 ```bash
-POD=$(kubectl get pod -n discord-sky -l app=discord-sky-bot -o jsonpath='{.items[0].metadata.name}')
-
 # List transcript files and read a day's replies (reply text + metadata, prompt elided for brevity).
-kubectl exec -n discord-sky "$POD" -c bot -- ls -la /app/data/user_memories/transcripts
-kubectl exec -n discord-sky "$POD" -c bot -- \
-  sh -c 'cat /app/data/user_memories/transcripts/transcript-*.jsonl' \
+ssh <SKY_HOST> 'sudo ls -la /srv/sky/data/transcripts'
+ssh <SKY_HOST> 'sudo sh -c "cat /srv/sky/data/transcripts/transcript-*.jsonl"' \
   | jq -c '{ts, channel, kind, persona, reply}'
 
-# Pull transcripts locally for analysis (prompt + reply).
-kubectl cp "discord-sky/$POD:/app/data/user_memories/transcripts" ./transcripts -c bot
+# Pull transcripts locally for analysis (prompt + reply; creates ./transcripts).
+ssh <SKY_HOST> 'sudo tar -C /srv/sky/data -cf - transcripts' | tar -x
 ```
 
 Transcript entry fields: `ts`, `user_id` (raw), `user` (display name), `channel_id`, `channel`,
@@ -337,7 +319,7 @@ they are off unless `Transcript:Enabled=true` and are pruned after `Transcript:R
 **Score the pulled transcripts (fun-score harness).** The repo ships a deterministic scorecard tool
 that reads these JSONL files and grades them against the `docs/fun_assessment_2026-06-21.md` 3.11
 targets: catchphrase over-use, length spread, formulaic openings, plus heuristic helpful-leak and
-in-character proxies. After pulling transcripts (the `kubectl cp` above):
+in-character proxies. After pulling transcripts (the `tar` pull above):
 
 ```bash
 # From the repo root, against the pulled directory:
@@ -367,100 +349,31 @@ built yet.
 
 ---
 
-## 5. Historical logs via Azure Monitor / Container Insights (KQL)
+## 5. Historical logs
 
-If Container Insights is enabled, stdout is also shipped to a Log Analytics workspace and
-survives deploys. Check first:
-
-```bash
-# Is the monitoring addon on?
-az aks show -g <AKS_RESOURCE_GROUP> -n <AKS_CLUSTER_NAME> \
-  --query "addonProfiles.omsagent.enabled" -o tsv
-
-# Which workspace does it write to?
-az aks show -g <AKS_RESOURCE_GROUP> -n <AKS_CLUSTER_NAME> \
-  --query "addonProfiles.omsagent.config.logAnalyticsWorkspaceResourceID" -o tsv
-```
-
-If enabled, run KQL in the Log Analytics blade (Azure portal) or via
-`az monitor log-analytics query --workspace <workspaceGuid> --analytics-query '<KQL>'`.
-
-```kusto
-// All bot stdout for the last 2 hours.
-ContainerLogV2
-| where PodNamespace == "discord-sky"
-| where ContainerName == "bot"
-| where TimeGenerated > ago(2h)
-| project TimeGenerated, LogMessage, LogSource
-| order by TimeGenerated desc
-```
-
-```kusto
-// Traffic: persona invocations over time.
-ContainerLogV2
-| where PodNamespace == "discord-sky" and ContainerName == "bot"
-| where LogMessage has "persona_invoked"
-| summarize count() by bin(TimeGenerated, 1h)
-| render timechart
-```
-
-```kusto
-// Auth failures and circuit-breaker trips (the silent-but-broken class of incident).
-ContainerLogV2
-| where PodNamespace == "discord-sky" and ContainerName == "bot"
-| where LogMessage has_any ("auth self-test FAILED", "Circuit breaker open", "HTTP 401")
-| project TimeGenerated, LogMessage
-| order by TimeGenerated desc
-```
-
-```kusto
-// Pod restarts / lifecycle for the deployment.
-KubePodInventory
-| where Namespace == "discord-sky" and Name startswith "discord-sky-bot"
-| summarize arg_max(TimeGenerated, PodStatus, ContainerRestartCount) by Name
-```
-
-```kusto
-// Kubernetes events for the namespace (scheduling, image pulls, OOMKills).
-KubeEvents
-| where Namespace == "discord-sky"
-| order by TimeGenerated desc
-```
-
-If the addon is **not** enabled, the only durable evidence is the PVC telemetry (tier 2) and
-the memory corpus (tier 3). Say so plainly rather than implying history exists.
+There is no Log Analytics or Container Insights on the Compose host. Docker's `local` log
+driver keeps a size-capped history for the current container only; a release recreates the
+container and starts a new log. For anything older, use the durable tiers: telemetry JSONL
+(section 2), transcripts (section 4) and memories (section 3). Say so plainly rather than
+implying more history exists.
 
 ---
 
-## 6. Accessing PVC data via Azure Files (alternative to kubectl)
+## 6. Backups and restores
 
-The PVC uses the `azurefile` storage class, so the data also lives in an Azure Storage
-Account file share in the AKS-managed resource group. This is an alternative path when
-`kubectl cp` fails (for example if the container image lacks `tar`).
-
-```bash
-# Inspect the bound volume to find the share/account handle.
-kubectl get pvc discord-sky-memory -n discord-sky -o yaml
-kubectl get pv -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.azureFile}{.spec.csi.volumeHandle}{"\n"}{end}'
-
-# Storage accounts live in the AKS-managed RG.
-az storage account list -g <MANAGED_RG> -o table
-
-# List and download share contents (requires the account key or an RBAC data role).
-az storage file list   --account-name <storageAccount> --share-name <share> -o table
-az storage file download-batch --account-name <storageAccount> --source <share> --destination ./pvc-data
-```
+Back up with the bot stopped so the journals are consistent: `docker compose stop`, copy the whole
+data directory, `profiles/` and the three env files, then `docker compose start`. The copy holds
+secrets and private evidence, so encrypt it before it leaves the host. Take one before every release.
+Backups and restores change the host and pause the bot: confirm first, and never copy data into
+`/srv/sky/data` while the bot is running.
 
 ---
 
 ## 7. Health, status, and the LLM auth self-test
 
 ```bash
-# App-level health through a temporary local tunnel. The production image intentionally has no curl/wget.
-POD=$(kubectl get pod -n discord-sky -l app=discord-sky-bot -o jsonpath='{.items[0].metadata.name}')
-kubectl port-forward -n discord-sky "pod/$POD" 18080:8080
-# In another terminal:
-curl -fsS http://127.0.0.1:18080/healthz | jq .
+# App-level health from the host's loopback. The production image intentionally has no curl/wget.
+ssh <SKY_HOST> 'curl -fsS http://127.0.0.1:<HEALTH_PORT>/healthz' | jq .
 ```
 
 - `/healthz` returns 200 only when the Discord gateway is connected and every configured Steward
@@ -468,96 +381,88 @@ curl -fsS http://127.0.0.1:18080/healthz | jq .
 - Important caveat: `/healthz` does not call the LLM. Check startup auth/model validation plus
   `llm_provider_guard` and `llm_call` telemetry for provider health.
 - To catch that class of failure, the bot runs an **LLM auth self-test on boot** (a
-  `GET /v1/models` call). On HTTP 401 it logs `Critical` and crash-loops the pod on purpose,
-  so an auth failure shows up as a `CrashLoopBackOff` rather than a quiet, broken-but-green
-  pod. If you see the pod restarting with `auth self-test FAILED` in logs, rotate the key
-  (see section 8) and redeploy.
+  `GET /v1/models` call). On HTTP 401 it logs `Critical` and exits on purpose. Docker's
+  `unless-stopped` policy restarts it, so an auth failure shows up as a climbing `RestartCount`
+  rather than a quiet, broken-but-green container. If you see restarts with
+  `auth self-test FAILED` in the logs, rotate the key (see section 8).
 
 ```bash
-# Liveness/readiness state and restart reasons.
-kubectl get pod -n discord-sky -l app=discord-sky-bot -o wide
-kubectl describe pod -n discord-sky "$POD" | sed -n '/Conditions/,/Events/p'
+# Container state and restart reasons.
+ssh <SKY_HOST> 'sudo docker compose -f /srv/sky/compose.yaml ps'
+ssh <SKY_HOST> "sudo docker inspect sky-bot-1 --format '{{.RestartCount}} {{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}}'"
 ```
 
 ---
 
 ## 8. Config and secrets
 
-Non-secret config is in the `discord-sky-config` ConfigMap (env-var style with `__`
-nesting). Secrets are in `discord-sky-secrets`, managed out-of-band (never committed, never
-touched by `deploy.sh`).
+Settings are environment variables with `__` nesting, kept in two root-only files on the host.
+Compose loads `public.env` first and `private.env` second, so private values win.
+
+- `/srv/sky/public.env` is rendered from `k8s/discord-sky/configmap.yaml` at the released commit.
+  Change public settings by committing to that file and releasing.
+- `/srv/sky/private.env` holds secrets (`Bot__Token`, `Discord__BotToken`, provider API keys and
+  OpenAI settings) and private guild bindings (`Bot__DisabledGuildIds__*`, exact cold-open targets,
+  `WorldAutonomy__EnabledGuilds__*__ProfilePath`). It is never in git or an image.
 
 ```bash
-# Read the live config (model, limits, memory paths, telemetry retention, etc.).
-kubectl get configmap discord-sky-config -n discord-sky -o yaml
+# Does the host run a commit's public settings? Prints nothing when they match.
+git show <commit>:k8s/discord-sky/configmap.yaml | python3 deploy/render-public-env.py \
+  | diff - <(ssh <SKY_HOST> 'sudo cat /srv/sky/public.env')
 
-# Verify bot-level guild disable policy without exposing private ID values.
-kubectl get configmap discord-sky-config -n discord-sky -o json \
-  | jq -r '.data | to_entries[] | select(.key|startswith("Bot__DisabledGuildNames__")) | .value'
-kubectl get configmap discord-sky-runtime-bindings -n discord-sky -o json \
-  | jq -r '[.data|keys[]|select(startswith("Bot__DisabledGuildIds__"))]|length'
+# Private KEYS only, never values.
+ssh <SKY_HOST> 'sudo cut -d= -f1 /srv/sky/private.env'
 
-# Confirm which secret KEYS exist WITHOUT printing their values.
-kubectl get secret discord-sky-secrets -n discord-sky -o jsonpath='{.data}' | jq 'keys'
+# Bot-level guild disable policy without exposing private ID values.
+ssh <SKY_HOST> 'sudo grep -c "^Bot__DisabledGuildIds__" /srv/sky/private.env'
 ```
 
-Expected secret keys: `Bot__Token` (Discord), `LLM__ActiveProvider`,
-`LLM__Providers__OpenAI__ApiKey`, and optionally `LLM__Providers__xAI__ApiKey`.
-
-Avoid decoding secret values unless you are actively rotating a credential, and never paste a
-decoded value into chat, a file, or a commit. Rotation is a confirm-first, mutating action:
-
-```bash
-# Rotate one key (prompts for the value on a hidden read; restarts the pod).
-read -s OPENAI_KEY
-kubectl patch secret discord-sky-secrets -n discord-sky --type merge \
-  -p "{\"stringData\":{\"LLM__Providers__OpenAI__ApiKey\":\"$OPENAI_KEY\"}}"
-unset OPENAI_KEY
-kubectl rollout restart deploy/discord-sky-bot -n discord-sky
-```
-
-The bot's secrets may also be mirrored in Key Vault `<KEY_VAULT_NAME>`:
-
-```bash
-az keyvault secret list --vault-name <KEY_VAULT_NAME> --query "[].id" -o tsv   # names only
-```
+Never print, copy or paste a private value. Rotating a credential is a confirm-first, mutating
+action for the operator: replace the one line in `/srv/sky/private.env` as root without exposing
+the value (not in shell history, command arguments or chat), then run
+`sudo docker compose -f /srv/sky/compose.yaml up -d` so Compose recreates the container with the
+new environment. That also clears `docker logs`.
 
 ---
 
-## 9. Deploy, rollout, and rollback (why log gaps happen)
+## 9. Releases and rollback (why log gaps happen)
 
-Deploys are driven by `scripts/deploy.sh` (builds, pushes to ACR, `kubectl apply -k`,
-waits for rollout). Every rollout replaces the pod and therefore **erases live logs**. This
-is the number-one reason an investigation comes up empty, so capture logs and telemetry
-*before* deploying, and prefer the durable tiers for any historical question.
+CI validates every PR and push. On `main` it also builds the combined Sky and pinned-Steward
+image and publishes `discordskybot:tree-<tree>-s<steward7>`; it does not deploy. A release on the
+host (README, Production Deployment):
+
+1. takes a backup (section 6; the bot pauses briefly);
+2. keeps the current files, then writes the image digest to `/srv/sky/.env` and that commit's public settings to `public.env`;
+3. recreates the container and waits for `/healthz` to report Connected with every configured guild healthy;
+4. puts the previous files back and recreates the container again if that does not happen.
+
+A release recreates the container and therefore **erases live logs**. Capture logs first and
+prefer the durable tiers for historical questions.
 
 ```bash
-kubectl rollout history deployment/discord-sky-bot -n discord-sky
-kubectl rollout status  deployment/discord-sky-bot -n discord-sky
-# Image currently running:
-kubectl get deploy discord-sky-bot -n discord-sky -o jsonpath='{.spec.template.spec.containers[0].image}'
-# Available image tags in ACR:
-az acr repository show-tags -n <ACR_NAME> --repository discordskybot -o table
+# What is running.
+ssh <SKY_HOST> "sudo grep '^SKY_IMAGE=' /srv/sky/.env"
+# Recently published images.
+az acr repository show-tags -n <ACR_NAME> --repository discordskybot --orderby time_desc --top 10 -o table
 ```
 
-`rollout restart`, `rollout undo`, `set image`, and `deploy.sh` are mutating, pod-restarting
-actions. Confirm with the user before running them.
+Releases, restarts and settings edits are mutating actions. Confirm with the user before running them.
 
 ---
 
 ## Investigation playbooks
 
 **"Is the bot getting any traffic?"**
-Live: `kubectl logs ... | grep persona_invoked`. Durable:
+Live: `ssh <SKY_HOST> 'sudo docker logs --since 24h sky-bot-1' | grep persona_invoked`. Durable:
 `cat telemetry/recall-*.jsonl | jq -r 'select(.event=="persona_invoked")|.ts[0:10]' | sort | uniq -c`.
 
 **"Why is the bot silent / not replying?"**
-1. `/healthz` and `kubectl get pod` (is the gateway connected? is it crash-looping?).
+1. `/healthz` and the container `RestartCount` (is the gateway connected? is it restart-looping?).
 2. Grep logs/telemetry for `circuit_breaker_opened` and `auth self-test FAILED` (LLM down or
    key revoked, the classic silent failure).
 3. Check `gateway_disconnect` frequency (network / token issue).
 4. Confirm the channel is allow-listed (`Bot__AllowedChannelNames`) and `AmbientReplyChance`
-   is non-zero in the ConfigMap.
+   is non-zero in the public settings.
 
 **"Did the recall feature actually run?"**
 `recall_tool_ok` count in telemetry. Note: `referenceCount` in memory files is a weak signal
@@ -568,18 +473,18 @@ Compare memory file `lastReferencedAt` / file mtimes with `consolidation_ok|fail
 A cluster of identical `createdAt` values across many notes is a consolidation fingerprint.
 
 **"What does the bot remember about user X?"**
-`cat /app/data/user_memories/<X>.json | jq .`. If the file is missing, X may have run
+`ssh <SKY_HOST> 'sudo cat /srv/sky/data/<X>.json' | jq .`. If the file is missing, X may have run
 `!sky forget-me`, or simply never triggered extraction.
 
 **"Diagnose an OpenAI 401 incident."**
-Logs/Azure Monitor for `HTTP 401` + `auth self-test FAILED`, then check pod restart count.
+Logs for `HTTP 401` + `auth self-test FAILED`, then check the container restart count.
 Rotate the key (section 8). These have recurred on a shrinking interval; expect repeats.
 
 ---
 
 ## Safety and guardrails
 
-- Default to read-only. Mutating verbs restart the pod and destroy live logs; confirm first.
+- Default to read-only. Mutating actions restart the bot, and recreating the container destroys live logs; confirm first.
 - Never print, write, or commit decoded secret values (Discord token, LLM API keys).
 - Memory `content` and `context` are user data. Read what you need for the task; do not bulk
   exfiltrate or paste a user's full memory corpus into shared output without reason.
@@ -592,31 +497,29 @@ Rotate the key (section 8). These have recurred on a shrinking interval; expect 
 
 ## Bundled helper
 
-`scripts/snapshot.sh` captures a durable, read-only snapshot in one shot: current and
-previous container logs, all telemetry JSONL, every per-user memory file, plus pod
-describe/events, then prints quick aggregates (event counts, recall adoption, memory totals).
-It falls back to `exec`+`cat` if `kubectl cp` is unavailable. Run it before any deploy that
-would otherwise wipe the logs.
+`scripts/snapshot.sh` captures a durable, read-only snapshot in one shot: the container log,
+the whole data directory (telemetry, transcripts, memories and the rest), container state and
+the release record, then prints quick aggregates (event counts, recall adoption, memory totals).
+Run it before any release that would otherwise wipe the logs.
 
 ```bash
-bash .github/skills/discord-sky-ops/scripts/snapshot.sh            # writes ./discord-sky-snapshot-<UTC>
-bash .github/skills/discord-sky-ops/scripts/snapshot.sh ./my-out   # custom output dir
+SKY_HOST=<SKY_HOST> bash .github/skills/discord-sky-ops/scripts/snapshot.sh            # writes ./discord-sky-snapshot-<UTC>
+SKY_HOST=<SKY_HOST> bash .github/skills/discord-sky-ops/scripts/snapshot.sh ./my-out   # custom output dir
 ```
 
 ---
 
 ## Gotchas
 
-- `kubectl logs` history dies on every deploy. Telemetry on the PVC does not. Reach for the
-  PVC first for anything historical.
-- The telemetry directory is nested under the memory PVC mount
-  (`/app/data/user_memories/telemetry`), not at `/app/data/telemetry`. If you look in the
-  wrong place you will conclude telemetry is missing.
+- `docker logs` history dies on every release. Telemetry on the data disk does not. Reach for
+  it first for anything historical.
+- The telemetry directory is nested under the data mount (`/app/data/user_memories/telemetry`
+  in the container, `/srv/sky/data/telemetry` on the host), not at `/app/data/telemetry`. If you
+  look in the wrong place you will conclude telemetry is missing.
 - `referenceCount` in memory files has historically under-counted real usage; prefer
   telemetry events as the source of truth for "did recall run".
-- The PVC is `ReadWriteOnce` and small (about 256Mi). Do not write test data into it.
-- `docs/env-inventory.md` is a point-in-time snapshot and can drift (for example its probe
-  description predates the `/healthz` HTTP probes). Trust the live cluster and the committed
-  manifests in `k8s/discord-sky/` over the inventory when they disagree.
-- `/healthz` covers Discord plus configured Steward children, not the LLM. A green pod can still have
+- The host's data disk is small. Do not write test data into it.
+- `docs/env-inventory.md` is a point-in-time note and can drift. Trust the live host
+  (`release.json`, `docker inspect`) over the inventory when they disagree.
+- `/healthz` covers Discord plus configured Steward children, not the LLM. A green container can still have
   provider calls held by quota, authentication, or the local cost guard.

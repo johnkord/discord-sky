@@ -70,30 +70,30 @@ second list. When in genuine doubt, escalate rather than guess.
 
 ---
 
-## Execution model: run it locally, not in the pod
+## Execution model: run it locally, not in production
 
 Run the harness locally in the repo (dotnet run), calling the real bot components through a project
-reference. Do NOT run the bot under test via kubectl inside the AKS pod. Testing official code is a
+reference. Do NOT run the bot under test inside the production container. Testing official code is a
 code-reference property, not a location one: fidelity comes from CALLING the real compiled components,
 not from where the process runs.
 
-Why not in the pod:
+Why not in production:
 
 - The deployed bot is a long-running worker driven by live Discord events and timers, not a
   scenario-in, output-out harness. Evaluating through it means injecting synthetic traffic or exec-ing
-  a separate process in the pod: invasive, non-reproducible, and it risks actually posting to Discord.
-- In-pod eval shares the process, API key, rate limits, telemetry, and gateway with the live bot, which
+  a separate process in the container: invasive, non-reproducible, and it risks actually posting to Discord.
+- In-container eval shares the process, API key, rate limits, telemetry, and gateway with the live bot, which
   breaks the offline-only guardrail.
-- The whole value is dozens of outputs in minutes. An in-pod loop is edit, rebuild image, push,
-  redeploy, exec: the slow loop the harness exists to escape.
+- The whole value is dozens of outputs in minutes. An in-production loop is edit, rebuild image, publish,
+  release, exec: the slow loop the harness exists to escape.
 - Controlled A/B (baseline versus candidate prompt), N-run variance, and blind pairwise all need the
-  harness to control the inputs. The live pod runs on live state you cannot freeze or replay.
+  harness to control the inputs. The live container runs on live state you cannot freeze or replay.
 
-You already have the in-cluster, official, end-to-end eval: it is SHADOW MODE. `ColdOpen__ShadowMode=true`
+You already have the in-production, official, end-to-end eval: it is SHADOW MODE. `ColdOpen__ShadowMode=true`
 runs the real deployed bot, real config, real live state, the full gate-to-compose pipeline, and logs
 what it would post without posting, grounded by real reactions. The local harness is the complementary
 tier shadow mode cannot be: fast, controlled, counterfactual, and runnable before you deploy. Use
-kubectl (the `discord-sky-ops` skill) to READ ground truth out of the cluster (real transcripts for
+the `discord-sky-ops` skill to READ ground truth from production (real transcripts for
 fixtures, real reactions for grounding), never to RUN the bot under test.
 
 Fidelity rules for the local harness (so it never tests diverged code):
@@ -191,10 +191,10 @@ lines ship.
   em-dash, en-dash, curly quotes, or ellipsis character. Validate with
   `grep -nP '[\x{2014}\x{2013}\x{2018}\x{2019}\x{201C}\x{201D}\x{2026}]' <file>`.
 - `python3` is local only, not in the container. Read real reactions and telemetry via
-  `discord-sky-ops` (kubectl, PVC JSONL, or Discord REST with the bot token; never print the token).
-- If a tuned prompt ships, it rides the normal path: build, run tests, then
-  `bash scripts/deploy.sh ...` (see `discord-sky-ops` and repo memory for the exact invocation). The
-  agent commits and deploys but does not `git push` unless asked.
+  `discord-sky-ops` (SSH to the host, data-disk JSONL, or Discord REST with the bot token; never print the token).
+- If a tuned prompt ships, it rides the normal path: build, run tests, merge to main (CI publishes the
+  image), then a release on the host (see the README's Production Deployment). The
+  agent commits but does not `git push` or release unless asked.
 
 ---
 

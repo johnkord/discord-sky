@@ -5,34 +5,39 @@ usage() {
   cat <<'EOF'
 Usage: scripts/deploy.sh [options]
 
-Builds the Discord Sky bot, builds and pushes a container image to ACR, and rolls out the update to an AKS cluster.
+Builds the Discord Sky bot and its container image, checks the image, and pushes it to ACR.
+
+Production uses --skip-rollout: CI publishes the image, and a release runs it on the Compose host (see the README's
+Production Deployment). Without --skip-rollout the script also rolls out to an AKS cluster (reference only; CI does
+not exercise it).
 
 Required options:
-  --aks-resource-group <name>   Resource group containing the AKS cluster.
-  --aks-cluster <name>          Name of the AKS cluster.
   --acr-name <name>             Azure Container Registry name (without .azurecr.io).
+  --aks-resource-group <name>   Resource group containing the AKS cluster (AKS rollout only).
+  --aks-cluster <name>          Name of the AKS cluster (AKS rollout only).
 
 Optional:
   --subscription-id <id>        Azure subscription to target. Uses current subscription if omitted.
-  --acr-resource-group <name>   Resource group containing the ACR (defaults to the AKS resource group).
+  --acr-resource-group <name>   Resource group containing the ACR (defaults to the AKS resource group;
+                                required with --skip-rollout).
   --image-name <name>           Container repository name (default: discordskybot).
   --image-tag <tag>             Image tag (default: current git commit or timestamp).
   --project <path>              Path to the .csproj to build (default: src/DiscordSky.Bot/DiscordSky.Bot.csproj).
   --include-steward             Publish and include a self-contained Discord Steward child executable.
   --steward-project <path>      Path to DiscordSteward.csproj (required with --include-steward).
-  --steward-profile <path>      Repeatable schema-4 profile. Stored in a private runtime Secret.
-  --preserve-steward-profiles   Keep and validate the existing runtime profile Secret/bindings (CI mode).
+  --steward-profile <path>      Repeatable schema-4 profile. Stored in a private runtime Secret (AKS rollout only).
+  --preserve-steward-profiles   Keep and validate the existing runtime profile Secret/bindings (AKS rollout only).
   --build-configuration <cfg>   dotnet build configuration (default: Release).
   --dockerfile <path>           Dockerfile path (default: Dockerfile in repo root).
   --k8s-dir <path>              Kubernetes manifest directory (default: k8s/discord-sky).
   --skip-build                  Skip dotnet build step.
-  --skip-rollout                Skip kubectl apply/rollout steps (build and push only).
+  --skip-rollout                Build, check and push only. This is the production path.
   --help                        Show this help message and exit.
 
 Environment prerequisites:
-  - az CLI, docker, dotnet, kubectl must be installed.
-  - You must be logged into Azure (az login).
-  - The discord-sky-secrets Secret must already exist in the discord-sky namespace.
+  - az CLI, docker, dotnet and jq must be installed; kubectl only for an AKS rollout.
+  - You must be logged into Azure (az login) with push access to the registry.
+  - AKS rollout only: the discord-sky-secrets Secret must already exist in the discord-sky namespace.
     It is managed out-of-band via `kubectl patch secret` / `kubectl create secret`
     and is intentionally not part of this deploy.
 EOF
@@ -107,8 +112,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$AKS_RESOURCE_GROUP" || -z "$AKS_CLUSTER" || -z "$ACR_NAME" ]]; then
-  echo "Error: --aks-resource-group, --aks-cluster, and --acr-name are required." >&2
+if [[ -z "$ACR_NAME" || ( $SKIP_ROLLOUT -eq 0 && ( -z "$AKS_RESOURCE_GROUP" || -z "$AKS_CLUSTER" ) ) ]]; then
+  echo "Error: --acr-name is required; --aks-resource-group and --aks-cluster are required unless --skip-rollout." >&2
   echo >&2
   usage >&2
   exit 1
@@ -116,6 +121,15 @@ fi
 
 if [[ -z "$ACR_RESOURCE_GROUP" ]]; then
   ACR_RESOURCE_GROUP="$AKS_RESOURCE_GROUP"
+fi
+if [[ -z "$ACR_RESOURCE_GROUP" ]]; then
+  echo "Error: --acr-resource-group is required with --skip-rollout." >&2
+  exit 1
+fi
+
+if [[ $SKIP_ROLLOUT -ne 0 && ( $PRESERVE_STEWARD_PROFILES -ne 0 || ${#STEWARD_PROFILES[@]} -gt 0 ) ]]; then
+  echo "--steward-profile and --preserve-steward-profiles apply only to an AKS rollout; production profiles live on the host." >&2
+  exit 1
 fi
 
 if [[ -z "$IMAGE_TAG" ]]; then
@@ -138,7 +152,7 @@ if [[ ! -f "$PROJECT_PATH" ]]; then
 fi
 
 K8S_PATH="$REPO_ROOT/${K8S_DIR#./}"
-if [[ ! -d "$K8S_PATH" ]]; then
+if [[ $SKIP_ROLLOUT -eq 0 && ! -d "$K8S_PATH" ]]; then
   echo "Kubernetes directory not found at $K8S_PATH" >&2
   exit 1
 fi
@@ -163,7 +177,11 @@ if [[ $PRESERVE_STEWARD_PROFILES -ne 0 && ${#STEWARD_PROFILES[@]} -gt 0 ]]; then
   exit 1
 fi
 
-for cmd in az docker kubectl dotnet jq; do
+REQUIRED_COMMANDS=(az docker dotnet jq)
+if [[ $SKIP_ROLLOUT -eq 0 ]]; then
+  REQUIRED_COMMANDS+=(kubectl)
+fi
+for cmd in "${REQUIRED_COMMANDS[@]}"; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "Required command '$cmd' not found in PATH." >&2
     exit 1

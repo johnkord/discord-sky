@@ -1,4 +1,4 @@
-name: Build and Deploy to AKS
+name: Validate and publish
 
 on:
   pull_request:
@@ -7,13 +7,12 @@ on:
       - main
   workflow_dispatch:
 
+# Publishing needs repository variables ACR_NAME and ACR_RESOURCE_GROUP (optional IMAGE_NAME) and OIDC secrets
+# AZURE_CLIENT_ID, AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID; see the README's Production Deployment.
 env:
-  ACR_NAME: ribacr123
-  ACR_LOGIN_SERVER: ribacr123.azurecr.io
-  AKS_RESOURCE_GROUP: jk-aks-rg-2
-  AKS_CLUSTER_NAME: jk-aks-2
-  IMAGE_NAME: discordskybot
-  K8S_NAMESPACE: discord-sky
+  ACR_NAME: ${{ vars.ACR_NAME }}
+  ACR_RESOURCE_GROUP: ${{ vars.ACR_RESOURCE_GROUP }}
+  IMAGE_NAME: ${{ vars.IMAGE_NAME || 'discordskybot' }}
 
 permissions:
   contents: read
@@ -59,11 +58,15 @@ jobs:
           name: release-tests
           path: ${{ runner.temp }}/test-results/*.trx
 
-  build-and-deploy:
+  publish:
+    name: Build and publish the combined image
     needs: validate
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.ACR_NAME != ''
+    permissions:
+      contents: read
+      id-token: write
     concurrency:
-      group: discord-sky-production
+      group: discord-sky-publish
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -87,47 +90,45 @@ jobs:
       - name: Azure Login
         uses: azure/login@v2
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Check for an already deployed and ready source tree
-        id: live
+      - name: Skip an already published source tree
+        id: published
         env:
           IMAGE_TAG: ${{ needs.validate.outputs.image_tag }}
         run: |
-          az aks get-credentials --resource-group "$AKS_RESOURCE_GROUP" --name "$AKS_CLUSTER_NAME" --overwrite-existing
-          image="$ACR_LOGIN_SERVER/$IMAGE_NAME:$IMAGE_TAG"
-          live=$(kubectl -n "$K8S_NAMESPACE" get deployment discord-sky-bot -o jsonpath='{.spec.template.spec.containers[0].image}')
-          if [[ "$live" == "$image" ]]; then
-            digest=$(az acr repository show --name "$ACR_NAME" --image "$IMAGE_NAME:$IMAGE_TAG" --query digest -o tsv)
-            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-            kubectl -n "$K8S_NAMESPACE" rollout status deployment/discord-sky-bot --timeout=300s
-            kubectl -n "$K8S_NAMESPACE" get pods -l app=discord-sky-bot -o json | jq -e --arg digest "$digest" --arg image "$image" '[.items[] | select(.metadata.deletionTimestamp==null) | .status.containerStatuses[] | select(.name=="bot")] | length==1 and all(.ready and .image==$image and (.imageID|endswith($digest)))'
+          digest=$(az acr repository show --name "$ACR_NAME" --image "$IMAGE_NAME:$IMAGE_TAG" --query digest -o tsv 2>/dev/null || true)
+          if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
             echo 'already=true' >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build and safely deploy combined runtime
-        if: steps.live.outputs.already != 'true'
+      - name: Build, check and push the combined runtime image
+        if: steps.published.outputs.already != 'true'
         shell: bash
         run: |
-          bash scripts/deploy.sh \
-            --aks-resource-group "${AKS_RESOURCE_GROUP}" \
-            --aks-cluster "${AKS_CLUSTER_NAME}" \
+          bash scripts/deploy.sh --skip-rollout \
             --acr-name "${ACR_NAME}" \
+            --acr-resource-group "${ACR_RESOURCE_GROUP}" \
             --image-name "${IMAGE_NAME}" \
             --image-tag "${{ needs.validate.outputs.image_tag }}" \
             --include-steward \
-            --steward-project discord-steward-source/src/DiscordSteward/DiscordSteward.csproj \
-            --preserve-steward-profiles
+            --steward-project discord-steward-source/src/DiscordSteward/DiscordSteward.csproj
 
-      - name: Verify deployment
+      - name: Release summary
         shell: bash
         env:
           IMAGE_TAG: ${{ needs.validate.outputs.image_tag }}
         run: |
           set -euo pipefail
-          expected=$(kubectl create --dry-run=client --validate=false -f k8s/discord-sky/configmap.yaml -o json | jq -cSe '.data | objects')
-          actual=$(kubectl -n "$K8S_NAMESPACE" get configmap discord-sky-config -o json | jq -cSe '.data | objects')
-          [[ "$actual" == "$expected" ]] || { echo 'Live public configuration differs from the validated tree.' >&2; exit 1; }
           digest=$(az acr repository show --name "$ACR_NAME" --image "$IMAGE_NAME:$IMAGE_TAG" --query digest -o tsv)
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          kubectl -n "$K8S_NAMESPACE" get pods -l app=discord-sky-bot -o json | jq -e --arg digest "$digest" --arg image "$ACR_LOGIN_SERVER/$IMAGE_NAME:$IMAGE_TAG" '[.items[] | select(.metadata.deletionTimestamp==null) | .status.containerStatuses[]? | select(.name=="bot")] | length==1 and all(.ready and .image==$image and (.imageID|endswith($digest)))'
+          {
+            echo '### Published, not deployed'
+            echo "- Image: \`$IMAGE_NAME:$IMAGE_TAG\`"
+            echo "- Digest: \`$digest\`"
+            echo "- Commit: \`$GITHUB_SHA\`"
+            echo ''
+            echo 'Release it on the Compose host with this digest and the public settings of the same commit (README, Production Deployment).'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -50,7 +50,7 @@ Start with the [maintenance atlas](docs/maintenance/atlas.md) to find the owner,
 - .NET SDK 10.0 for Sky, its tools and tests, and the pinned Steward child. The optional local SQLite ledger uses the system SQLite library on Linux.
 - A Discord bot token with Message Content Intent enabled.
 - An API key for the configured `LLM:ActiveProvider`.
-- Docker, Azure CLI, and kubectl for the AKS deployment path.
+- Docker and Azure CLI to build and publish release images, and a Linux host with Docker Compose 2.30 or later to run them.
 
 ## Local Setup
 
@@ -178,16 +178,15 @@ operational instructions before changing run data; Hybrid adds an explicit stabl
 implicit caching for the growing tool conversation. The control uses ordinary implicit caching. Neither cohort
 changes reasoning effort, authority, or reply style. `world_autonomy_features` identifies the selected cohort and
 recall availability for each run. Rollback: `WorldAutonomy:PromptCacheMode=Off` and/or
-`WorldAutonomy:MemoryRecallEnabled=false`. See the Kubernetes runbook for comparison queries and promotion gates.
+`WorldAutonomy:MemoryRecallEnabled=false`. See [Cache And Recall Rollout](k8s/discord-sky/README.md#cache-and-recall-rollout) for comparison queries and promotion gates.
 
-Private profiles and guild IDs never enter public image layers or committed manifests. The hardened deployment
-validates exact bindings, probes the bundled Steward executable, and restores prior resources if rollout fails.
-
-See [k8s/discord-sky/README.md](k8s/discord-sky/README.md).
+Private profiles and guild IDs never enter public image layers or committed files. Production keeps them in the
+host's private settings and a read-only profile mount. The release build probes the bundled Steward executable, and a
+release is rolled back if the new container does not report every configured guild healthy.
 
 ## Observability And Privacy
 
-Durable production evidence lives under the configured PVC paths:
+Durable production evidence lives under the configured data paths (`/app/data/user_memories` in the container, `data/` in the host's deployment directory):
 
 - telemetry: metadata, routing, usage, cost, resources, and selected bounded owner-private context;
 - transcripts: full model prompt/reply or deterministic host fallback;
@@ -215,35 +214,85 @@ The second command is the release gate. It requires a sibling checkout at the re
 
 ## Production Deployment
 
-Production images are identified by the Sky git tree and pinned Steward revision. Use the hardened script or serialized GitHub Actions workflow. Do not
-apply the public Kustomize tree or set the image directly as a normal deployment path; doing so can bypass
-combined-runtime and private-binding validation.
+Sky runs as one container: one Docker Compose service on a Linux host with Docker Compose 2.30 or later
+([DS-011](docs/decisions/README.md#ds-011-run-production-as-one-compose-service-on-a-single-host)). Run exactly one
+instance per bot token. Discord allows one gateway session per token, and the file journals assume a single writer.
+Images are identified by the Sky git tree and pinned Steward revision: `discordskybot:tree-<tree>-s<steward7>`.
 
-From a clean committed tree, use values from the private environment inventory:
+### Publish images
+
+The [release workflow](.github/workflows/release.yml) runs the release gate on pull requests and main. On main it
+builds the combined image with `scripts/deploy.sh --skip-rollout --include-steward`, runs the image smoke check and
+Steward probe, and pushes the image to Azure Container Registry. An already published tree is not rebuilt. CI never
+reaches the host. Publishing is skipped until the repository defines:
+
+- variables `ACR_NAME` and `ACR_RESOURCE_GROUP`, plus `IMAGE_NAME` if it is not `discordskybot`;
+- secrets `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID` for a Microsoft Entra app registration
+  that has a federated credential for `repo:<owner>/<repo>:ref:refs/heads/main` and the `AcrPush` and `Reader` roles
+  on the registry.
+
+To build and publish an image by hand from a clean committed tree:
 
 ```bash
-bash scripts/deploy.sh \
-  --aks-resource-group <AKS_RESOURCE_GROUP> \
-  --aks-cluster <AKS_CLUSTER_NAME> \
+bash scripts/deploy.sh --skip-rollout \
   --acr-name <ACR_NAME> \
+  --acr-resource-group <ACR_RESOURCE_GROUP> \
   --image-name discordskybot \
   --image-tag <TREE_AND_STEWARD_TAG> \
   --include-steward \
-  --steward-project ../discord-steward/src/DiscordSteward/DiscordSteward.csproj \
-  --preserve-steward-profiles
+  --steward-project ../discord-steward/src/DiscordSteward/DiscordSteward.csproj
 ```
 
-The production workflow runs the same gate on PRs and main. Only main can deploy. An already live source tag must match the ready container's registry digest; a matching tag alone does not skip deployment checks. The deploy script validates manifests,
-private binding/profile correspondence, the in-image Steward probe, and rollout health before reporting success.
+### Run on a host
 
-After deployment, verify:
+Give the host a pull-only registry credential (for ACR, a repository-scoped token) and run `docker login` once. Then
+create one root-owned directory, for example `/srv/sky`:
 
-- exact revision and image;
-- one Ready pod with zero restarts;
+| Path | Contents |
+| --- | --- |
+| `compose.yaml` | [deploy/compose.yaml](deploy/compose.yaml) |
+| `.env` | `SKY_IMAGE=<registry>/discordskybot@sha256:<digest>`; optional `SKY_HEALTH_PORT` (default 8080) |
+| `public.env` | The released commit's public settings, rendered from `k8s/discord-sky/configmap.yaml` |
+| `private.env` | Secrets and exact guild bindings from [deploy/private.env.example](deploy/private.env.example); mode 600 |
+| `data/` | Durable state and evidence; owned by uid 1100, mode 700 |
+| `profiles/` | Optional private Steward profiles, `<guild-id>.json`; owned by uid 1100, read-only |
+
+Render `public.env` from a checkout, copy it to the host, then start the bot there:
+
+```bash
+git show <commit>:k8s/discord-sky/configmap.yaml | python3 deploy/render-public-env.py > public.env
+
+# On the host, in /srv/sky:
+sudo docker compose up -d
+curl -fsS http://127.0.0.1:8080/healthz
+```
+
+The container runs as a non-root user with a read-only root filesystem, no capabilities, memory, CPU and process caps,
+and its own network. It needs no inbound port; health is published only on the host's loopback.
+
+### Release a published commit
+
+1. Back up first: `docker compose stop`, copy `data/`, `profiles/` and the three env files, then `docker compose start`.
+   The copy holds secrets and private evidence, so encrypt it.
+2. Keep the current `.env` and `public.env`. Write the new digest to `.env` and render that commit's `public.env`.
+3. Run `docker compose up -d`. Compose stops the old container before it starts the new one.
+4. Wait until `/healthz` returns 200 with `"connection":"Connected"` and every configured guild healthy. Otherwise put
+   the previous `.env` and `public.env` back and run `docker compose up -d` again.
+
+Public settings change only through a commit to `k8s/discord-sky/configmap.yaml` and a release. Private settings
+never come from this repository, and they override the public ones on the host.
+
+After a release, verify:
+
+- `SKY_IMAGE` names the intended digest, and `public.env` matches that commit's rendered settings;
+- the container is running with zero unexpected restarts;
 - `/livez` responds; `/healthz` reports Discord Connected and every configured Steward child healthy;
 - startup auth/model checks succeeded;
 - effective route, budget, and provider-guard configuration;
 - no unexpected `llm_call`, `llm_provider_guard`, or runtime-resource failures.
+
+The [ops skill](.github/skills/discord-sky-ops/SKILL.md) shows how to read each of these. The manifests in
+`k8s/discord-sky/` and the AKS rollout mode of `scripts/deploy.sh` are kept for reference; CI does not exercise them.
 
 ## Repository Layout
 
@@ -257,6 +306,7 @@ src/DiscordSky.Bot/
   Orchestration/       Creative, autonomy, Empire, impulse, context
 
 tests/DiscordSky.Tests/ Focused and integration-style xUnit coverage
-k8s/discord-sky/       Public AKS manifests and deployment documentation
-scripts/               Hardened deployment and operational helpers
+deploy/                Compose deployment: compose file, public settings renderer, private settings template
+k8s/discord-sky/       Public runtime settings (configmap.yaml) and reference AKS manifests
+scripts/               Release build/publish, release gate and operational helpers
 ```

@@ -24,7 +24,7 @@ RUN apt-get update \
 
 COPY --from=build /app/publish .
 # scripts/deploy.sh --include-steward publishes the public self-contained Linux executable here.
-# Exact-guild profiles are never copied into image layers; Kubernetes mounts them at runtime.
+# Exact-guild profiles are never copied into image layers; the host mounts them read-only at runtime.
 # The tracked placeholder keeps ordinary Sky-only image builds working when autonomy is not packaged.
 COPY artifacts/discord-steward/ /app/steward/
 

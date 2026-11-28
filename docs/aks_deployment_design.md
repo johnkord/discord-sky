@@ -1,5 +1,7 @@
 # Discord Sky Bot AKS Deployment Design
 
+> **Reference only.** The supported deployment is one Docker Compose service; see [DS-011](decisions/README.md#ds-011-run-production-as-one-compose-service-on-a-single-host) and the [README](../README.md#production-deployment).
+
 ## Objective
 Run the Discord Sky bot as a continuously available workload inside Azure Kubernetes Service (AKS), using Azure Container Registry (ACR) for image storage and Kubernetes primitives for configuration, secrets, and lifecycle management.
 

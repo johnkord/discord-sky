@@ -1,5 +1,7 @@
 # World Autonomy Validation Runbook
 
+> These stages ran on the earlier AKS deployment. On a Compose host, read logs, health and settings with the [ops skill](../.github/skills/discord-sky-ops/SKILL.md), and ship changes as a published image plus a [release](../README.md#release-a-published-commit) instead of `deploy.sh` rollouts and `kubectl rollout undo`.
+
 Status: AKS dark deployment, live provider smoke, direct R0 through R5 validation, and deployed hosted-search lifecycle recovery validation completed on an owner-approved disposable guild. A non-disposable guild remains disabled pending an explicit profile and binding change.
 
 ## Purpose

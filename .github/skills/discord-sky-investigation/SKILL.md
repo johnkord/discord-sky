@@ -299,9 +299,9 @@ Do not declare a line funny from these proxies. Route that judgment to `discord-
   consolidation success, stale accumulation, and suppression behavior.
 - Persistent state: tick due/commit/reject rate, version movement, mood reachability, rank aging, and whether state
   leaks into repetitive response templates.
-- Runtime resources: trend cgroup usage by pod lifetime, then separate Sky RSS, direct-child RSS, managed heap,
+- Runtime resources: trend cgroup usage by container lifetime, then separate Sky RSS, direct-child RSS, managed heap,
   fragmentation, GC counts, threads, and bounded cache counts. A restart reset proves retained high water, not
-  which process or object owns it. Check node MemoryPressure and system/cache memory before recommending a limit.
+  which process or object owns it. Check host memory pressure and system/cache memory before recommending a limit.
 - Safety: detections, alerts, blocks, false positives, predicted versus missed bans, and no-op reconciliation writes.
 
 ## Phase 7: read the interactions

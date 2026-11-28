@@ -1,0 +1,38 @@
+# Discord Sky as one Docker Compose service (Compose 2.30 or later). Keep this file in one host directory
+# with .env, public.env, private.env, data/ and profiles/; see the README's Production Deployment.
+name: sky
+services:
+  bot:
+    image: ${SKY_IMAGE:?set SKY_IMAGE in .env}
+    restart: unless-stopped
+    # data/ and profiles/ must be owned by this ID; pick another unused ID if 1100 is taken on the host.
+    user: "1100:1100"
+    read_only: true
+    tmpfs: [ /tmp ]
+    cap_drop: [ ALL ]
+    security_opt: [ "no-new-privileges:true" ]
+    # Later files win: private.env (secrets, guild bindings) overrides the released public settings.
+    env_file:
+      - path: public.env
+        format: raw
+      - path: private.env
+        format: raw
+    environment:
+      HOME: /tmp
+    volumes:
+      - ./data:/app/data/user_memories
+      - ./profiles:/app/steward/profiles:ro
+    ports:
+      - "127.0.0.1:${SKY_HEALTH_PORT:-8080}:8080"
+    mem_limit: 1g
+    memswap_limit: 1g
+    cpus: 1.0
+    pids_limit: 512
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
+    networks: [ bot ]
+networks:
+  bot: {}

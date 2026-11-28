@@ -3,71 +3,46 @@
 # snapshot.sh - capture a durable, read-only snapshot of Discord Sky bot state.
 #
 # Pulls (in order):
-#   1. current + previous container stdout logs   (ephemeral - grab before any deploy)
-#   2. all telemetry JSONL from the PVC           (durable)
-#   3. every per-user memory JSON from the PVC    (durable)
-#   4. pod describe + recent namespace events
+#   1. the container stdout log                    (ephemeral - grab before any release)
+#   2. the whole data directory: telemetry JSONL, transcripts, memories and the rest (durable)
+#   3. container state and the release record
 # then prints quick aggregates (event counts, recall adoption, memory totals).
 #
 # Usage:
-#   bash snapshot.sh [output-dir]
+#   SKY_HOST=<ssh-alias> bash snapshot.sh [output-dir]
 #
-# Requires: kubectl (context already pointed at the cluster). jq is optional (summaries).
-# Safety:   read-only. Does not modify the pod, the PVC, or any Azure resource.
+# Requires: ssh access to the production host (alias from the operator's private SSH config).
+#           jq is optional (summaries).
+# Safety:   read-only. Does not stop the bot or modify the host.
 
 set -euo pipefail
 
-NS="discord-sky"
-SELECTOR="app=discord-sky-bot"
-CONTAINER="bot"
-MEM_PATH="/app/data/user_memories"
+HOST="${SKY_HOST:?Set SKY_HOST to the production host SSH alias (see docs/env-inventory.md).}"
+CONTAINER="sky-bot-1"
+DATA_DIR="/srv/sky/data"
 OUT="${1:-./discord-sky-snapshot-$(date -u +%Y%m%dT%H%M%SZ)}"
 
-command -v kubectl >/dev/null 2>&1 || { echo "ERROR: kubectl not found in PATH." >&2; exit 1; }
+command -v ssh >/dev/null 2>&1 || { echo "ERROR: ssh not found in PATH." >&2; exit 1; }
+remote() { ssh -o BatchMode=yes "$HOST" "$@" </dev/null; }
+remote "sudo docker inspect $CONTAINER >/dev/null" || { echo "ERROR: cannot reach $CONTAINER on $HOST." >&2; exit 1; }
 
-POD="$(kubectl get pod -n "$NS" -l "$SELECTOR" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
-if [[ -z "$POD" ]]; then
-  echo "ERROR: no pod found in namespace '$NS' with selector '$SELECTOR'." >&2
-  echo "Is kubectl pointed at the right cluster? Try: az aks get-credentials ..." >&2
-  exit 1
-fi
-
-echo "Pod:    $POD"
+echo "Host:   $HOST"
 echo "Output: $OUT"
-mkdir -p "$OUT"
+mkdir -p "$OUT/user_memories"
 
-# --- 1. Ephemeral container logs (capture before they are lost) -----------------
-echo "Capturing container logs..."
-kubectl logs -n "$NS" "$POD" -c "$CONTAINER" --timestamps           > "$OUT/logs-current.txt"  2>/dev/null || true
-kubectl logs -n "$NS" "$POD" -c "$CONTAINER" --previous --timestamps > "$OUT/logs-previous.txt" 2>/dev/null || true
+# --- 1. Ephemeral container log (capture before it is lost) ----------------------
+echo "Capturing container log..."
+remote "sudo docker logs --timestamps $CONTAINER" > "$OUT/logs-current.txt" 2>&1 || true
 
-# --- 2 + 3. Durable PVC data (memories + nested telemetry/ subdir) --------------
-echo "Copying PVC data ($MEM_PATH)..."
-if kubectl cp "$NS/$POD:$MEM_PATH" "$OUT/user_memories" -c "$CONTAINER" >/dev/null 2>&1 \
-   && [[ -d "$OUT/user_memories" ]]; then
-  echo "  copied via kubectl cp"
-else
-  echo "  kubectl cp failed (container may lack tar); falling back to exec+cat"
-  mkdir -p "$OUT/user_memories/telemetry"
-  kubectl exec -n "$NS" "$POD" -c "$CONTAINER" -- \
-    sh -c "ls -1 $MEM_PATH/*.json 2>/dev/null" 2>/dev/null | while read -r f; do
-      [[ -n "$f" ]] || continue
-      kubectl exec -n "$NS" "$POD" -c "$CONTAINER" -- cat "$f" \
-        > "$OUT/user_memories/$(basename "$f")" 2>/dev/null || true
-    done
-  kubectl exec -n "$NS" "$POD" -c "$CONTAINER" -- \
-    sh -c "ls -1 $MEM_PATH/telemetry/*.jsonl 2>/dev/null" 2>/dev/null | while read -r f; do
-      [[ -n "$f" ]] || continue
-      kubectl exec -n "$NS" "$POD" -c "$CONTAINER" -- cat "$f" \
-        > "$OUT/user_memories/telemetry/$(basename "$f")" 2>/dev/null || true
-    done
-fi
+# --- 2. Durable data directory (memories + nested telemetry/ and transcripts/) ----
+echo "Copying data directory ($DATA_DIR)..."
+remote "sudo tar -C $DATA_DIR -cf - ." | tar -x -C "$OUT/user_memories" --no-same-owner
 
-# --- 4. Pod + namespace metadata ------------------------------------------------
-echo "Capturing pod metadata..."
-kubectl describe pod -n "$NS" "$POD"                       > "$OUT/pod-describe.txt" 2>/dev/null || true
-kubectl get events -n "$NS" --sort-by=.lastTimestamp        > "$OUT/events.txt"       2>/dev/null || true
-kubectl get pod -n "$NS" "$POD" -o yaml                     > "$OUT/pod.yaml"         2>/dev/null || true
+# --- 3. Container state and release record ---------------------------------------
+echo "Capturing container state..."
+remote "sudo docker inspect $CONTAINER" > "$OUT/container-inspect.json" 2>/dev/null || true
+remote "sudo docker compose -f /srv/sky/compose.yaml ps" > "$OUT/compose-ps.txt" 2>/dev/null || true
+remote "sudo cat /srv/sky/release.json" > "$OUT/release.json" 2>/dev/null || true
 
 echo "Snapshot written to: $OUT"
 

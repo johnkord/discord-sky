@@ -6,7 +6,7 @@ Write an entry when reversing a choice would surprise users, change authority or
 
 Each entry needs **ID, state, date, accountable role, choice and reason, alternative or cost, evidence, and what would reopen or end it**. Use `Proposed`, `Accepted`, `Trial`, `Rejected`, or `Superseded`. On a reversal, add the successor ID to the old entry. The product owner accepts behavioral and data-use commitments; the maintainer accepts implementation choices and records the evidence. For one person wearing both hats, this need not mean two approvals.
 
-DS-001 through DS-004 record earlier decisions. Use the [maintenance atlas](../maintenance/atlas.md) to find the responsible code and the [deployment runbook](../../k8s/discord-sky/README.md) for live controls.
+DS-001 through DS-004 record earlier decisions. Use the [maintenance atlas](../maintenance/atlas.md) to find the responsible code and the [ops skill](../../.github/skills/discord-sky-ops/SKILL.md) for live controls.
 
 ## DS-001: A petition is not an instruction
 
@@ -48,7 +48,7 @@ This keeps the existing scope. It does not remove Discord posts, private transcr
 
 **Architecture | Accepted | 2026-11-23 | Maintainer.** Sky and Steward use .NET 10. SkiaSharp inspects image metadata under the existing format, byte and pixel limits; it replaces the advisory-bearing decoder without bypassing license checks. The optional local SQLite ledger uses system SQLite, not a bundled native SQLite copy. Production retains the file ledger. Reassess packages and base images at each upgrade: NuGet audit alone does not certify OS or native libraries.
 
-Before Azure login in CI, validate the pinned Steward build, audited dependencies, full Release build and tests, including the named sibling integrations. A deployment is identified by the complete Sky git tree and Steward pin; registry digest and ready pod identify what is running. Keep one gateway writer. Reopen the gate only with equivalent evidence, or use a documented rollback to a known release. [Validation](../../scripts/validate-release.sh); [workflow](../../.github/workflows/deploy-aks.yml).
+Before Azure login in CI, validate the pinned Steward build, audited dependencies, full Release build and tests, including the named sibling integrations. A deployment is identified by the complete Sky git tree and Steward pin; registry digest and ready pod identify what is running. Keep one gateway writer. Reopen the gate only with equivalent evidence, or use a documented rollback to a known release. [Validation](../../scripts/validate-release.sh); [workflow](../../.github/workflows/release.yml).
 
 ## DS-008: Trial one verified guild deed
 
@@ -65,3 +65,9 @@ The original December 7 expiry was not extended. No evidence of human preference
 **Product + Architecture | Accepted | 2026-11-23 | Product owner.** Discord identifies the selected message. Supply its author and bounded text as quoted user-turn context, or mark the parent unavailable/no text. Do not classify the reply as an objection, joke, instruction, or appeal. An independently addressed reply can reference a human; a human-to-human reply alone does not summon Robotnik. Keep reply targeting on the current trigger and label historical words separately from verified Discord effects. For factual claims use existing Steward reads and receipts, not automatic journal injection. Literal application commands such as deleting saved notes retain deterministic ownership, including when sent as replies.
 
 This costs no additional model call or new on-disk state. No changes to recall scope, guild bindings, or direct autonomy. Reopen if natural replies repeatedly misidentify their parent, or an additional evidence source is shown to improve grounding without expanding disclosure. [Parent contract](../../src/DiscordSky.Bot/Models/Orchestration/DirectReplyParent.cs); [wire test](../../tests/DiscordSky.Tests/StewardMcpSupervisorIntegrationTests.cs).
+
+## DS-011: Run production as one Compose service on a single host
+
+**Architecture | Accepted | 2026-11-28 | Maintainer.** Production runs as one Docker Compose service on a small Linux host instead of AKS: non-root, read-only root filesystem, no capabilities, memory and CPU caps, its own network, and no inbound ports. DS-002's single gateway owner still holds: a release replaces the one container, and no second instance may start with the same token. CI validates and publishes images but cannot reach the host. A release applies a published image digest and this repository's public settings for the same commit under the host's private settings, and is rolled back if `/healthz` does not report Connected with every configured guild healthy. [Compose file](../../deploy/compose.yaml); [release steps](../../README.md#release-a-published-commit).
+
+A managed cluster costs far more than one bot needs and adds ingress and certificate machinery that a gateway bot without inbound traffic does not use. A basic App Service plan lacked memory headroom for two Steward children. The cost is a single host and manual releases. Reopen if Sky needs more than one host, unattended releases, or an isolation boundary stronger than a container.

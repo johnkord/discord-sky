@@ -87,4 +87,15 @@ check 'Preserve confirmed absence on failure' preserve rollback none missing yes
 check 'Restore owned private resources on failure' managed rollback none present yes
 check 'Restore confirmed absence of owned resources' managed rollback none missing yes
 check 'Preserved binding and profile' preserve success none present no
+
+export FAIL_READ=none PRIVATES=present ROLLOUT_FAIL=no
+publish=(--skip-rollout --acr-name fixture --acr-resource-group fixture --image-tag fixture --skip-build --include-steward --steward-project steward/Steward.csproj)
+: > "$fixture/writes"
+bash "$fixture/scripts/deploy.sh" "${publish[@]}" > "$fixture/output" 2>&1 || { cat "$fixture/output" >&2; printf 'Publish-only build failed without AKS options\n' >&2; exit 1; }
+[[ ! -s $fixture/writes ]] && grep -qx 'Skipping rollout as requested.' "$fixture/output" || { printf 'Publish-only build reached the cluster\n' >&2; exit 1; }
+printf 'PASS: %s\n' 'Publish-only build needs no cluster'
+if bash "$fixture/scripts/deploy.sh" "${publish[@]}" --preserve-steward-profiles > "$fixture/output" 2>&1; then
+  printf 'Publish-only build accepted a rollout-only option\n' >&2; exit 1
+fi
+printf 'PASS: %s\n' 'Publish-only build rejects rollout-only options'
 check 'Deliberately dark installation' preserve success none missing no
